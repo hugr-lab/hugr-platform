@@ -1,16 +1,18 @@
-# Spec 004: the platform in kind - the demo, end to end
+# Spec 004: the platform in one cluster - the demo, end to end (kind in CI, minikube locally, AKS by hand)
 
-- **Status**: draft
+- **Status**: accepted (the owner, 2026-10-18: minikube locally, and manual runs on AKS as tresor-server's and kista's)
 - **Date**: 2026-10-18
 
 ## Summary
 
-Step 6 of phase 1: the whole platform in one kind cluster, run by one script, proving what spec 001 and hugr-node spec
-010 promise against real Kubernetes. It runs:
+Step 6 of phase 1: the whole platform in one Kubernetes cluster, run by one script, proving what spec 001 and hugr-node
+spec 010 promise against real Kubernetes. The same script runs on three clusters: kind in CI, minikube on a developer's
+machine, and AKS by hand (`up | check | down`, as tresor-server's and kista's live runs). It runs:
 
 - the operator;
 - two groups of hugr-node pods;
-- Keycloak as the organisation's IdP, logging the nodes in by their ServiceAccount tokens;
+- the organisation's IdP logging the nodes in by their ServiceAccount tokens: Keycloak on kind and minikube, Entra ID
+  on AKS (a managed identity per group with a federated credential, as the Azure Managed Application will);
 - tresor-server;
 - kista;
 - PostgreSQL for the policy catalog and a source.
@@ -36,8 +38,17 @@ It also closes the two items spec 001 left "to verify":
 
 ### What runs where
 
-`test/kind/run.sh` makes the cluster, builds or loads the images, installs everything, runs the checks and deletes the
-cluster (`HUGR_KIND_KEEP=1` keeps it).
+`test/demo/run.sh <kind | minikube | aks> [up | check | down | leftovers]` builds or loads the images, installs
+everything and runs the checks. The provider is the only difference between the clusters:
+
+| | kind (CI) | minikube (a developer's machine) | aks (by hand) |
+| --- | --- | --- | --- |
+| the cluster | made and deleted by the run (`HUGR_DEMO_KEEP=1` keeps it) | the profile `hugr-demo` (`--memory`, `--cpus` from `HUGR_DEMO_MEMORY` / `_CPUS`, 12 GiB and 6 by default), made if missing, kept | a resource group of its own, AKS with its OIDC issuer and workload identity, made by `up`, deleted by `down` |
+| the images | `kind load` | `minikube image load` | an Azure Container Registry of the run's, attached to the cluster; built there by `az acr build` |
+| the architecture | the runner's | the machine's (arm64 on a Mac) | amd64 |
+| the IdP | Keycloak in the cluster | Keycloak in the cluster | Entra ID: managed identities, app registrations (below) |
+| the ServiceAccount issuer | read from the cluster's discovery | read from the cluster's discovery | the AKS OIDC issuer |
+| `up`, `check`, `down` | one run does all three | one run does `up` and `check`; `down` deletes the namespaces | separate, the run's state kept in `~/.cache/hugr-platform-aks-live` (mode 0700) between them |
 
 | namespace | what | how it is made |
 | --- | --- | --- |
@@ -52,19 +63,19 @@ that CA: `HUGR_CA_FILE` replaces the node's roots (hugr-node spec 006).
 
 ### The images
 
-- **The operator** is built from this checkout and loaded with `kind load`.
+- **The operator** is built from this checkout and loaded into the cluster (or its registry, on AKS).
 - **tresor-server and kista** are built from a checkout each (`TRESOR_SERVER_DIR`, `KISTA_DIR`; otherwise their main
   is cloned), as hugr-node's bootstrap e2e builds them.
 - **hugr-node** is built from the assets of a hugr-node release dry run, so nothing new is published.
   - The release workflow's dry run builds the node and its extensions for both platforms and keeps them as an
     artifact (`dist-linux_<arch>`, spec 008 there).
   - The script downloads that artifact for the cluster's architecture: `gh run download` from hugr-node's latest
-    successful run on main, or `HUGR_NODE_DIST`, a directory already at hand.
+    successful run that has one (a dispatch on main makes one), or `HUGR_NODE_DIST`, a directory already at hand.
   - It builds the image from hugr-node's `docker/Dockerfile`, as the release does.
   - The same assets seed kista (postgres_scanner and the others), so the node's duckdb and its extensions match.
   - `NODE_IMAGE` uses a published image instead (a tag, once one carries spec 010).
 
-### The IdP: Keycloak, with no client secret for a node
+### The IdP on kind and minikube: Keycloak, with no client secret for a node
 
 The realm `hugr`:
 
@@ -81,6 +92,21 @@ The realm `hugr`:
 - **The demo's principals**: confidential clients whose service accounts carry the roles `analyst_a`, `analyst_b` and
   `platform_admin` (the `cluster` and `policy` bundles: the one that writes the profile and the resource groups through
   a node). Their secrets are made for the run and never leave the script.
+
+### The IdP on AKS: Entra ID, as the Managed Application will
+
+`up` makes, and `down` removes:
+
+- **A user-assigned managed identity per group**, with a federated credential: the AKS OIDC issuer, the subject
+  `system:serviceaccount:hugr:hugr-node-<g>`, the audience `api://AzureADTokenExchange`. Its client id is the group's
+  `identity.clientID`. A node's tresor login is its projected token exchanged for an Entra token: no secret.
+- **An app registration for tresor** (`api://<its app id>`): the audience of the nodes' tokens.
+- **App registrations for the demo's principals** (`analyst_a`, `analyst_b`, `platform_admin` as app roles), with
+  client credentials of two days kept in the run's state (mode 0600), as kista's live run does.
+
+The policy's issuer is the tenant's (`https://login.microsoftonline.com/<tenant>/v2.0`), its client the principals'.
+The signed-in `az` account needs to create app registrations, and role assignments in the run's resource group.
+`leftovers` lists whatever of a run remains. Nothing of a token or a secret is printed.
 
 ### The first deployment
 
@@ -108,8 +134,9 @@ principal's token from Keycloak (client credentials) and runs SQL on a node behi
      secret's type.
    - Each node has a Lease with its summary.
    - Each group's status counts its nodes ready and reports `resourceGroupKnown: true`.
-2. **The federation.** The node's login to tresor ran on its projected ServiceAccount token alone. Keycloak's event
-   log names the client `hugr-node-<g>` authenticated by `federated-jwt`, and no secret of a node exists anywhere.
+2. **The federation.** The node's login to tresor ran on its projected ServiceAccount token alone, and no secret of a
+   node exists anywhere. On Keycloak its event log names the client `hugr-node-<g>` authenticated by `federated-jwt`;
+   on AKS, Entra's sign-in of the group's managed identity is the federated credential's.
 3. **The engine against the pod.**
    - The node's `memory_limit`, `threads` and `max_temp_directory_size` are the pod's 80% / CPU / 90%.
    - A plain duckdb run in the same container, with no `HUGR_POD_*`, shows what DuckDB chooses from the cgroup by
@@ -136,16 +163,16 @@ principal's token from Keycloak (client credentials) and runs SQL on a node behi
 9. **The optional admission policy.** With `config/policy` applied, a pod created by hand to run as `hugr-node-a` is
    refused, and the groups keep rolling.
 
-### The kind overlay
+### The overlay
 
-`test/kind/overlay` is `config/default` without cert-manager. The script makes the operator's certificate (SAN
+`test/demo/overlay` is `config/default` without cert-manager. The script makes the operator's certificate (SAN
 `hugr-platform.hugr.svc`) and puts it in the Secret `hugr-platform-tls`. It writes the run's CA into the webhook's
 `caBundle`. Everything else is the shipped install.
 
 ### CI
 
-A workflow in this repository runs the demo on every push to main and on dispatch, not on every PR: the run takes
-about 20 minutes.
+A workflow in this repository runs the demo on kind on every push to main and on dispatch, not on every PR: the run
+takes about 20 minutes. AKS is never run by CI: it costs, and it needs a tenant's rights.
 
 - It uses the node assets of hugr-node's latest successful release dry run on main.
 - Both repositories are public, so the job's token can download the artifact.
@@ -164,16 +191,18 @@ about 20 minutes.
 
 ## Testing
 
-The demo is itself the test: `test/kind/run.sh`, locally (docker, kind, kubectl, helm, go, gh, openssl, python3) and
-in CI. Its checks are the list above. A tool that is missing is a SKIP on a developer's machine and a failure in CI.
+The demo is itself the test: `test/demo/run.sh`, on minikube locally, on kind in CI, on AKS by hand. It needs docker,
+kubectl, helm, go, gh, openssl, python3, and kind, minikube or az for its provider. Its checks are the list above. A
+tool that is missing is a SKIP on a developer's machine and a failure in CI.
 
 ## Decisions for the owner
 
 | # | question | proposal |
 | --- | --- | --- |
 | 1 | Where the node image comes from | hugr-node's release dry-run assets (`dist-linux_<arch>`): nothing new is published, and the node and its extensions match. `NODE_IMAGE` for a published tag once one carries spec 010 |
-| 2 | When CI runs it | pushes to main and dispatch; not every PR (about 20 minutes) |
+| 2 | When CI runs it | kind, on pushes to main and dispatch; not every PR (about 20 minutes) |
 | 3 | The spec's number | 004: 002 (the front) and 003 (the console) keep the numbers spec 001 gave them |
+| 4 | Where it runs (the owner) | minikube on a developer's machine, kind in CI, and AKS by hand, as tresor-server's and kista's live runs |
 
 ## Alternatives considered
 
