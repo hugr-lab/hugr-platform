@@ -106,6 +106,8 @@ status:
 
 - **When the change is written.** The operator's validating webhook (`failurePolicy: Fail`) checks every create and
   update of a `HugrNodeGroup`:
+  - the group's name is a DNS label of at most 36 characters, so that its pods' names (`hugr-node-<group>-<hash>-<id>`)
+    are DNS labels too: a pod's name is the node's label (duckdb-acl spec 134), which the node refuses otherwise;
   - the size is one `HugrPlatform` lists;
   - the plan's sizes and `maxNodes` hold, summed over every group with this change in it.
 
@@ -128,12 +130,15 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
   - an env with no credential in it (hugr-node spec 010 reads it):
     - `HUGR_ORCHESTRATOR`: the operator's in-cluster URL;
     - `HUGR_ORCHESTRATOR_TOKEN_FILE` and `HUGR_IDENTITY_ASSERTION_FILE`: the two projected tokens below;
-    - `HUGR_FLIGHT` / `HUGR_QUACK`;
+    - `HUGR_FLIGHT` / `HUGR_QUACK`, and `HUGR_FLIGHT_CERT` / `HUGR_FLIGHT_KEY` (`HUGR_QUACK_CERT` / `_KEY`): the
+      paths of the mounted doors' TLS secret;
     - `HUGR_DRAIN_DEADLINE`;
     - `HUGR_CA_FILE`;
-    - the container's limits, through the Downward API: `HUGR_POD_MEMORY` (`limits.memory`), `HUGR_POD_CPU`
-      (`limits.cpu`);
-    - `HUGR_TEMP_DIRECTORY` and `HUGR_TEMP_SIZE`: the spill volume's mount and its size.
+    - the container's resources, through the Downward API with divisor 1: `HUGR_POD_MEMORY` (`limits.memory`, in
+      bytes - the line past which the pod is OOM-killed) and `HUGR_POD_CPU` (`requests.cpu`, whole cores - what the
+      pod is guaranteed; a size sets no CPU limit, which would only throttle);
+    - `HUGR_TEMP_DIRECTORY` and `HUGR_TEMP_SIZE`: the spill volume's mount and its size, the `sizeLimit` as written
+      (`600Gi`).
 
     From these the node sets the engine's defaults before the lock:
     - `memory_limit` at 80% of the pod's memory, DuckDB's own ratio of the machine;
@@ -248,6 +253,11 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
     "heartbeat": {"interval_seconds": 15}}
    ```
 
+   The node refuses a document without (hugr-node spec 010) `node_group`, `node_label` (the pod's name, a DNS label),
+   tresor's host, issuer and client id, the repository's https prefix or the catalog's secret. The rest have
+   defaults: the repository's name `hugr`, the catalog's schema `acl`, no tresor scope, and a heartbeat every 15 s (a
+   whole number of seconds in 1..3600).
+
    The node's identity in tresor, and everything after it, is hugr-node spec 006's: tresor, then the repository, then
    the catalog by its secret, then the profile, then lock, then the doors.
 
@@ -256,9 +266,10 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
 - **The call.** `POST /v1/heartbeat` every `interval_seconds`, with the same token, verified the same way. The body
   is the contract of the 2026-10-17 draft:
   - `node_id`;
-  - `image`, `duckdb`;
-  - `config`: `target`, `applied`, `needs_restart`, `pending`;
-  - `drift`;
+  - `image`, `duckdb` (the build's version, duckdb's source id);
+  - `config`: `target`, `applied`, `needs_restart`, `pending` (kind, name, class - `restart`, `drain`, or `hot` with the
+    error's class for one that failed);
+  - `drift` (counts by state, `cut` for a setting held at the pod's ceiling);
   - `load`: `acl_node_load()`.
 
   The limit is 256 KiB, and unknown fields are ignored.
