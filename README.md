@@ -3,21 +3,20 @@
 The orchestrator of the hugr platform: a Kubernetes operator. It deploys the platform's node groups, is the place a
 node starts from and reports to, and decides nothing for the nodes.
 
-- **The node groups.** How many nodes of which size a group has is named in SQL, as a cluster profile item
-  (`ACL CLUSTER SET NODES etl COUNT 3 SIZE 'large'`). The operator builds and scales the pool to match, inside the
-  bounds of the installation's plan.
+- **The node groups.** `HugrNodeGroup` is a pool of nodes, edited with standard tooling (the console, `kubectl`, the
+  Azure Managed Application, GitOps) and checked against the installation's plan. The operator builds and scales its
+  pods.
 - **The entry.** A node presents its ServiceAccount token and is answered with its bootstrap document: pointers,
   never a secret.
 - **The heartbeat.** Each node reports its state, and a lost node is an expired Lease. A group's status says who has
   applied the profile, who needs a restart and who is gone.
-- **A client of the nodes.** With an identity of its own, through SQL like any principal, and reading only: the
-  pools the profile names and the nodes' load.
+- **A client of the nodes.** With an identity of its own, through SQL like any principal, reading only.
 
 What the orchestrator does not hold:
 
 - the cluster profile, the policy and the resource groups: these live in the policy catalog, changed with SQL
-  (`ACL CLUSTER …`, `CREATE RESOURCE GROUP …`) on any node - the operator only reads them, as a principal, through
-  a node;
+  (`ACL CLUSTER …`, `CREATE RESOURCE GROUP …`) on any node. A group's three faces - its pool here, its resource
+  group and its profile there - are joined by its name;
 - secrets: these live in tresor-server;
 - extensions: these live in a repository speaking duckdb's protocol (kista, for one).
 

@@ -1,8 +1,9 @@
 # hugr-platform - Development Guidelines
 
-The hugr platform's orchestrator: a Kubernetes operator. It keeps the node groups the policy catalog names (in SQL),
-answers a node's entry with its bootstrap document, records the heartbeat in Leases, and is a client of the nodes with
-its own identity, reading only. The front
+The hugr platform's orchestrator: a Kubernetes operator. It keeps the node groups (`HugrNodeGroup`, edited with
+standard tooling), answers a node's entry with its bootstrap document, records the heartbeat in Leases, and is a client
+of the nodes with its own identity, reading only. The policy and the cluster profile stay SQL's, in the policy
+catalog. The front
 (the balancer the clients reach) and the web console come from the same repository. Read `README.md` first, then the
 specs in `specs/`.
 
