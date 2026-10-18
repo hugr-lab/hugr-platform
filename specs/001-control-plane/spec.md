@@ -125,21 +125,24 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
 - **A Deployment** `hugr-node-<group>`, not a StatefulSet: scaling down removes the idlest pod, not the
   highest-numbered one. Its pods get:
   - the image, and the size's resources and scheduling;
-  - an env with no credential in it:
+  - an env with no credential in it (hugr-node spec 010 reads it):
     - `HUGR_ORCHESTRATOR`: the operator's in-cluster URL;
-    - `HUGR_NODE_LABEL`: the pod's name, through the Downward API. It becomes duckdb-acl's `acl_node_label`
-      (spec 134 there), the name the node's sessions carry for the front;
+    - `HUGR_ORCHESTRATOR_TOKEN_FILE` and `HUGR_IDENTITY_ASSERTION_FILE`: the two projected tokens below;
     - `HUGR_FLIGHT` / `HUGR_QUACK`;
     - `HUGR_DRAIN_DEADLINE`;
     - `HUGR_CA_FILE`;
-    - the engine's defaults, which follow from the pod and are set by the bootstrap before the lock:
-      - `HUGR_MEMORY_LIMIT`: 80% of the pod's memory limit, DuckDB's own ratio of the machine;
-      - `HUGR_THREADS`: the pod's CPU;
-      - `HUGR_TEMP_DIRECTORY`: the spill volume's mount;
-      - `HUGR_MAX_TEMP_SIZE`: 90% of that volume.
+    - the container's limits, through the Downward API: `HUGR_POD_MEMORY` (`limits.memory`), `HUGR_POD_CPU`
+      (`limits.cpu`);
+    - `HUGR_TEMP_DIRECTORY` and `HUGR_TEMP_SIZE`: the spill volume's mount and its size.
 
-      A profile item for the same setting (`IN GROUP g`) wins, but never above the pod: a value past what the pod has
-      is cut to the default and reported as drift.
+    From these the node sets the engine's defaults before the lock:
+    - `memory_limit` at 80% of the pod's memory, DuckDB's own ratio of the machine;
+    - `threads` at the pod's CPU;
+    - `max_temp_directory_size` at 90% of the volume.
+
+    A profile item for the same setting (`IN GROUP g`) wins, but is cut to a ceiling and reported as drift. The
+    ceilings are 90% of the pod's memory, its CPU, and 90% of the volume. The node's label (duckdb-acl spec 134
+    `acl_node_label`, the name its sessions carry for the front) is the pod's name, and comes in the document.
   - **The spill volume** of the size, mounted at `HUGR_TEMP_DIRECTORY`.
     - When memory runs out, DuckDB spills to `temp_directory`, by default up to 90% of the free space.
     - In a pod that space is the node's ephemeral storage, and past its limit kubelet evicts the pod: every session
@@ -432,9 +435,9 @@ Still to verify:
 
 ## Follow-ups
 
-- **hugr-node**, one spec:
+- **hugr-node**, spec 010 there:
   - the document v2 and the orchestrator-first entry;
-  - `acl_node_label` from `HUGR_NODE_LABEL`;
+  - `acl_node_label` from the document;
   - the heartbeat, with the convergence tick that applies hot items on every node and reports `config.applied`;
   - the engine's defaults from env, and a profile value cut to the pod;
   - the self-drain when the node's resource group is gone.
