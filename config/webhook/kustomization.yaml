@@ -1,0 +1,22 @@
+resources:
+- manifests.yaml
+patches:
+# the generated registration names a placeholder service: the operator's, with the CA cert-manager injects
+- target:
+    kind: ValidatingWebhookConfiguration
+  patch: |-
+    - op: replace
+      path: /metadata/name
+      value: hugr-platform
+    - op: add
+      path: /metadata/annotations
+      value: {cert-manager.io/inject-ca-from: hugr/hugr-platform}
+    - op: replace
+      path: /webhooks/0/clientConfig/service/name
+      value: hugr-platform
+    - op: replace
+      path: /webhooks/0/clientConfig/service/namespace
+      value: hugr
+    - op: add
+      path: /webhooks/0/namespaceSelector
+      value: {matchLabels: {kubernetes.io/metadata.name: hugr}}

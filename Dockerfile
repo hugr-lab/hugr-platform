@@ -1,0 +1,12 @@
+# the operator's image (spec 001): a static binary on distroless, non-root
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags "-s -w" -o /operator ./cmd/operator
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /operator /operator
+USER 65532:65532
+ENTRYPOINT ["/operator"]

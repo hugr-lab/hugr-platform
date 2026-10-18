@@ -1,0 +1,100 @@
+// Package webhook is the validating webhook of node groups (spec 001): a change of a group is checked against the
+// installation's plan where it is written, and a refusal reaches kubectl, the console or the Managed Application with
+// its reason. The reconcile checks every group again (internal/controller).
+package webhook
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
+	"github.com/hugr-lab/hugr-platform/internal/build"
+	"github.com/hugr-lab/hugr-platform/internal/controller"
+	"github.com/hugr-lab/hugr-platform/pkg/plan"
+)
+
+// GroupValidator checks a group's change.
+type GroupValidator struct {
+	Reader client.Reader
+}
+
+// +kubebuilder:webhook:path=/validate-platform-hugr-io-v1alpha1-hugrnodegroup,mutating=false,failurePolicy=fail,sideEffects=None,groups=platform.hugr.io,resources=hugrnodegroups,verbs=create;update,versions=v1alpha1,name=vhugrnodegroup.platform.hugr.io,admissionReviewVersions=v1
+
+// ValidateCreate checks a new group.
+func (v *GroupValidator) ValidateCreate(ctx context.Context, group *v1alpha1.HugrNodeGroup) (admission.Warnings, error) {
+	return nil, v.check(ctx, group)
+}
+
+// ValidateUpdate checks a changed group. A change that does not grow it - a scale-down, a restart (restartedAt), its
+// identity - is let through even while the namespace is past the plan: it is how a group gets back within it.
+func (v *GroupValidator) ValidateUpdate(ctx context.Context, old, group *v1alpha1.HugrNodeGroup) (admission.Warnings, error) {
+	if group.DeletionTimestamp != nil {
+		return nil, nil // a group going (the garbage collector's finalizer removal is an update)
+	}
+	if old.Spec.Size == group.Spec.Size && old.Spec.Platform == group.Spec.Platform && group.Spec.Replicas <= old.Spec.Replicas {
+		return nil, CheckTLSSecret(group.Spec.TLS.SecretRef.Name)
+	}
+	return nil, v.check(ctx, group)
+}
+
+// ValidateDelete lets a group go: deleting never exceeds a plan.
+func (v *GroupValidator) ValidateDelete(context.Context, *v1alpha1.HugrNodeGroup) (admission.Warnings, error) {
+	return nil, nil
+}
+
+func (v *GroupValidator) check(ctx context.Context, group *v1alpha1.HugrNodeGroup) error {
+	if err := plan.CheckName(group.Name); err != nil {
+		return err
+	}
+	if err := CheckTLSSecret(group.Spec.TLS.SecretRef.Name); err != nil {
+		return err
+	}
+	var platform v1alpha1.HugrPlatform
+	if err := v.Reader.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: group.Spec.Platform}, &platform); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("the platform %q is not in the namespace %q", group.Spec.Platform, group.Namespace)
+		}
+		return err
+	}
+	if err := build.CheckSize(&platform, group.Spec.Size); err != nil {
+		return err
+	}
+	var groups v1alpha1.HugrNodeGroupList
+	if err := v.Reader.List(ctx, &groups, client.InNamespace(group.Namespace)); err != nil {
+		return err
+	}
+	var others []plan.Group
+	for _, g := range groups.Items {
+		if g.Name != group.Name && g.DeletionTimestamp == nil {
+			others = append(others, plan.Group{Name: g.Name, Size: g.Spec.Size, Replicas: g.Spec.Replicas})
+		}
+	}
+	return controller.PlanOf(&platform).CheckChange(
+		plan.Group{Name: group.Name, Size: group.Spec.Size, Replicas: group.Spec.Replicas}, others)
+}
+
+// TLSSecretPrefix: a group mounts into its pods only a Secret named for the nodes - never another of the namespace
+// (the operator's own serving key, a catalog's), which a group's editor without secrets/get could otherwise hand to
+// every node pod
+const TLSSecretPrefix = "hugr-node-"
+
+// CheckTLSSecret says whether a group may mount the Secret it names as the doors' certificate.
+func CheckTLSSecret(name string) error {
+	if !strings.HasPrefix(name, TLSSecretPrefix) {
+		return fmt.Errorf("the doors' certificate %q is not a Secret named %s… - a group mounts no other Secret of the "+
+			"namespace", name, TLSSecretPrefix)
+	}
+	return nil
+}
+
+// SetupWithManager registers the webhook.
+func (v *GroupValidator) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewWebhookManagedBy(mgr, &v1alpha1.HugrNodeGroup{}).WithValidator(v).Complete()
+}

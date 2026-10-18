@@ -1,0 +1,9 @@
+# the operator in the namespace hugr: its resources, its rights, the webhook, its certificate (cert-manager; bring
+# your own Issuer named hugr-platform). Packaging proper (Helm, the Azure Managed Application) is a spec of its own.
+namespace: hugr
+resources:
+- ../crd
+- ../rbac
+- ../manager
+- ../webhook
+- ../certmanager

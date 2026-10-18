@@ -1,0 +1,28 @@
+# spec 001: go vet, staticcheck, the unit tests, envtest (the API server pinned in the Makefile), the image built
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Generated code is current
+      run: |
+        make generate manifests
+        git diff --exit-code -- api config
+    - name: Vet and staticcheck
+      run: make lint
+    - name: Unit tests
+      run: make test-unit
+    - name: envtest
+      run: make test-envtest
+    - name: Image
+      run: docker build -t ghcr.io/hugr-lab/hugr-platform:ci .

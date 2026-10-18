@@ -1,0 +1,3 @@
+resources:
+- platform.hugr.io_hugrplatforms.yaml
+- platform.hugr.io_hugrnodegroups.yaml

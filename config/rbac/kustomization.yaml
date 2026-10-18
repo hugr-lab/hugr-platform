@@ -1,0 +1,7 @@
+# the operator's rights (spec 001): in its namespace through a RoleBinding to the generated role; cluster-wide only
+# tokenreviews/create (system:auth-delegator)
+resources:
+- service_account.yaml
+- role.yaml
+- role_binding.yaml
+- auth_delegator.yaml

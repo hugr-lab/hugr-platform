@@ -1,0 +1,21 @@
+metadata:
+  labels:
+    app.kubernetes.io/instance: etl
+    app.kubernetes.io/managed-by: hugr-platform
+    app.kubernetes.io/name: hugr-node
+    app.kubernetes.io/part-of: hugr-platform
+    platform.hugr.io/group: etl
+  name: hugr-node-etl
+  namespace: hugr
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: etl
+      app.kubernetes.io/name: hugr-node
+      platform.hugr.io/group: etl
+status:
+  currentHealthy: 0
+  desiredHealthy: 0
+  disruptionsAllowed: 0
+  expectedPods: 0

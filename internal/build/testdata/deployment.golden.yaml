@@ -1,0 +1,153 @@
+metadata:
+  labels:
+    app.kubernetes.io/instance: etl
+    app.kubernetes.io/managed-by: hugr-platform
+    app.kubernetes.io/name: hugr-node
+    app.kubernetes.io/part-of: hugr-platform
+    platform.hugr.io/group: etl
+  name: hugr-node-etl
+  namespace: hugr
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: etl
+      app.kubernetes.io/name: hugr-node
+      platform.hugr.io/group: etl
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        platform.hugr.io/heartbeat-seconds: "15"
+        platform.hugr.io/restartedAt: "2026-10-18T12:00:00Z"
+      labels:
+        app.kubernetes.io/instance: etl
+        app.kubernetes.io/managed-by: hugr-platform
+        app.kubernetes.io/name: hugr-node
+        app.kubernetes.io/part-of: hugr-platform
+        platform.hugr.io/group: etl
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: HUGR_ORCHESTRATOR
+          value: https://hugr-platform.hugr.svc:8443
+        - name: HUGR_ORCHESTRATOR_TOKEN_FILE
+          value: /var/run/secrets/hugr/tokens/orchestrator
+        - name: HUGR_IDENTITY_ASSERTION_FILE
+          value: /var/run/secrets/hugr/tokens/identity
+        - name: HUGR_FLIGHT
+          value: grpc+tls://0.0.0.0:32010
+        - name: HUGR_FLIGHT_CERT
+          value: /etc/hugr/tls/tls.crt
+        - name: HUGR_FLIGHT_KEY
+          value: /etc/hugr/tls/tls.key
+        - name: HUGR_QUACK
+          value: quack:0.0.0.0:9494
+        - name: HUGR_QUACK_CERT
+          value: /etc/hugr/tls/tls.crt
+        - name: HUGR_QUACK_KEY
+          value: /etc/hugr/tls/tls.key
+        - name: HUGR_DRAIN_DEADLINE
+          value: "300"
+        - name: HUGR_CA_FILE
+          value: /etc/hugr/ca/ca.crt
+        - name: HUGR_POD_MEMORY
+          valueFrom:
+            resourceFieldRef:
+              containerName: hugr-node
+              divisor: "1"
+              resource: limits.memory
+        - name: HUGR_POD_CPU
+          valueFrom:
+            resourceFieldRef:
+              containerName: hugr-node
+              divisor: "1"
+              resource: requests.cpu
+        - name: HUGR_TEMP_DIRECTORY
+          value: /var/lib/hugr-node/tmp
+        - name: HUGR_TEMP_SIZE
+          value: "644245094400"
+        image: ghcr.io/hugr-lab/hugr-node:v0.1.0
+        name: hugr-node
+        ports:
+        - containerPort: 32010
+          name: flight
+          protocol: TCP
+        - containerPort: 9494
+          name: quack
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          tcpSocket:
+            port: flight
+        resources:
+          limits:
+            memory: 128Gi
+          requests:
+            cpu: "16"
+            memory: 128Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /var/run/secrets/hugr/tokens
+          name: tokens
+          readOnly: true
+        - mountPath: /etc/hugr/tls
+          name: tls
+          readOnly: true
+        - mountPath: /var/lib/hugr-node
+          name: home
+        - mountPath: /var/lib/hugr-node/tmp
+          name: temp
+        - mountPath: /etc/hugr/ca
+          name: ca
+          readOnly: true
+      nodeSelector:
+        agentpool: e16ds
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: hugr-node-etl
+      terminationGracePeriodSeconds: 330
+      volumes:
+      - name: tokens
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: hugr-platform
+              expirationSeconds: 3600
+              path: orchestrator
+          - serviceAccountToken:
+              audience: api://AzureADTokenExchange
+              expirationSeconds: 3600
+              path: identity
+      - name: tls
+        secret:
+          defaultMode: 288
+          secretName: hugr-node-etl-tls
+      - emptyDir:
+          sizeLimit: 2Gi
+        name: home
+      - emptyDir:
+          sizeLimit: 600Gi
+        name: temp
+      - configMap:
+          items:
+          - key: ca.crt
+            path: ca.crt
+          name: hugr-ca
+        name: ca
+status: {}
