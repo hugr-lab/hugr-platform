@@ -12,7 +12,7 @@ install_db() {
 	step "PostgreSQL: the policy catalog (hugr) and a source (sales)"
 	namespace db
 	k -n db delete secret pg --ignore-not-found >/dev/null
-	k -n db create secret generic pg --from-literal=password="$(secret_value pg)" >/dev/null
+	k -n db create secret generic pg --from-file=password="$(secret_file pg openssl rand -hex 24)" >/dev/null
 	k apply -f - >/dev/null <<YAML
 apiVersion: apps/v1
 kind: Deployment
@@ -29,7 +29,8 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom: {secretKeyRef: {name: pg, key: password}}
           ports: [{containerPort: 5432}]
-          readinessProbe: {exec: {command: [pg_isready, -U, postgres]}, periodSeconds: 2}
+          # over TCP: the image's init runs a temporary server on the socket only, then restarts
+          readinessProbe: {exec: {command: [pg_isready, -h, 127.0.0.1, -U, postgres]}, periodSeconds: 2}
           resources: {requests: {cpu: 50m, memory: 128Mi}}
 ---
 apiVersion: v1
@@ -40,16 +41,35 @@ spec:
   ports: [{port: 5432}]
 YAML
 	rollout db pg
-	k -n db exec deploy/pg -- psql -qU postgres -c "SELECT 1" >/dev/null
+	pg_answers() { k -n db exec deploy/pg -- psql -h 127.0.0.1 -qU postgres -c "SELECT 1"; }
+	eventually 60 "PostgreSQL answers" pg_answers
 	# the policy catalog is the demo's own: made again by every run's first deployment
-	k -n db exec deploy/pg -- psql -qU postgres -c "DROP DATABASE IF EXISTS hugr WITH (FORCE)" >/dev/null 2>&1
-	k -n db exec deploy/pg -- psql -qU postgres -c "CREATE DATABASE hugr" >/dev/null
+	k -n db exec deploy/pg -- psql -qU postgres -c "DROP DATABASE IF EXISTS hugr WITH (FORCE)" >/dev/null ||
+		fail "dropping the catalog's database"
+	k -n db exec deploy/pg -- psql -qU postgres -c "CREATE DATABASE hugr" >/dev/null || fail "the catalog's database"
 	k -n db exec deploy/pg -- sh -c 'psql -qU postgres -tc "SELECT 1 FROM pg_database WHERE datname = '"'"'sales'"'"'" |
-		grep -q 1 || psql -qU postgres -c "CREATE DATABASE sales"' >/dev/null
-	k -n db exec deploy/pg -- psql -qU postgres -d sales -c "CREATE TABLE IF NOT EXISTS orders (id int PRIMARY KEY,
-		region text, amount numeric); INSERT INTO orders VALUES (1, 'north', 10), (2, 'south', 20), (3, 'north', 30)
-		ON CONFLICT DO NOTHING" >/dev/null 2>&1
-	ok "PostgreSQL in db: the catalog's database and the source sales.orders"
+		grep -q 1 || psql -qU postgres -c "CREATE DATABASE sales"' >/dev/null || fail "the source's database"
+	k -n db exec deploy/pg -- psql -qU postgres -v ON_ERROR_STOP=1 -d sales -c "CREATE TABLE IF NOT EXISTS orders (id int
+		PRIMARY KEY, region text, amount numeric); INSERT INTO orders VALUES (1, 'north', 10), (2, 'south', 20),
+		(3, 'north', 30) ON CONFLICT DO NOTHING" >/dev/null || fail "the source's table"
+	# two logins, neither the superuser: the catalog's owner, and a reader of the source's one table. The passwords go
+	# on stdin, never on a command line.
+	k -n db exec -i deploy/pg -- psql -qU postgres -v ON_ERROR_STOP=1 >/dev/null <<SQL || fail "PostgreSQL's logins"
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'hugr_catalog') THEN CREATE ROLE hugr_catalog LOGIN; END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sales_reader') THEN CREATE ROLE sales_reader LOGIN; END IF;
+END \$\$;
+ALTER ROLE hugr_catalog PASSWORD '$(secret_value pg-catalog)';
+ALTER ROLE sales_reader PASSWORD '$(secret_value pg-sales)';
+ALTER DATABASE hugr OWNER TO hugr_catalog;
+REVOKE ALL ON DATABASE sales FROM PUBLIC;
+GRANT CONNECT ON DATABASE sales TO sales_reader;
+\\c sales
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO sales_reader;
+GRANT SELECT ON orders TO sales_reader;
+SQL
+	ok "PostgreSQL in db: the catalog's database (its owner hugr_catalog) and the source sales.orders (sales_reader)"
 }
 
 # --- tresor-server: the nodes' secrets, the seeder its admin ---------------------------------------------------------
@@ -57,10 +77,11 @@ install_tresor() {
 	step "tresor-server: the catalog's login and the source's, for the groups' identities"
 	namespace tresor
 	ca_cert tresor tresor.tresor.svc
-	tls_secret tresor tresor-tls tresor
+	local cert
+	cert="$(tls_secret tresor tresor-tls tresor)"
 	k -n tresor delete secret kek --ignore-not-found >/dev/null
 	# the KEK seals tresor's state in the cluster: the run's own, kept between runs, or the state no longer opens
-	k -n tresor create secret generic kek --from-literal=key="$(secret_b64 tresor-kek 32)" >/dev/null
+	k -n tresor create secret generic kek --from-file=key="$(secret_file tresor-kek openssl rand -base64 32)" >/dev/null
 	k -n tresor delete configmap ca --ignore-not-found >/dev/null
 	k -n tresor create configmap ca --from-file=ca.crt="$WORK/ca.crt" >/dev/null
 	local actors="" g groups_claim=""
@@ -102,6 +123,9 @@ YAML
 		k -n tresor logs -l app.kubernetes.io/instance=tresor --tail 60 2>&1 | redact >&2 || true
 		fail "tresor-server did not install"
 	fi
+	if [ -n "$cert" ]; then # a new certificate: served once the pod starts again
+		k -n tresor rollout restart deploy/tresor >/dev/null && rollout tresor tresor
+	fi
 	ok "tresor-server in tresor at https://$TRESOR_HOST"
 }
 
@@ -112,16 +136,18 @@ OPENBAO_IMAGE="${OPENBAO_IMAGE:-openbao/openbao:2.7.1}"
 
 install_openbao() {
 	ca_cert openbao openbao.kista.svc
-	tls_secret kista openbao-tls openbao
+	local cert
+	cert="$(tls_secret kista openbao-tls openbao)"
 	k -n kista delete secret openbao-root --ignore-not-found >/dev/null
-	k -n kista create secret generic openbao-root --from-literal=token="$(secret_value openbao-root)" >/dev/null
+	# dev mode prints its root token in its own log: the throwaway cluster's, and blanked wherever the run shows a log
+	k -n kista create secret generic openbao-root --from-file=token="$(secret_file openbao-root openssl rand -hex 24)" >/dev/null
 	k -n kista delete configmap openbao-config --ignore-not-found >/dev/null
 	k -n kista create configmap openbao-config --from-literal=bao.hcl='listener "tcp" {
   address       = "0.0.0.0:8200"
   tls_cert_file = "/tls/tls.crt"
   tls_key_file  = "/tls/tls.key"
 }' >/dev/null
-	k apply -f - >/dev/null <<'YAML'
+	k apply -f - >/dev/null <<YAML
 apiVersion: v1
 kind: ServiceAccount
 metadata: {name: openbao, namespace: kista}
@@ -144,7 +170,7 @@ spec:
       serviceAccountName: openbao
       containers:
         - name: openbao
-          image: openbao/openbao:2.7.1
+          image: $OPENBAO_IMAGE
           args: [server, -dev, -dev-listen-address=127.0.0.1:8201, -config=/config/bao.hcl]
           env:
             - {name: SKIP_SETCAP, value: "true"}
@@ -161,13 +187,19 @@ kind: Service
 metadata: {name: openbao, namespace: kista}
 spec: {selector: {app: openbao}, ports: [{port: 8200}]}
 YAML
-	k -n kista set image deploy/openbao openbao="$OPENBAO_IMAGE" >/dev/null
+	[ -z "$cert" ] || k -n kista rollout restart deploy/openbao >/dev/null
 	rollout kista openbao
 	# the root token stays in the pod's environment: the command reads it there, never on a command line here
 	bao() { k -n kista exec -i deploy/openbao -- sh -c 'BAO_ADDR=http://127.0.0.1:8201 BAO_TOKEN="$BAO_DEV_ROOT_TOKEN_ID" bao "$@"' bao "$@"; }
 	eventually 60 "OpenBao answers" bao status
 	bao secrets list | grep -q '^transit/' || bao secrets enable transit >/dev/null
-	bao read transit/keys/ext-demo >/dev/null 2>&1 || bao write -f transit/keys/ext-demo type=rsa-2048 >/dev/null
+	# dev mode keeps everything in memory: a restarted OpenBao has a new key, and kista - whose state is on its volume -
+	# refuses to sign with a key that changed; its state starts anew then
+	KISTA_FRESH=""
+	if ! bao read transit/keys/ext-demo >/dev/null 2>&1; then
+		bao write -f transit/keys/ext-demo type=rsa-2048 >/dev/null || fail "OpenBao's transit key"
+		KISTA_FRESH=1
+	fi
 	bao policy write kista-ext-demo - >/dev/null <<'HCL'
 path "transit/keys/ext-demo" {
   capabilities = ["read"]
@@ -186,8 +218,13 @@ install_kista() {
 	step "kista: the channel hugr/demo, the node's extensions in it, its key in OpenBao Transit"
 	namespace kista
 	install_openbao
+	if [ -n "$KISTA_FRESH" ] && helm_ status kista -n kista >/dev/null 2>&1; then
+		helm_ uninstall kista -n kista --wait >/dev/null || fail "kista's uninstall"
+		k -n kista delete pvc -l app.kubernetes.io/instance=kista --wait >/dev/null || fail "kista's volume"
+	fi
 	ca_cert kista kista.kista.svc
-	tls_secret kista kista-tls kista
+	local cert
+	cert="$(tls_secret kista kista-tls kista)"
 	k -n kista delete secret kista-ca --ignore-not-found >/dev/null
 	k -n kista create secret generic kista-ca --from-file=ca.crt="$WORK/ca.crt" >/dev/null
 	cat >"$WORK/kista.yaml" <<YAML
@@ -225,23 +262,35 @@ YAML
 		k -n kista logs -l app.kubernetes.io/name=kista --tail 60 2>&1 | redact >&2 || true
 		fail "kista did not install"
 	fi
-	# kista's own failure stands (pipefail); its profile-dev warning does not
+	if [ -n "$cert" ]; then
+		k -n kista rollout restart deploy/kista >/dev/null && rollout kista kista
+	fi
+	# kista's own failure stands (pipefail) and is shown; its profile-dev warning is not
 	ka() {
 		k -n kista exec -i deploy/kista -c kista -- /kista admin -config /etc/kista/kista.yaml "$@" 2>&1 |
 			{ grep -v 'WARNING: profile dev' || true; }
 	}
-	ka tenant list | grep -qw hugr || ka tenant create hugr >/dev/null
-	ka channel list hugr | grep -qw demo || ka channel create hugr/demo -kind signed >/dev/null
-	ka key list hugr/demo | grep -q 'ext-demo' || ka key add hugr/demo -signer bao:ext-demo:v1 -active >/dev/null
-	local file meta name version
+	# kd <what> <args...>: a kista admin change, its refusal shown
+	kd() {
+		local what="$1" out
+		shift
+		out="$(ka "$@")" || fail "kista: $what: $(redact <<<"$out")"
+	}
+	ka tenant list | grep -qw hugr || kd "the tenant" tenant create hugr
+	ka channel list hugr | grep -qw demo || kd "the channel" channel create hugr/demo -kind signed
+	ka key list hugr/demo | grep -q 'ext-demo' || kd "the channel's key" key add hugr/demo -signer bao:ext-demo:v1 -active
+	local file meta name version out
 	for file in "$DIST"/*.duckdb_extension; do
 		meta="$(python3 "$NODE_SRC/scripts/ext_footer.py" "$file")"
 		name="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["name"])' "$meta")"
 		version="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["duckdb_version"])' "$meta")"
 		[ "$name" = hugr_node ] && continue # linked into the node
-		ka version list | grep -qw -- "$version" || ka version add "$version" -kind dev >/dev/null
-		ka channel versions hugr/demo | grep -qx -- "$version" || ka channel versions hugr/demo -add "$version" >/dev/null
-		ka release list hugr/demo | grep -qw -- "$name" || ka release add hugr/demo - -name "$name" <"$file" >/dev/null
+		ka version list | grep -qw -- "$version" || kd "the version $version" version add "$version" -kind dev
+		ka channel versions hugr/demo | grep -qx -- "$version" ||
+			kd "the channel's version $version" channel versions hugr/demo -add "$version"
+		# every asset, whatever kista has: a release it already holds is answered as such, a new one added
+		out="$(ka release add hugr/demo - -name "$name" <"$file")" ||
+			grep -q 'already exists' <<<"$out" || fail "kista: the release $name: $(redact <<<"$out")"
 	done
 	ok "kista in kista: $KISTA_PREFIX, its key in OpenBao Transit, the release's extensions in it"
 }

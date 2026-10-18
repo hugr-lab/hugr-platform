@@ -462,10 +462,12 @@ technical calls to come use it.
 Verified by the demo (spec 004, minikube, 2026-10-18):
 
 - Outside Azure, the IdP's federation of Kubernetes ServiceAccount tokens works: Keycloak 26.6's client authentication
-  by a federated JWT, the client named by the token's subject. No node or operator secret lives anywhere.
-- DuckDB at our pin reads the cgroup's memory but not the CPU: in a 2 GiB-limit, 1-CPU-request container it chooses
-  `memory_limit` 1.5 GiB (80% of the limit, the node's own value) and `threads` 12 (the host's cores). A request sets
-  no CPU quota, so the env's CPU is what bounds the threads; its memory only makes explicit what DuckDB would choose.
+  by a federated JWT, the client named by the token's subject. A node holds no credential of its own: its login is its
+  ServiceAccount token, and the only Secret it mounts is its doors' TLS certificate. (The operator's identity to the
+  nodes, decision 1, is not exercised yet: it comes with the console.)
+- DuckDB at our pin reads the cgroup's memory limit: in a 2 GiB-limit container it chooses `memory_limit` 1.5 GiB (80%,
+  the node's own value), so the env's memory only makes it explicit. With a CPU request and no limit there is no quota,
+  and DuckDB counts the host's cores (12): the env's CPU is what bounds the threads. A CPU limit was not tried.
 
 ## Alternatives considered
 

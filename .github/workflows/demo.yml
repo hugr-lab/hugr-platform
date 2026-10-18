@@ -17,9 +17,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      # both repositories are public: the job's token reads hugr-node's artifacts
-      GH_TOKEN: ${{ github.token }}
-      # four nodes at once (check 8) on a 4-core runner; the node rounds a request up to whole threads
+      # hugr-node's dry-run assets: a token that reads hugr-node's Actions - a fine-grained one (Actions: read on
+      # hugr-node) in HUGR_NODE_ARTIFACTS_TOKEN if this job's own may not
+      GH_TOKEN: ${{ secrets.HUGR_NODE_ARTIFACTS_TOKEN || github.token }}
+      # four nodes at once (check 8) on a 4-core runner; the kubelet rounds a request up to whole CPUs (HUGR_POD_CPU 1)
       HUGR_DEMO_NODE_CPU: 250m
       HUGR_DEMO_KEEP: "1"
     steps:
@@ -35,13 +36,5 @@ jobs:
       run: test/demo/run.sh kind
     - name: The cluster's state
       if: failure()
-      run: |
-        redact() { sed -E 's/eyJ[A-Za-z0-9_.-]+/<token>/g'; }
-        k() { kubectl --context kind-hugr-demo "$@"; }
-        k get pods -A -o wide || true
-        k get events -A --sort-by=.lastTimestamp | tail -60 || true
-        k -n hugr get hng,hp -o yaml | redact || true
-        k -n hugr logs deploy/hugr-platform --tail 100 | redact || true
-        for pod in $(k -n hugr get pods -l platform.hugr.io/group -o name); do
-          echo "== $pod"; k -n hugr logs "$pod" --tail 60 | redact || true
-        done
+      # through the run's own kubeconfig and redaction: the run's secrets and every token blanked
+      run: test/demo/run.sh kind diagnose || true

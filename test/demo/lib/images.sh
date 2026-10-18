@@ -4,8 +4,8 @@
 # built by the provider: on kind and minikube locally and loaded into the cluster, on AKS in the run's registry.
 
 # REGISTRY: the images' registry with its slash (AKS's), or none (loaded into the cluster); PULL: their pull policy
-REGISTRY="${REGISTRY:-}"
-PULL="${PULL:-Never}"
+REGISTRY=""
+PULL=Never
 img_repo() { echo "$REGISTRY$1"; }
 img() { echo "$REGISTRY$1:demo"; }
 
@@ -47,10 +47,12 @@ node_dist() {
 		(cd "$HUGR_NODE_DIST" && pwd)
 		return
 	fi
-	local name="dist-linux_$ARCH" dir run
+	local name="dist-linux_$ARCH" dir run runs
 	dir="$CACHE/$name"
-	run="$(gh run list -R hugr-lab/hugr-node --workflow release.yml --branch main --status success --limit 20 --json databaseId \
-		--jq '.[].databaseId' | while read -r id; do
+	# gh's own refusal (a token that may not read hugr-node's runs) is said as such, not as "no run"
+	runs="$(gh run list -R hugr-lab/hugr-node --workflow release.yml --branch main --status success --limit 20 \
+		--json databaseId --jq '.[].databaseId' 2>"$WORK/gh.err")" || fail "listing hugr-node's runs: $(cat "$WORK/gh.err")"
+	run="$(echo "$runs" | while read -r id; do
 		gh api "repos/hugr-lab/hugr-node/actions/runs/$id/artifacts" --jq '.artifacts[] | select(.expired | not) | .name' |
 			grep -qx "$name" && { echo "$id"; break; }
 	done)"

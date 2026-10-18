@@ -42,14 +42,17 @@ install_idp() {
 	step "Keycloak: the realm hugr - the nodes by their ServiceAccount tokens, no secret of theirs"
 	namespace idp
 	ca_cert keycloak keycloak.idp.svc
-	tls_secret idp keycloak-tls keycloak
+	local cert
+	cert="$(tls_secret idp keycloak-tls keycloak)"
 	local sa_issuer
 	sa_issuer="$(k get --raw /.well-known/openid-configuration | python3 -c 'import json,sys; print(json.load(sys.stdin)["issuer"])')"
-	DEMO_SEEDER="$(secret_value principal-seeder)" DEMO_ANALYST_A="$(secret_value principal-analyst-a)" \
-		DEMO_ANALYST_B="$(secret_value principal-analyst-b)" DEMO_ADMIN="$(secret_value principal-admin)" \
-		python3 - "$WORK/realm.json" "$sa_issuer" "${GROUPS_[@]}" <<'PY'
+	local p
+	for p in seeder analyst-a analyst-b admin breakglass; do secret_file "principal-$p" openssl rand -hex 24 >/dev/null; done
+	# the secrets are read from their files: neither an argument nor the environment carries one
+	python3 - "$WORK/realm.json" "$WORK/secrets" "$sa_issuer" "${GROUPS_[@]}" <<'PY'
 import json, os, sys
-out, sa_issuer, groups = sys.argv[1], sys.argv[2], sys.argv[3:]
+out, secrets, sa_issuer, groups = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+secret = lambda p: open(os.path.join(secrets, "principal-" + p)).read().strip()
 aud = lambda audience: {"name": "aud-" + audience, "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
                         "config": {"included.custom.audience": audience, "access.token.claim": "true"}}
 # the client's id as a claim, whatever scopes an imported service account gets (tresor's service claim)
@@ -75,25 +78,31 @@ for g in groups:
                        "groups": ["/hugr-nodes"]})
 realm = {
     "realm": "hugr", "enabled": True, "eventsEnabled": True, "enabledEventTypes": ["CLIENT_LOGIN", "CLIENT_LOGIN_ERROR"],
-    "roles": {"realm": [{"name": n} for n in ["analyst_a", "analyst_b", "platform_admin", "demo_seeder"]]},
+    "roles": {"realm": [{"name": n} for n in ["analyst_a", "analyst_b", "platform_admin", "node_breakglass", "demo_seeder"]]},
     "groups": [{"name": "hugr-nodes", "path": "/hugr-nodes"}],
     # the cluster's ServiceAccount issuer: Keycloak reads its keys with its own ServiceAccount token
     "identityProviders": [{"alias": "k8s", "providerId": "kubernetes", "enabled": True, "config": {"issuer": sa_issuer}}],
     "clients": nodes + [
-        caller("demo-seeder", os.environ["DEMO_SEEDER"], "duckdb-secrets"),
-        caller("demo-analyst-a", os.environ["DEMO_ANALYST_A"], "hugr"),
-        caller("demo-analyst-b", os.environ["DEMO_ANALYST_B"], "hugr"),
-        caller("demo-admin", os.environ["DEMO_ADMIN"], "hugr"),
+        caller("demo-seeder", secret("seeder"), "duckdb-secrets"),
+        caller("demo-analyst-a", secret("analyst-a"), "hugr"),
+        caller("demo-analyst-b", secret("analyst-b"), "hugr"),
+        caller("demo-admin", secret("admin"), "hugr"),
+        caller("demo-breakglass", secret("breakglass"), "hugr"),
     ],
     "users": node_users + [
         {"username": "service-account-demo-seeder", "enabled": True, "serviceAccountClientId": "demo-seeder", "realmRoles": ["demo_seeder"]},
         {"username": "service-account-demo-analyst-a", "enabled": True, "serviceAccountClientId": "demo-analyst-a", "realmRoles": ["analyst_a"]},
         {"username": "service-account-demo-analyst-b", "enabled": True, "serviceAccountClientId": "demo-analyst-b", "realmRoles": ["analyst_b"]},
         {"username": "service-account-demo-admin", "enabled": True, "serviceAccountClientId": "demo-admin", "realmRoles": ["platform_admin"]},
+        {"username": "service-account-demo-breakglass", "enabled": True, "serviceAccountClientId": "demo-breakglass", "realmRoles": ["node_breakglass"]},
     ],
 }
 json.dump(realm, open(out, "w"))
 PY
+	# Keycloak's first admin is the run's: without one, its welcome page lets any local process through the
+	# port-forward create it
+	k -n idp delete secret kc-bootstrap --ignore-not-found >/dev/null
+	k -n idp create secret generic kc-bootstrap --from-file=password="$(secret_file kc-bootstrap openssl rand -hex 24)" >/dev/null
 	k -n idp delete secret kc-realm --ignore-not-found >/dev/null
 	k -n idp create secret generic kc-realm --from-file=realm.json="$WORK/realm.json" >/dev/null
 	# Keycloak imports a realm it does not have: a changed realm rolls its pod (start-dev keeps nothing)
@@ -127,6 +136,10 @@ spec:
           args: [start-dev, --import-realm, --https-port=8443, --https-certificate-file=/tls/tls.crt,
                  --https-certificate-key-file=/tls/tls.key, --hostname=https://keycloak.idp.svc:8443,
                  --truststore-paths=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt]
+          env:
+            - {name: KC_BOOTSTRAP_ADMIN_USERNAME, value: demo-admin}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: kc-bootstrap, key: password}}
           ports: [{containerPort: 8443}]
           readinessProbe: {httpGet: {path: /realms/hugr, port: 8443, scheme: HTTPS}, periodSeconds: 5, failureThreshold: 60}
           resources: {requests: {cpu: 100m, memory: 512Mi}}
@@ -142,6 +155,7 @@ kind: Service
 metadata: {name: keycloak, namespace: idp}
 spec: {selector: {app: keycloak}, ports: [{port: 8443, targetPort: 8443}]}
 YAML
+	[ -z "$cert" ] || k -n idp rollout restart deploy/keycloak >/dev/null
 	rollout idp keycloak 420s
 	ok "Keycloak in idp: the realm hugr at $IDP_ISSUER, the ServiceAccount issuer $sa_issuer"
 }

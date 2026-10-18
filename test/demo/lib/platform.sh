@@ -6,7 +6,6 @@ install_operator() {
 	step "the operator: CRDs, its rights, the webhook, the node API"
 	namespace hugr
 	ca_cert operator hugr-platform.hugr.svc hugr-platform.hugr.svc.cluster.local
-	tls_secret hugr operator-tls operator
 	k -n hugr delete secret hugr-platform-tls --ignore-not-found >/dev/null
 	k -n hugr create secret tls hugr-platform-tls --cert "$WORK/operator.crt" --key "$WORK/operator.key" >/dev/null
 	# the overlay names the image loaded into the cluster; on AKS it is the registry's, pulled
@@ -42,7 +41,7 @@ install_platform() {
 	[ -z "$TRESOR_SCOPE" ] || scope=", scope: \"$TRESOR_SCOPE\""
 	for g in "${GROUPS_[@]}"; do
 		ca_cert "door-$g" "hugr-node-$g.hugr.svc"
-		tls_secret hugr "hugr-node-$g-tls" "door-$g"
+		tls_secret hugr "hugr-node-$g-tls" "door-$g" >/dev/null # a rerun restarts the groups, the new one included
 	done
 	k apply -f - >/dev/null <<YAML
 apiVersion: platform.hugr.io/v1alpha1
@@ -63,6 +62,9 @@ spec:
 YAML
 	local replicas again=""
 	k -n hugr get deploy hugr-node-a >/dev/null 2>&1 && again=1
+	# the nodes' logs are kept from here on, each from its pod's start
+	rm -rf "$WORK/logs"
+	follow_logs
 	for g in "${GROUPS_[@]}"; do
 		replicas=1
 		[ "$g" = a ] && replicas=2
@@ -91,6 +93,7 @@ YAML
 			fail "group $g's nodes are not ready"
 		fi
 	done
+	follow_logs
 	ok "both groups' nodes serve"
 }
 
@@ -102,7 +105,33 @@ restart_group() {
 	k -n hugr patch hng "$1" --type merge -p "{\"spec\":{\"restartedAt\":\"$at\"}}" >/dev/null || fail "restarting group $1"
 	eventually 120 "the operator puts group $1's restart into its Deployment" template_restarted "$1" "$at"
 	k -n hugr rollout status "deploy/hugr-node-$1" --timeout 300s >/dev/null || fail "group $1 did not roll"
+	follow_logs
+}
+
+# follow_logs: every running node pod's log, kept in $WORK/logs/<pod>.log from the pod's start while the run lasts -
+# the pods that go away included: the drain checks and the secrets scan read them
+follow_logs() {
+	mkdir -p "$WORK/logs"
+	local pod pid
+	for pod in $(k -n hugr get pods -l platform.hugr.io/group --field-selector=status.phase=Running \
+		-o jsonpath='{.items[*].metadata.name}'); do
+		pid="$(cat "$WORK/logs/$pod.pid" 2>/dev/null || true)"
+		[ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q 'kubectl.*logs' && continue
+		k -n hugr logs -f "$pod" >"$WORK/logs/$pod.log" 2>&1 &
+		echo "$!" >"$WORK/logs/$pod.pid"
+		echo "$!" >>"$WORK/forwards.pid"
+	done
 }
 template_restarted() {
 	[ "$(k -n hugr get deploy "hugr-node-$1" -o jsonpath='{.spec.template.metadata.annotations.platform\.hugr\.io/restartedAt}')" = "$2" ]
+}
+
+# down_cluster_scoped: what the namespaces' deletion leaves in a kept cluster - the operator's CRDs, rights and
+# webhook, the admission policies, the demo's own bindings
+down_cluster_scoped() {
+	# waited for: an up right after applies the CRDs again
+	k kustomize "$HERE/overlay" | k delete -f - --ignore-not-found --timeout=300s >/dev/null 2>&1 || true
+	k delete -k "$ROOT/config/policy" --ignore-not-found >/dev/null 2>&1 || true
+	k delete clusterrolebinding hugr-demo-openbao-tokenreview hugr-demo-kc-issuer-discovery --ignore-not-found \
+		>/dev/null 2>&1 || true
 }

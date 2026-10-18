@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -52,15 +53,10 @@ func main() {
 	}
 }
 
-func redact(text string) string {
-	words := strings.Fields(text)
-	for i, w := range words {
-		if strings.HasPrefix(w, "eyJ") {
-			words[i] = "<token>"
-		}
-	}
-	return strings.Join(words, " ")
-}
+var jwt = regexp.MustCompile(`eyJ[A-Za-z0-9._-]*`)
+
+// redact blanks a token wherever it stands in a message: quoted, after a "=", inside a word
+func redact(text string) string { return jwt.ReplaceAllString(text, "<token>") }
 
 // tokenRequest: where and as whom the principal's token is asked for
 type tokenRequest struct {
@@ -146,7 +142,7 @@ func clientCredentials(ctx context.Context, idp tokenRequest, pool *x509.CertPoo
 	if idp.host != "" { // the cluster's IdP behind a port-forward: the run's CA, its own name
 		config.RootCAs, config.ServerName = pool, idp.host
 	}
-	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: config}}
+	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: config, Proxy: http.ProxyFromEnvironment}}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -157,7 +153,7 @@ func clientCredentials(ctx context.Context, idp tokenRequest, pool *x509.CertPoo
 		Error       string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
-		return "", err
+		return "", fmt.Errorf("the IdP answered %d, not JSON: %w", resp.StatusCode, err)
 	}
 	if answer.AccessToken == "" {
 		return "", fmt.Errorf("the IdP answered %d %s", resp.StatusCode, answer.Error)

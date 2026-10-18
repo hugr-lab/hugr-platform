@@ -23,9 +23,10 @@ install_ca_bundle() {
 seed() {
 	step "the first deployment: tresor's secrets, the policy catalog - one Job, in its own process"
 	install_ca_bundle
-	local pg seeder g grants="" scope=""
+	local catalog sales seeder g grants="" scope=""
 	[ -z "$TRESOR_SCOPE" ] || scope=", OAUTH_SCOPE '$TRESOR_SCOPE'"
-	pg="$(secret_value pg)"
+	catalog="$(secret_value pg-catalog)"
+	sales="$(secret_value pg-sales)"
 	seeder="$(secret_value principal-seeder)"
 	# every node's identity is the one tresor principal: the secrets go to it
 	for s in hugr_policy_catalog sales; do
@@ -47,27 +48,36 @@ CREATE SECRET seeder (TYPE tresor, SCOPE 'tresor:$TRESOR_HOST', FLOW 'client_cre
     CLIENT_ID '$(principal_id seeder)', CLIENT_SECRET '$seeder', ISSUER '$IDP_ISSUER'$scope);
 ATTACH 'tresor:$TRESOR_HOST' AS owner (SECRET seeder);
 CREATE OR REPLACE PERSISTENT SECRET hugr_policy_catalog IN owner (TYPE postgres, HOST 'pg.db.svc', PORT '5432',
-    DATABASE 'hugr', USER 'postgres', PASSWORD '$pg');
+    DATABASE 'hugr', USER 'hugr_catalog', PASSWORD '$catalog');
 CREATE OR REPLACE PERSISTENT SECRET sales IN owner (TYPE postgres, HOST 'pg.db.svc', PORT '5432', DATABASE 'sales',
-    USER 'postgres', PASSWORD '$pg');
+    USER 'sales_reader', PASSWORD '$sales');
 ${grants}CALL owner.grant_secret('sales', 'role:demo_seeder', ['use']);
 -- what the seeder may use is listed at ATTACH: again, after its own grant
 DETACH owner;
 ATTACH 'tresor:$TRESOR_HOST' AS owner (SECRET seeder);
-ATTACH 'host=pg.db.svc port=5432 dbname=hugr user=postgres password=$pg' AS pg (TYPE postgres);
+-- the catalog by a secret of this process only: a failed ATTACH names its path, and a password in it would be printed
+CREATE SECRET catalog_login (TYPE postgres, HOST 'pg.db.svc', PORT '5432', DATABASE 'hugr', USER 'hugr_catalog',
+    PASSWORD '$catalog');
+ATTACH '' AS pg (TYPE postgres, SECRET catalog_login);
 SELECT acl_use_db('pg', 'acl', true);
+-- the Job's own process, unprefixed (spec 001's first deployment): no door, nothing of it reaches a node
 SET GLOBAL acl_allow_anonymous_admin = true;
 ACL ADMIN CREATE ISSUER IF NOT EXISTS idp URL '$IDP_ISSUER';
 ACL ADMIN CREATE CLIENT IF NOT EXISTS demo ISSUER idp AUDIENCES ('$HUGR_AUDIENCE') ROLES FROM ('$HUGR_ROLES_CLAIM') UNMAPPED AS ROLE;
 ACL ADMIN CREATE ROLE IF NOT EXISTS analyst_a;
 ACL ADMIN CREATE ROLE IF NOT EXISTS analyst_b;
 ACL ADMIN CREATE ROLE IF NOT EXISTS platform_admin;
+ACL ADMIN CREATE ROLE IF NOT EXISTS node_breakglass;
+-- the profile's and the resource groups' writes: the cluster and policy bundles, nothing more - so the checks' writes
+-- prove those bundles
 ACL ADMIN GRANT ADMIN cluster TO ROLE platform_admin;
 ACL ADMIN GRANT ADMIN policy TO ROLE platform_admin;
--- the demo's operator reads a node's own settings (ACL NATIVE, the break-glass): the checks' only use of it
-ACL ADMIN GRANT ADMIN passthrough TO ROLE platform_admin;
+-- the checks read a node's own state (its settings, the profile's version, its attached databases) through ACL
+-- NATIVE, the break-glass: a principal of its own, writing nothing
+ACL ADMIN GRANT ADMIN passthrough TO ROLE node_breakglass;
 -- a role with an administration scope is reached only through the client's own mapping (duckdb-acl spec 095)
 ACL ADMIN MAP CLAIM 'platform_admin' FROM CLIENT demo TO ROLE platform_admin;
+ACL ADMIN MAP CLAIM 'node_breakglass' FROM CLIENT demo TO ROLE node_breakglass;
 ACL ADMIN CLUSTER ATTACH '' AS sales (TYPE postgres, SECRET sales);
 ACL ADMIN CREATE VIRTUAL CATALOG IF NOT EXISTS demo;
 ACL ADMIN ADD TABLE sales.public.orders AS demo.orders;
@@ -80,9 +90,11 @@ SQL
 ACL ADMIN CREATE RESOURCE GROUP $g;
 ACL ADMIN GRANT RESOURCE GROUP $g TO ROLE analyst_$g;
 ACL ADMIN GRANT RESOURCE GROUP $g TO ROLE platform_admin;
+ACL ADMIN GRANT RESOURCE GROUP $g TO ROLE node_breakglass;
 SQL
 	done
 	echo "SELECT 'version:' || acl_cluster_version();" >>"$WORK/seed.sql"
+	echo "SET GLOBAL acl_allow_anonymous_admin = false;" >>"$WORK/seed.sql"
 	k -n hugr delete secret demo-seed --ignore-not-found >/dev/null
 	k -n hugr create secret generic demo-seed --from-file=seed.sql="$WORK/seed.sql" >/dev/null
 	rm -f "$WORK/seed.sql"
