@@ -24,6 +24,11 @@ provider_up() {
 }
 
 provider_load() {
+	# loaded again only when it changed: a node image is hundreds of MB
+	local here there
+	here="$(docker image inspect -f '{{.Id}}' "$1")"
+	there="$(minikube -p "$DEMO_PROFILE" ssh -- docker image inspect -f '{{.Id}}' "$1" 2>/dev/null | tr -d '\r' || true)"
+	[ "$here" = "$there" ] && return 0
 	minikube -p "$DEMO_PROFILE" image load --overwrite=true "$1" >/dev/null || fail "loading $1 into minikube"
 }
 

@@ -27,7 +27,9 @@ need() {
 k() { command kubectl --context "$DEMO_CONTEXT" "$@"; }
 helm_() { command helm --kube-context "$DEMO_CONTEXT" "$@"; }
 
-# eventually <seconds> <what> <command...>: the command succeeds within the time, else the run fails naming what
+# eventually <seconds> <what> <command...>: the command succeeds within the time, else the run fails naming what. The
+# command runs afresh at every try: a condition that reads state is a function (status_is, lease_is), never a test of
+# a $(...) the caller's shell expanded once
 eventually() {
 	local within="$1" what="$2"
 	shift 2

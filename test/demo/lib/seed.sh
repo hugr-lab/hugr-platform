@@ -56,6 +56,8 @@ ACL ADMIN CREATE ROLE IF NOT EXISTS analyst_b;
 ACL ADMIN CREATE ROLE IF NOT EXISTS platform_admin;
 ACL ADMIN GRANT ADMIN cluster TO ROLE platform_admin;
 ACL ADMIN GRANT ADMIN policy TO ROLE platform_admin;
+-- the demo's operator reads a node's own settings (ACL NATIVE, the break-glass): the checks' only use of it
+ACL ADMIN GRANT ADMIN passthrough TO ROLE platform_admin;
 -- a role with an administration scope is reached only through the client's own mapping (duckdb-acl spec 095)
 ACL ADMIN MAP CLAIM 'platform_admin' FROM CLIENT demo TO ROLE platform_admin;
 ACL ADMIN CLUSTER ATTACH '' AS sales (TYPE postgres, SECRET sales);
@@ -101,7 +103,11 @@ spec:
         - {name: ca, configMap: {name: hugr-ca}}
         - {name: home, emptyDir: {}}
 YAML
-	if ! k -n hugr wait --for=condition=complete job/demo-seed --timeout=300s >/dev/null 2>&1; then
+	local done=1
+	k -n hugr wait --for=condition=complete job/demo-seed --timeout=300s >/dev/null 2>&1 || done=""
+	# the SQL is needed no longer than its Job: the Secret holding the run's passwords goes, whatever the outcome
+	k -n hugr delete secret demo-seed --ignore-not-found >/dev/null
+	if [ -z "$done" ]; then
 		k -n hugr logs job/demo-seed --tail 60 2>&1 | redact >&2 || true
 		fail "the first deployment's Job did not complete"
 	fi

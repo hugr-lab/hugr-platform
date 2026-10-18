@@ -37,6 +37,7 @@ trap 'for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done' 
 . "$HERE/lib/stack.sh"
 . "$HERE/lib/seed.sh"
 . "$HERE/lib/platform.sh"
+. "$HERE/lib/checks.sh"
 . "$HERE/lib/provider-$PROVIDER.sh"
 
 need docker kubectl helm go gh openssl python3 git
@@ -73,10 +74,17 @@ up() {
 
 case "$COMMAND" in
 up) up ;;
+check) run_checks ;;
 down) provider_down ;;
 all)
-	up
-	[ "$PROVIDER" = minikube ] || provider_down
+	if [ "$PROVIDER" = minikube ]; then
+		up
+		[ -n "${DONE_ONLY:-}" ] || run_checks
+	else
+		trap 'provider_down; for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done' EXIT
+		up
+		[ -n "${DONE_ONLY:-}" ] || run_checks
+	fi
 	;;
 *)
 	echo "the command is up, check, down or nothing" >&2

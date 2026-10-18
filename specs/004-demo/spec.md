@@ -57,9 +57,9 @@ provider is the only difference between the clusters:
 | --- | --- | --- |
 | `idp` | Keycloak 26.6, TLS by the run's CA | a Deployment and a realm import (below) |
 | `tresor` | tresor-server, its Kubernetes store | tresor-server's Helm chart, its image built from a checkout |
-| `kista` | kista: a tenant, a channel for the node's duckdb, the extensions the profile names | kista's Helm chart, its image built from a checkout; seeded by hugr-node's `scripts/publish_to_kista.sh` |
-| `db` | PostgreSQL: the policy catalog and a source database | a Deployment, TLS by the run's CA |
-| `hugr` | the operator, `HugrPlatform`, the groups `a` and `b` | `config/default` with a kind overlay (below), the image built here |
+| `kista` | kista: the tenant `hugr`, its signed channel `demo` for the node's duckdb, the node's extensions as its releases; OpenBao beside it | kista's Helm chart, its image built from a checkout; the releases added by `kista admin` from the node's assets. The channel's signing key is in OpenBao Transit (dev mode, kubernetes auth for kista's ServiceAccount): kista refuses a key from a mounted file by design, and its own kind test does the same |
+| `db` | PostgreSQL: the policy catalog's database `hugr` (made anew on every `up`) and a source database `sales` | a Deployment, plain inside the cluster: both logins are tresor's secrets |
+| `hugr` | the operator, `HugrPlatform`, the groups `a` and `b` | `test/demo/overlay` (below), the image built here |
 
 Every https server has a certificate of a CA made for the run. The platform's `caBundle` holds the system roots plus
 that CA: `HUGR_CA_FILE` replaces the node's roots (hugr-node spec 006).
@@ -85,16 +85,20 @@ The realm `hugr`:
 - **An identity provider of type `kubernetes`** whose issuer is the cluster's ServiceAccount issuer. Keycloak reads
   its keys with its own ServiceAccount token (`system:service-account-issuer-discovery`), as tresor-server's kind
   test does.
-- **One client per group** (`hugr-node-a`, `hugr-node-b`):
-  - `clientAuthenticatorType: federated-jwt`;
-  - its subject `system:serviceaccount:hugr:hugr-node-<g>`;
-  - no secret.
-
-  A node presents its projected token as the client assertion and gets a token for tresor. The token's audience is
-  the realm's issuer: `HugrPlatform.spec.idp.federationAudience`.
+- **One client per group**, `clientAuthenticatorType: federated-jwt`, no secret, **named by its subject**
+  `system:serviceaccount:hugr:hugr-node-<g>` - the group's `identity.clientID` is that name. The node's federated login
+  sends its `client_id`, and Keycloak authenticates a federated assertion only as the client its `sub` names, so the
+  two must be one. A node presents its projected token as the client assertion and gets a token for tresor. The
+  assertion's audience is the realm's issuer: `HugrPlatform.spec.idp.federationAudience`.
+- **The nodes are one group of Keycloak's**, `hugr-nodes`: each node client's service-account user is a member, and
+  the token carries `groups`. tresor grants only to `role:` and `group:` principals, so the nodes' secrets are granted
+  to `group:hugr-nodes` (the owner, 2026-10-18); each node client is also a tresor actor (`client:<its subject>`,
+  `use`).
 - **The demo's principals**: confidential clients whose service accounts carry the roles `analyst_a`, `analyst_b` and
-  `platform_admin` (the `cluster` and `policy` bundles: the one that writes the profile and the resource groups through
-  a node). Their secrets are made for the run and never leave the script.
+  `platform_admin`. `platform_admin` holds the `cluster` and `policy` bundles (it writes the profile and the resource
+  groups through a node) and `passthrough`, only so that the checks read a node's own settings through `ACL NATIVE`.
+  `demo-seeder` (role `demo_seeder`) is tresor's administrator for the run: the first deployment writes and grants the
+  secrets as it. The principals' secrets are made for the run and never leave its state (below).
 
 ### The IdP on AKS: Entra ID, as the Managed Application will
 
@@ -118,23 +122,31 @@ The signed-in `az` account needs to create app registrations, and role assignmen
 
 ### The first deployment
 
-As spec 001 says: the installation's Job runs the first SQL in its own process, unprefixed, on the hugr-node image.
-It writes the policy catalog in PostgreSQL directly, as the database's operator:
+As spec 001 says: the installation's Job (`demo-seed`) runs the first SQL in its own process, unprefixed, on the
+hugr-node image. The SQL carries the run's passwords, so it is a Secret mounted into the Job, deleted when the Job
+ends, whatever its outcome. In order:
 
-- the issuer and its client (Keycloak's realm, the demo's audience, roles from `realm_access.roles`);
-- the roles, and the bundles of `platform_admin`;
-- a virtual catalog over the source, granted to both roles;
-- the resource groups `a` and `b`, granted to `analyst_a` and `analyst_b`;
-- the first profile: the source's postgres_scanner from kista.
+1. postgres_scanner from kista (`INSTALL` / `LOAD … FROM hugr`, autoinstall and autoload off): a postgres secret's type
+   is the scanner's.
+2. tresor, as `demo-seeder` by client credentials: the reserved secret `hugr_policy_catalog` (the catalog's login) and
+   the source's `sales`, granted to `group:hugr-nodes`. kista needs no secret: the node reads the channel without a
+   token, and an extension's integrity is the channel's signature.
+3. The policy catalog in PostgreSQL, written directly as the database's operator:
+   - the issuer and its client (Keycloak's realm, the audience `hugr`, roles from `realm_access.roles`);
+   - the roles, the bundles of `platform_admin`, its mapping from the client's own claim (duckdb-acl spec 095);
+   - the first profile: `CLUSTER ATTACH … AS sales (TYPE postgres, SECRET sales)`;
+   - a virtual catalog `demo` over `sales.public.orders`, granted to the three roles;
+   - the resource groups `a` and `b`, granted to `analyst_a` and `analyst_b` and to `platform_admin`.
 
-tresor gets, from the script, the reserved secret `hugr_policy_catalog` (the catalog's login), kista's http secret and
-the source's secret, each granted to the groups' identities. Then the script creates the `HugrNodeGroup`s.
+Then the script creates `HugrPlatform` and the `HugrNodeGroup`s. On an `up` again the catalog is new, so the script
+sets each group's `restartedAt`, as an operator would.
 
 ### The checks
 
 Each check is a line `ok: …` or the run fails, naming the check. Logs are shown redacted (`eyJ…` → `<token>`). The
-checks talk to the nodes through a small Go checker (`test/kind/check`, arrow-go's Flight SQL client): it gets a
-principal's token from Keycloak (client credentials) and runs SQL on a node behind a port-forward, as the principal.
+checks talk to the nodes through a small Go checker (`test/demo/check`, arrow-go's Flight SQL client): it gets a
+principal's token from Keycloak (client credentials, its secret read from a file) and runs SQL on a node behind a
+port-forward, as the principal. The checks change the profile: they run once per `up` (`all` does both).
 
 1. **The entry.**
    - Both groups' pods become Ready.
@@ -142,9 +154,10 @@ principal's token from Keycloak (client credentials) and runs SQL on a node behi
      secret's type.
    - Each node has a Lease with its summary.
    - Each group's status counts its nodes ready and reports `resourceGroupKnown: true`.
-2. **The federation.** The node's login to tresor ran on its projected ServiceAccount token alone, and no secret of a
-   node exists anywhere. On Keycloak its event log names the client `hugr-node-<g>` authenticated by `federated-jwt`;
-   on AKS, Entra's sign-in of the group's managed identity is the federated credential's.
+2. **The federation.** No secret of a node exists anywhere: a group's pods mount their doors' certificate, the
+   projected token and the CA bundle, and read no Secret into their environment. The node client has no secret
+   (`federated-jwt`), so check 1's login to tresor ran on the projected ServiceAccount token alone. On AKS, Entra's
+   sign-in of the group's managed identity is the federated credential's.
 3. **The engine against the pod.**
    - The node's `memory_limit`, `threads` and `max_temp_directory_size` are the pod's 80% / CPU / 90%.
    - A plain duckdb run in the same container, with no `HUGR_POD_*`, shows what DuckDB chooses from the cgroup by
@@ -167,15 +180,17 @@ principal's token from Keycloak (client credentials) and runs SQL on a node behi
 8. **The plan.**
    - Scaling `a` past `maxNodes` is refused by the webhook through `kubectl`, with its reason.
    - Scaling within it adds a node that enters by itself.
-   - A scale-down removes the node with the fewest sessions.
+   - A scale-down to the former size removes a node: it drains and goes. That the operator picks the one with the
+     fewest sessions (the pods' deletion cost) is the operator's unit test.
 9. **The optional admission policy.** With `config/policy` applied, a pod created by hand to run as `hugr-node-a` is
    refused, and the groups keep rolling.
 
 ### The overlay
 
-`test/demo/overlay` is `config/default` without cert-manager. The script makes the operator's certificate (SAN
-`hugr-platform.hugr.svc`) and puts it in the Secret `hugr-platform-tls`. It writes the run's CA into the webhook's
-`caBundle`. Everything else is the shipped install.
+`test/demo/overlay` is `config/default` without cert-manager, with one replica and the image loaded into the cluster
+(`imagePullPolicy: Never`). The script makes the operator's certificate (SAN `hugr-platform.hugr.svc`) and puts it in
+the Secret `hugr-platform-tls`. It writes the run's CA into the webhook's `caBundle`, and waits until the webhook
+answers a server-side dry run. Everything else is the shipped install.
 
 ### CI
 
@@ -189,19 +204,31 @@ takes about 20 minutes. AKS is never run by CI: it costs, and it needs a tenant'
 ## Security
 
 - **No credential at rest beyond the run's.**
-  - The demo's secrets (Keycloak's admin, the principals' client secrets, PostgreSQL's password) are made per run,
-    held in the script's variables and in Kubernetes Secrets of the throwaway cluster, and never written to the
-    repository or logged.
+  - The demo's secrets (the principals' client secrets, PostgreSQL's password, tresor's KEK, OpenBao's root token)
+    are made per run. They are kept in the run's state (`~/.cache/hugr-platform-demo/<provider>/secrets`, mode 0600)
+    and in Kubernetes Secrets of the demo's cluster, and never written to the repository or logged. The run never
+    switches the developer's kube context.
   - A node has none: its tresor login is its ServiceAccount token, and its catalog login and kista's token come from
     tresor at use.
-- **What the demo proves about secrets.** The checks grep the operator's and the nodes' logs, and every resource the
-  operator wrote, for the run's secrets and for tokens (`eyJ`). Any hit fails the run.
+- **What the demo proves about secrets.** The checks grep the operator's, the nodes' and the seed Job's logs, and the
+  platform namespace's resources, for the run's secrets and for tokens (`eyJ`). Any hit fails the run, and so does the
+  seed's Secret outliving its Job.
 
 ## Testing
 
 The demo is itself the test: `test/demo/run.sh`, on minikube locally, on kind in CI, on AKS by hand. It needs docker,
 kubectl, helm, go, gh, openssl, python3, and kind, minikube or az for its provider. Its checks are the list above. A
 tool that is missing is a SKIP on a developer's machine and a failure in CI.
+
+## Findings
+
+From the minikube run (2026-10-18), recorded in spec 001's "Still to verify":
+
+- **Keycloak federates Kubernetes ServiceAccount tokens** (26.6): an identity provider of type `kubernetes` and a
+  `federated-jwt` client named by the token's subject. A node logs in to tresor with no secret anywhere.
+- **The cgroup.** Plain DuckDB at our pin, in the 2 GiB-limit, 1-CPU-request container, chooses `memory_limit` 1.5 GiB
+  (80% of the cgroup's limit, the node's own value) and `threads` 12 (the host's cores). A CPU request sets no quota,
+  so there is nothing for DuckDB to read; the node's `HUGR_POD_CPU` is what makes it 1.
 
 ## Decisions for the owner
 

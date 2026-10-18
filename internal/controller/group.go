@@ -342,12 +342,16 @@ func DeletionCost(state NodeState) int64 {
 	return bucket
 }
 
+// writeStatus patches the status (a merge patch, no resourceVersion precondition): the group read from the cache may
+// be a version behind - its spec changed by kubectl, say - and an update would then conflict and back off, leaving
+// the status stale for as long as the backoff grows. The status is the operator's alone, so the patch is safe.
 func (r *GroupReconciler) writeStatus(ctx context.Context, group *v1alpha1.HugrNodeGroup, status *v1alpha1.HugrNodeGroupStatus) error {
 	if equalStatus(&group.Status, status) {
 		return nil
 	}
+	original := group.DeepCopy()
 	group.Status = *status
-	return client.IgnoreNotFound(r.Status().Update(ctx, group))
+	return client.IgnoreNotFound(r.Status().Patch(ctx, group, client.MergeFrom(original)))
 }
 
 func (r *GroupReconciler) now() time.Time {

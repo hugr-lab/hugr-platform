@@ -60,7 +60,8 @@ spec:
       temp: {medium: local, size: 2Gi}
   plan: {maxNodes: 4, sizes: [small]}
 YAML
-	local replicas
+	local replicas again=""
+	k -n hugr get deploy hugr-node-a >/dev/null 2>&1 && again=1
 	for g in "${GROUPS_[@]}"; do
 		replicas=1
 		[ "$g" = a ] && replicas=2
@@ -77,6 +78,13 @@ spec:
   tls: {secretRef: {name: hugr-node-$g-tls}}
 YAML
 	done
+	# a run again: the catalog was made anew, so the nodes start anew (the group's restartedAt, as an operator would)
+	if [ -n "$again" ]; then
+		for g in "${GROUPS_[@]}"; do
+			k -n hugr patch hng "$g" --type merge -p "{\"spec\":{\"restartedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" >/dev/null
+		done
+		sleep 5
+	fi
 	for g in "${GROUPS_[@]}"; do
 		eventually 60 "the operator makes group $g's Deployment" k -n hugr get "deploy/hugr-node-$g"
 		if ! k -n hugr rollout status "deploy/hugr-node-$g" --timeout 300s >/dev/null 2>&1; then

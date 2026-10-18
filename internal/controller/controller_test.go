@@ -274,6 +274,34 @@ func TestReconcileStatusFromLeases(t *testing.T) {
 	}
 }
 
+// TestStatusOverAStaleRead: the group the reconciler read is a version behind (kubectl changed its spec since) - the
+// status is written all the same, not refused as a conflict and retried with a growing backoff.
+func TestStatusOverAStaleRead(t *testing.T) {
+	w := newWorld(t, group("etl", 1, t0))
+	ctx := context.Background()
+	var stale v1alpha1.HugrNodeGroup
+	key := types.NamespacedName{Namespace: "hugr", Name: "etl"}
+	if err := w.client.Get(ctx, key, &stale); err != nil {
+		t.Fatal(err)
+	}
+	fresh := stale.DeepCopy()
+	fresh.Spec.Replicas = 2
+	if err := w.client.Update(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	status := stale.Status.DeepCopy()
+	status.ReadyReplicas = 1
+	if err := w.reconciler.writeStatus(ctx, &stale, status); err != nil {
+		t.Fatalf("the status over a stale read: %v", err)
+	}
+	if err := w.client.Get(ctx, key, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status.ReadyReplicas != 1 || fresh.Spec.Replicas != 2 {
+		t.Errorf("ready %d, replicas %d: want the status written and kubectl's spec kept", fresh.Status.ReadyReplicas, fresh.Spec.Replicas)
+	}
+}
+
 func TestReconcileWithoutPlatform(t *testing.T) {
 	g := group("etl", 1, t0)
 	g.Spec.Platform = "other"
