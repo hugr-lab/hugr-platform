@@ -1,14 +1,22 @@
 # hugr-platform - Development Guidelines
 
-The hugr platform's control plane: the bootstrap document a node starts from, the heartbeat it reports, and the
-fleet's view for the operator. Read `README.md` first, then the specs in `specs/`.
+The hugr platform's orchestrator: a Kubernetes operator that deploys the node groups, answers a node's entry with its
+bootstrap document, records the heartbeat in Leases, and is a client of the nodes with its own identity. The front
+(the balancer the clients reach) and the web console come from the same repository. Read `README.md` first, then the
+specs in `specs/`.
 
 ## Technology
 
-- **Go** (the same stack as kista, hugr-lab/duckdb-extension-repository), one module and one binary.
-- **Its own database**: PostgreSQL in a deployment, SQLite (CGO-free) for development and tests.
-- **Authentication**: OIDC bearer tokens verified offline against the issuer's JWKS. Nodes present their workload
-  identity, and operators a token carrying the platform's admin role.
+- **Go** (the same stack as kista, hugr-lab/duckdb-extension-repository), one module.
+- **A Kubernetes operator** on controller-runtime: the custom resources `HugrPlatform` and `HugrNodeGroup` hold the
+  desired state, Leases and the resources' status hold the fleet's. **No database of its own.**
+- **Shared logic in packages with no Kubernetes dependency** (the node protocol, a group's expansion), so a
+  bare-metal service can import them when one is needed - not before.
+- **Authentication**:
+  - A node is a pod of a group: its projected ServiceAccount token, checked by TokenReview.
+  - The operator itself is a workload identity federated into the organisation's IdP, a client of the nodes like
+    any principal.
+  - People sign in through the same IdP.
 
 ## Rules the owner set
 
@@ -24,8 +32,8 @@ fleet's view for the operator. Read `README.md` first, then the specs in `specs/
   report. Profile, policy and secrets have their own homes (the policy catalog, tresor-server).
 - **Products stay products.** kista and tresor-server are used through their protocols; their sessions get only
   product gaps the platform needs, never our deployment configuration.
-- **Scale by statelessness**: any replica answers any request, state lives in the database, and "lost" is computed
-  when read. Work for one replica takes a database lease.
+- **Scale by statelessness**: any replica answers any request, state lives in Kubernetes, and "lost" is an expired
+  Lease. Reconciling is the leader's.
 
 ## Commands
 

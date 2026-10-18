@@ -6,4 +6,4 @@ rewrite history.
 
 | spec | what | status |
 | --- | --- | --- |
-| [001](001-control-plane/spec.md) | the minimal control plane: bootstrap, heartbeat, the fleet's view | draft |
+| [001](001-control-plane/spec.md) | the operator: node groups, a node's entry, the fleet's state | accepted |
