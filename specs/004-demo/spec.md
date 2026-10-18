@@ -1,6 +1,7 @@
 # Spec 004: the platform in one cluster - the demo, end to end (kind in CI, minikube locally, AKS by hand)
 
-- **Status**: accepted (the owner, 2026-10-18: minikube locally, and manual runs on AKS as tresor-server's and kista's)
+- **Status**: accepted (the owner, 2026-10-18: minikube locally, manual runs on AKS as tresor-server's and kista's, and
+  nothing of Azure kept between runs)
 - **Date**: 2026-10-18
 
 ## Summary
@@ -48,7 +49,7 @@ everything and runs the checks. The provider is the only difference between the 
 | the architecture | the runner's | the machine's (arm64 on a Mac) | amd64 |
 | the IdP | Keycloak in the cluster | Keycloak in the cluster | Entra ID: managed identities, app registrations (below) |
 | the ServiceAccount issuer | read from the cluster's discovery | read from the cluster's discovery | the AKS OIDC issuer |
-| `up`, `check`, `down` | one run does all three | one run does `up` and `check`; `down` deletes the namespaces | separate, the run's state kept in `~/.cache/hugr-platform-aks-live` (mode 0700) between them |
+| `up`, `check`, `down` | one run does all three | one run does `up` and `check`; `down` deletes the namespaces | one run does all three, and `down` runs whatever happened before it; `up` / `check` / `down` alone are for debugging, the run's state in `~/.cache/hugr-platform-aks-live` (mode 0700) between them |
 
 | namespace | what | how it is made |
 | --- | --- | --- |
@@ -94,6 +95,11 @@ The realm `hugr`:
   a node). Their secrets are made for the run and never leave the script.
 
 ### The IdP on AKS: Entra ID, as the Managed Application will
+
+**Nothing of Azure is kept between runs** (the owner, 2026-10-18): a run makes its resource group, its registrations
+and its identities, and deletes them at its end, a failed check included. Each resource carries the tags
+`purpose=hugr-platform-demo` and `expires=<the run's day + 1>`; `leftovers` lists what a run left (a killed shell, a
+lost connection), so it can be deleted by hand.
 
 `up` makes, and `down` removes:
 
