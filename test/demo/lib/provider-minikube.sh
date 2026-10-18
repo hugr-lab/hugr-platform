@@ -23,6 +23,8 @@ provider_up() {
 	ok "minikube $DEMO_PROFILE runs ($ARCH)"
 }
 
+provider_build() { local_build "$@"; }
+provider_import() { local_import "$@"; }
 provider_load() {
 	# loaded again only when it changed: a node image is hundreds of MB
 	local here there

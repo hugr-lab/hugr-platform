@@ -17,6 +17,8 @@ provider_up() {
 	ok "kind $DEMO_CLUSTER runs ($ARCH)"
 }
 
+provider_build() { local_build "$@"; }
+provider_import() { local_import "$@"; }
 provider_load() { kind load docker-image "$1" --name "$DEMO_CLUSTER" >/dev/null || fail "loading $1 into kind"; }
 
 provider_down() {

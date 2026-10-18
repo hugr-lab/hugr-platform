@@ -1,6 +1,26 @@
 # shellcheck shell=bash
 # The demo's images (spec 004): the operator from this checkout; tresor-server and kista from a checkout each; hugr-node
-# from the assets of a hugr-node release dry run (dist-linux_<arch>) - nothing new is published.
+# from the assets of a hugr-node release dry run (dist-linux_<arch>) - nothing new is published. Each is <name>:demo,
+# built by the provider: on kind and minikube locally and loaded into the cluster, on AKS in the run's registry.
+
+# REGISTRY: the images' registry with its slash (AKS's), or none (loaded into the cluster); PULL: their pull policy
+REGISTRY="${REGISTRY:-}"
+PULL="${PULL:-Never}"
+img_repo() { echo "$REGISTRY$1"; }
+img() { echo "$REGISTRY$1:demo"; }
+
+# local_import <image> <name>: a published image as <name>:demo, loaded into the cluster (kind, minikube)
+local_import() {
+	docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1" >/dev/null || fail "no $1"
+	docker tag "$1" "$2:demo"
+	provider_load "$2:demo"
+}
+
+# local_build <name> <context>: built here, loaded into the cluster (kind, minikube)
+local_build() {
+	docker build -q -t "$1:demo" --build-arg VERSION=demo "$2" >/dev/null || fail "the image $1"
+	provider_load "$1:demo"
+}
 
 # src <repository>: a checkout of hugr-lab/<repository>'s main in the cache (or the directory the caller names)
 src() {
@@ -21,14 +41,15 @@ src() {
 }
 
 # node_dist: the node's assets for the cluster's architecture - HUGR_NODE_DIST, or the artifact of hugr-node's latest
-# successful release dry run that has one
+# successful release dry run on main that has one
 node_dist() {
 	if [ -n "${HUGR_NODE_DIST:-}" ]; then
 		(cd "$HUGR_NODE_DIST" && pwd)
 		return
 	fi
-	local name="dist-linux_$ARCH" dir="$CACHE/$name" run
-	run="$(gh run list -R hugr-lab/hugr-node --workflow release.yml --status success --limit 20 --json databaseId \
+	local name="dist-linux_$ARCH" dir run
+	dir="$CACHE/$name"
+	run="$(gh run list -R hugr-lab/hugr-node --workflow release.yml --branch main --status success --limit 20 --json databaseId \
 		--jq '.[].databaseId' | while read -r id; do
 		gh api "repos/hugr-lab/hugr-node/actions/runs/$id/artifacts" --jq '.artifacts[] | select(.expired | not) | .name' |
 			grep -qx "$name" && { echo "$id"; break; }
@@ -44,30 +65,23 @@ node_dist() {
 
 build_images() {
 	step "the images"
-	local dist tresor_src kista_src node_src
-	(cd "$ROOT" && docker build -q -t hugr-platform:demo . >/dev/null) || fail "the operator's image"
-	ok "the operator's image hugr-platform:demo, from this checkout"
-	tresor_src="$(src tresor-server TRESOR_SERVER_DIR)"
-	docker build -q -t tresor-server:demo --build-arg VERSION=demo "$tresor_src" >/dev/null || fail "tresor-server's image"
-	kista_src="$(src duckdb-extension-repository KISTA_DIR)"
-	docker build -q -t kista:demo "$kista_src" >/dev/null || fail "kista's image"
-	ok "tresor-server:demo and kista:demo, from their main"
+	provider_build hugr-platform "$ROOT"
+	ok "the operator's image $(img hugr-platform), from this checkout"
+	provider_build tresor-server "$(src tresor-server TRESOR_SERVER_DIR)"
+	provider_build kista "$(src duckdb-extension-repository KISTA_DIR)"
+	ok "$(img tresor-server) and $(img kista), from their main"
 	NODE_SRC="$(src hugr-node HUGR_NODE_DIR)"
+	# the assets seed kista whichever image runs: the node's extensions are its release's
+	DIST="$(node_dist)"
 	if [ -n "${NODE_IMAGE:-}" ]; then
-		docker image inspect "$NODE_IMAGE" >/dev/null 2>&1 || docker pull -q "$NODE_IMAGE" >/dev/null || fail "no $NODE_IMAGE"
-		docker tag "$NODE_IMAGE" hugr-node:demo
-		DIST=""
+		provider_import "$NODE_IMAGE" hugr-node
+		ok "$(img hugr-node), from $NODE_IMAGE"
 	else
-		DIST="$(node_dist)"
-		docker build -q -f "$NODE_SRC/docker/Dockerfile" --build-arg VERSION=demo -t hugr-node:demo "$DIST" >/dev/null ||
-			fail "the node's image from $DIST"
+		# the context is the node's binary and the release's Dockerfile, nothing else
+		rm -rf "$WORK/node-image" && mkdir -p "$WORK/node-image"
+		cp "$DIST/duckdb" "$WORK/node-image/duckdb"
+		cp "$NODE_SRC/docker/Dockerfile" "$WORK/node-image/Dockerfile"
+		provider_build hugr-node "$WORK/node-image"
+		ok "$(img hugr-node), from the release dry run assets in $DIST"
 	fi
-	if [ -n "${NODE_IMAGE:-}" ]; then
-		ok "hugr-node:demo, from $NODE_IMAGE"
-	else
-		ok "hugr-node:demo, from the release dry run assets in $DIST"
-	fi
-	for image in hugr-platform:demo tresor-server:demo kista:demo hugr-node:demo; do
-		provider_load "$image"
-	done
 }

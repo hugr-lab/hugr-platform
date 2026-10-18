@@ -6,6 +6,9 @@
 //	check -token-url https://127.0.0.1:<port>/realms/hugr/protocol/openid-connect/token -token-host keycloak.idp.svc \
 //	      -client demo-analyst-a -secret-file <file> -node 127.0.0.1:<port> -server-name hugr-node-a.hugr.svc \
 //	      -ca ca.crt -sql 'SELECT count(*) FROM orders'
+//
+// An IdP in the cluster is reached through a port-forward (-token-host its TLS name, the run's CA); one outside it
+// (Entra) directly, by the system's roots, with the -scope it asks for.
 package main
 
 import (
@@ -32,7 +35,8 @@ import (
 func main() {
 	var (
 		tokenURL   = flag.String("token-url", "", "the IdP's token endpoint, reached through a port-forward")
-		tokenHost  = flag.String("token-host", "", "the IdP's TLS name")
+		tokenHost  = flag.String("token-host", "", "the IdP's TLS name behind a port-forward (empty: the IdP is reached directly)")
+		scope      = flag.String("scope", "", "the scope the IdP asks for, if any")
 		client     = flag.String("client", "", "the principal's client id")
 		secretFile = flag.String("secret-file", "", "the file holding the client's secret")
 		node       = flag.String("node", "", "the node's Flight address, reached through a port-forward")
@@ -41,7 +45,8 @@ func main() {
 		sql        = flag.String("sql", "", "the statement")
 	)
 	flag.Parse()
-	if err := run(*tokenURL, *tokenHost, *client, *secretFile, *node, *serverName, *caFile, *sql); err != nil {
+	idp := tokenRequest{url: *tokenURL, host: *tokenHost, client: *client, secretFile: *secretFile, scope: *scope}
+	if err := run(idp, *node, *serverName, *caFile, *sql); err != nil {
 		fmt.Fprintln(os.Stderr, redact(err.Error()))
 		os.Exit(1)
 	}
@@ -57,7 +62,12 @@ func redact(text string) string {
 	return strings.Join(words, " ")
 }
 
-func run(tokenURL, tokenHost, client, secretFile, node, serverName, caFile, sql string) error {
+// tokenRequest: where and as whom the principal's token is asked for
+type tokenRequest struct {
+	url, host, client, secretFile, scope string
+}
+
+func run(idp tokenRequest, node, serverName, caFile, sql string) error {
 	pem, err := os.ReadFile(caFile)
 	if err != nil {
 		return err
@@ -68,7 +78,7 @@ func run(tokenURL, tokenHost, client, secretFile, node, serverName, caFile, sql 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	token, err := clientCredentials(ctx, tokenURL, tokenHost, client, secretFile, pool)
+	token, err := clientCredentials(ctx, idp, pool)
 	if err != nil {
 		return fmt.Errorf("the principal's token: %w", err)
 	}
@@ -117,20 +127,26 @@ func valueString(column arrow.Array, row int) string {
 }
 
 // clientCredentials: the principal's token by its client's secret; the secret is read from its file only
-func clientCredentials(ctx context.Context, tokenURL, tokenHost, client, secretFile string, pool *x509.CertPool) (string, error) {
-	secret, err := os.ReadFile(secretFile)
+func clientCredentials(ctx context.Context, idp tokenRequest, pool *x509.CertPool) (string, error) {
+	secret, err := os.ReadFile(idp.secretFile)
 	if err != nil {
 		return "", err
 	}
-	form := url.Values{"grant_type": {"client_credentials"}, "client_id": {client},
+	form := url.Values{"grant_type": {"client_credentials"}, "client_id": {idp.client},
 		"client_secret": {strings.TrimSpace(string(secret))}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if idp.scope != "" {
+		form.Set("scope", idp.scope)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, idp.url, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool,
-		ServerName: tokenHost, MinVersion: tls.VersionTLS12}}}
+	config := &tls.Config{MinVersion: tls.VersionTLS12}
+	if idp.host != "" { // the cluster's IdP behind a port-forward: the run's CA, its own name
+		config.RootCAs, config.ServerName = pool, idp.host
+	}
+	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: config}}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err

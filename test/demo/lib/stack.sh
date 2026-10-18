@@ -2,12 +2,11 @@
 # The demo's services (spec 004): PostgreSQL, the IdP, tresor-server, kista. Each made again by a run; its secrets
 # are the run's (secret_value), held in Kubernetes Secrets of the demo's cluster, never printed.
 
-KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.6.4}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:17}"
-KC_ISSUER="https://keycloak.idp.svc:8443/realms/hugr"
 TRESOR_HOST="tresor.tresor.svc:443"
 KISTA_PREFIX="https://kista.kista.svc/hugr/demo"
 GROUPS_=(a b)
+NODE_CPU="${HUGR_DEMO_NODE_CPU:-1}"
 
 install_db() {
 	step "PostgreSQL: the policy catalog (hugr) and a source (sales)"
@@ -53,115 +52,6 @@ YAML
 	ok "PostgreSQL in db: the catalog's database and the source sales.orders"
 }
 
-# --- the IdP on kind and minikube: Keycloak, the nodes' clients authenticated by their ServiceAccount tokens ----------
-install_idp() {
-	step "Keycloak: the realm hugr - the nodes by their ServiceAccount tokens, no secret of theirs"
-	namespace idp
-	ca_cert keycloak keycloak.idp.svc
-	tls_secret idp keycloak-tls keycloak
-	local sa_issuer
-	sa_issuer="$(k get --raw /.well-known/openid-configuration | python3 -c 'import json,sys; print(json.load(sys.stdin)["issuer"])')"
-	DEMO_SEEDER="$(secret_value kc-seeder)" DEMO_ANALYST_A="$(secret_value kc-analyst-a)" \
-		DEMO_ANALYST_B="$(secret_value kc-analyst-b)" DEMO_ADMIN="$(secret_value kc-admin)" \
-		python3 - "$WORK/realm.json" "$sa_issuer" "${GROUPS_[@]}" <<'PY'
-import json, os, sys
-out, sa_issuer, groups = sys.argv[1], sys.argv[2], sys.argv[3:]
-aud = lambda audience: {"name": "aud-" + audience, "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
-                        "config": {"included.custom.audience": audience, "access.token.claim": "true"}}
-# the client's id as a claim, whatever scopes an imported service account gets (tresor's service claim)
-client_id = {"name": "client_id", "protocol": "openid-connect", "protocolMapper": "oidc-usersessionmodel-note-mapper",
-             "config": {"user.session.note": "client_id", "claim.name": "client_id", "access.token.claim": "true",
-                        "jsonType.label": "String"}}
-def caller(cid, secret, audience):
-    return {"clientId": cid, "secret": secret, "publicClient": False, "standardFlowEnabled": False,
-            "serviceAccountsEnabled": True, "protocolMappers": [aud(audience), client_id]}
-groups_claim = {"name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
-                "config": {"claim.name": "groups", "full.path": "false", "access.token.claim": "true"}}
-nodes, node_users = [], []
-for g in groups:
-    subject = f"system:serviceaccount:hugr:hugr-node-{g}"
-    # the client is named by its subject: the flow sends client_id, and Keycloak's federated authentication takes
-    # only the assertion's sub there
-    nodes.append({"clientId": subject, "publicClient": False, "standardFlowEnabled": False,
-                  "serviceAccountsEnabled": True, "clientAuthenticatorType": "federated-jwt",
-                  "attributes": {"jwt.credential.issuer": "k8s", "jwt.credential.sub": subject},
-                  "protocolMappers": [aud("duckdb-secrets"), groups_claim, client_id]})
-    # every node's identity is in one group: tresor grants the nodes' secrets to it (the owner, 2026-10-18)
-    node_users.append({"username": f"service-account-hugr-node-{g}", "enabled": True, "serviceAccountClientId": subject,
-                       "groups": ["/hugr-nodes"]})
-realm = {
-    "realm": "hugr", "enabled": True, "eventsEnabled": True, "enabledEventTypes": ["CLIENT_LOGIN", "CLIENT_LOGIN_ERROR"],
-    "roles": {"realm": [{"name": n} for n in ["analyst_a", "analyst_b", "platform_admin", "demo_seeder"]]},
-    "groups": [{"name": "hugr-nodes", "path": "/hugr-nodes"}],
-    # the cluster's ServiceAccount issuer: Keycloak reads its keys with its own ServiceAccount token
-    "identityProviders": [{"alias": "k8s", "providerId": "kubernetes", "enabled": True, "config": {"issuer": sa_issuer}}],
-    "clients": nodes + [
-        caller("demo-seeder", os.environ["DEMO_SEEDER"], "duckdb-secrets"),
-        caller("demo-analyst-a", os.environ["DEMO_ANALYST_A"], "hugr"),
-        caller("demo-analyst-b", os.environ["DEMO_ANALYST_B"], "hugr"),
-        caller("demo-admin", os.environ["DEMO_ADMIN"], "hugr"),
-    ],
-    "users": node_users + [
-        {"username": "service-account-demo-seeder", "enabled": True, "serviceAccountClientId": "demo-seeder", "realmRoles": ["demo_seeder"]},
-        {"username": "service-account-demo-analyst-a", "enabled": True, "serviceAccountClientId": "demo-analyst-a", "realmRoles": ["analyst_a"]},
-        {"username": "service-account-demo-analyst-b", "enabled": True, "serviceAccountClientId": "demo-analyst-b", "realmRoles": ["analyst_b"]},
-        {"username": "service-account-demo-admin", "enabled": True, "serviceAccountClientId": "demo-admin", "realmRoles": ["platform_admin"]},
-    ],
-}
-json.dump(realm, open(out, "w"))
-PY
-	k -n idp delete secret kc-realm --ignore-not-found >/dev/null
-	k -n idp create secret generic kc-realm --from-file=realm.json="$WORK/realm.json" >/dev/null
-	# Keycloak imports a realm it does not have: a changed realm rolls its pod (start-dev keeps nothing)
-	local realm_hash
-	realm_hash="$(openssl dgst -sha256 -r "$WORK/realm.json" | cut -c1-16)"
-	rm -f "$WORK/realm.json"
-	k apply -f - >/dev/null <<YAML
-apiVersion: v1
-kind: ServiceAccount
-metadata: {name: keycloak, namespace: idp}
----
-# Keycloak reads the cluster's ServiceAccount issuer (discovery, keys) with its own token
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata: {name: hugr-demo-kc-issuer-discovery}
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:service-account-issuer-discovery}
-subjects: [{kind: ServiceAccount, name: keycloak, namespace: idp}]
----
-apiVersion: apps/v1
-kind: Deployment
-metadata: {name: keycloak, namespace: idp}
-spec:
-  selector: {matchLabels: {app: keycloak}}
-  template:
-    metadata: {labels: {app: keycloak}, annotations: {hugr.demo/realm: "$realm_hash"}}
-    spec:
-      serviceAccountName: keycloak
-      containers:
-        - name: keycloak
-          image: $KEYCLOAK_IMAGE
-          args: [start-dev, --import-realm, --https-port=8443, --https-certificate-file=/tls/tls.crt,
-                 --https-certificate-key-file=/tls/tls.key, --hostname=https://keycloak.idp.svc:8443,
-                 --truststore-paths=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt]
-          ports: [{containerPort: 8443}]
-          readinessProbe: {httpGet: {path: /realms/hugr, port: 8443, scheme: HTTPS}, periodSeconds: 5, failureThreshold: 60}
-          resources: {requests: {cpu: 100m, memory: 512Mi}}
-          volumeMounts:
-            - {name: tls, mountPath: /tls, readOnly: true}
-            - {name: realm, mountPath: /opt/keycloak/data/import, readOnly: true}
-      volumes:
-        - {name: tls, secret: {secretName: keycloak-tls}}
-        - {name: realm, secret: {secretName: kc-realm}}
----
-apiVersion: v1
-kind: Service
-metadata: {name: keycloak, namespace: idp}
-spec: {selector: {app: keycloak}, ports: [{port: 8443, targetPort: 8443}]}
-YAML
-	rollout idp keycloak 420s
-	ok "Keycloak in idp: the realm hugr at $KC_ISSUER, the ServiceAccount issuer $sa_issuer"
-}
-
 # --- tresor-server: the nodes' secrets, the seeder its admin ---------------------------------------------------------
 install_tresor() {
 	step "tresor-server: the catalog's login and the source's, for the groups' identities"
@@ -173,17 +63,19 @@ install_tresor() {
 	k -n tresor create secret generic kek --from-literal=key="$(secret_b64 tresor-kek 32)" >/dev/null
 	k -n tresor delete configmap ca --ignore-not-found >/dev/null
 	k -n tresor create configmap ca --from-file=ca.crt="$WORK/ca.crt" >/dev/null
-	local actors="" g
+	local actors="" g groups_claim=""
 	for g in "${GROUPS_[@]}"; do
-		actors="$actors      - {principal: 'client:system:serviceaccount:hugr:hugr-node-$g', verbs: [use]}
+		actors="$actors      - {principal: 'client:$(group_client_id "$g")', verbs: [use]}
 "
 	done
+	[ -z "$TRESOR_GROUPS_CLAIM" ] || groups_claim="groups_claim: $TRESOR_GROUPS_CLAIM"
 	cat >"$WORK/tresor.yaml" <<YAML
 fullnameOverride: tresor
-image: {repository: tresor-server, tag: demo, pullPolicy: Never}
+image: {repository: "$(img_repo tresor-server)", tag: demo, pullPolicy: $PULL}
 localKEK: {secretName: kek}
 tlsSecret: tresor-tls
-env: [{name: SSL_CERT_FILE, value: /etc/tresor-ca/ca.crt}]
+# the run's CA beside the system's roots (an IdP outside the cluster): SSL_CERT_DIR adds, SSL_CERT_FILE would replace
+env: [{name: SSL_CERT_DIR, value: /etc/tresor-ca}]
 extraVolumes: [{name: ca, configMap: {name: ca}}]
 extraVolumeMounts: [{name: ca, mountPath: /etc/tresor-ca, readOnly: true}]
 resources: {requests: {cpu: 10m, memory: 32Mi}}
@@ -191,11 +83,11 @@ service: {port: 443}
 config:
   public_url: https://$TRESOR_HOST
   issuers:
-    - issuer: $KC_ISSUER
-      audience: duckdb-secrets
-      roles_claim: realm_access.roles
-      groups_claim: groups
-      service: {claim: client_id}
+    - issuer: $IDP_ISSUER
+      audience: $TRESOR_AUDIENCE
+      roles_claim: $TRESOR_ROLES_CLAIM
+      $groups_claim
+      service: {claim: $TRESOR_SERVICE_CLAIM}
       service_flows: [client_credentials, private_key_jwt, federated]
   policy:
     admins: [role:demo_seeder]
@@ -299,7 +191,7 @@ install_kista() {
 	k -n kista delete secret kista-ca --ignore-not-found >/dev/null
 	k -n kista create secret generic kista-ca --from-file=ca.crt="$WORK/ca.crt" >/dev/null
 	cat >"$WORK/kista.yaml" <<YAML
-image: {repository: kista, tag: demo, pullPolicy: Never}
+image: {repository: "$(img_repo kista)", tag: demo, pullPolicy: $PULL}
 mode: tls
 tlsSecret: kista-tls
 devProfile: true

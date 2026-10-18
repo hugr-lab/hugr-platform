@@ -1,7 +1,8 @@
 # Spec 004: the platform in one cluster - the demo, end to end (kind in CI, minikube locally, AKS by hand)
 
-- **Status**: accepted (the owner, 2026-10-18: minikube locally, manual runs on AKS as tresor-server's and kista's, and
-  nothing of Azure kept between runs)
+- **Status**: implemented for minikube and kind (the nine checks pass on both); the AKS provider is written and waits
+  for its first live run until more of the platform is in (the owner, 2026-10-18). Accepted 2026-10-18: minikube
+  locally, manual runs on AKS as tresor-server's and kista's, and nothing of Azure kept between runs
 - **Date**: 2026-10-18
 
 ## Summary
@@ -47,11 +48,11 @@ provider is the only difference between the clusters:
 | | kind (CI) | minikube (a developer's machine) | aks (by hand) |
 | --- | --- | --- | --- |
 | the cluster | made and deleted by the run (`HUGR_DEMO_KEEP=1` keeps it) | the profile `hugr-demo` (`--memory`, `--cpus` from `HUGR_DEMO_MEMORY` / `_CPUS`, 12 GiB and 6 by default), made if missing, kept | a resource group of its own, AKS with its OIDC issuer and workload identity, made by `up`, deleted by `down` |
-| the images | `kind load` | `minikube image load` | an Azure Container Registry of the run's, attached to the cluster; built there by `az acr build` |
+| the images | `kind load` | `minikube image load` (skipped when the cluster already has that image) | an Azure Container Registry of the run's, attached to the cluster; built here for amd64 and pushed (below) |
 | the architecture | the runner's | the machine's (arm64 on a Mac) | amd64 |
 | the IdP | Keycloak in the cluster | Keycloak in the cluster | Entra ID: managed identities, app registrations (below) |
 | the ServiceAccount issuer | read from the cluster's discovery | read from the cluster's discovery | the AKS OIDC issuer |
-| `up`, `check`, `down` | one run does all three | one run does `up` and `check`; `down` deletes the namespaces | one run does all three, and `down` runs whatever happened before it; `up` / `check` / `down` alone are for debugging, the run's state in `~/.cache/hugr-platform-aks-live` (mode 0700) between them |
+| `up`, `check`, `down` | one run does all three | one run does `up` and `check`; `down` deletes the namespaces | one run does all three, and `down` runs whatever happened before it; `up` / `check` / `down` alone are for debugging, the run's state in `~/.cache/hugr-platform-demo/aks` (mode 0700, the cluster's kubeconfig in it) between them |
 
 | namespace | what | how it is made |
 | --- | --- | --- |
@@ -67,6 +68,10 @@ that CA: `HUGR_CA_FILE` replaces the node's roots (hugr-node spec 006).
 ### The images
 
 - **The operator** is built from this checkout and loaded into the cluster (or its registry, on AKS).
+- **On AKS** every image is built here for `linux/amd64` and pushed to the run's registry. The Dockerfiles cross-compile
+  on the build's own platform (BuildKit's platform arguments), which a local `docker build --platform` provides. The
+  push's token (`az acr login --expose-token`) goes into a docker config in the run's state, never the developer's
+  keychain, and dies with the registry.
 - **tresor-server and kista** are built from a checkout each (`TRESOR_SERVER_DIR`, `KISTA_DIR`; otherwise their main
   is cloned), as hugr-node's bootstrap e2e builds them.
 - **hugr-node** is built from the assets of a hugr-node release dry run, so nothing new is published.
@@ -112,11 +117,18 @@ lost connection), so it can be deleted by hand.
 - **A user-assigned managed identity per group**, with a federated credential: the AKS OIDC issuer, the subject
   `system:serviceaccount:hugr:hugr-node-<g>`, the audience `api://AzureADTokenExchange`. Its client id is the group's
   `identity.clientID`. A node's tresor login is its projected token exchanged for an Entra token: no secret.
-- **An app registration for tresor** (`api://<its app id>`): the audience of the nodes' tokens.
-- **App registrations for the demo's principals** (`analyst_a`, `analyst_b`, `platform_admin` as app roles), with
-  client credentials of two days kept in the run's state (mode 0600), as kista's live run does.
+- **An app registration for tresor** (`api://<its app id>`, v2 tokens): the audience of the nodes' and the seeder's
+  tokens. Its app roles are `hugr_node`, held by every group's identity, and `demo_seeder`. tresor reads `roles`, and
+  a service by `azp`. The nodes' secrets are granted to `role:hugr_node`; each identity is an actor
+  (`client:<its client id>`).
+- **An app registration for the nodes** (`hugr`, v2 tokens): the audience of the principals' tokens, its app roles
+  `analyst_a`, `analyst_b`, `platform_admin`.
+- **App registrations for the demo's principals** (the seeder, the two analysts, the admin), each holding its app role,
+  with client credentials of two days kept in the run's state (mode 0600), as kista's live run does. `up` waits until
+  their tokens carry the roles: an assignment reaches the tokens in a while.
 
 The policy's issuer is the tenant's (`https://login.microsoftonline.com/<tenant>/v2.0`), its client the principals'.
+`down` deletes the app registrations and purges them, and their service principals, from Entra's recycle bin.
 The signed-in `az` account needs to create app registrations, and role assignments in the run's resource group.
 `leftovers` lists whatever of a run remains. Nothing of a token or a secret is printed.
 
@@ -194,8 +206,10 @@ answers a server-side dry run. Everything else is the shipped install.
 
 ### CI
 
-A workflow in this repository runs the demo on kind on every push to main and on dispatch, not on every PR: the run
-takes about 20 minutes. AKS is never run by CI: it costs, and it needs a tenant's rights.
+A workflow in this repository (`.github/workflows/demo.yml`) runs the demo on kind on every push to main and on
+dispatch, not on every PR: the run takes about half an hour. A node requests 250m of CPU there (`HUGR_DEMO_NODE_CPU`;
+the node rounds it up to one thread), so check 8's four nodes fit the 4-core runner. On a failure the job prints the
+cluster's state, redacted. AKS is never run by CI: it costs, and it needs a tenant's rights.
 
 - It uses the node assets of hugr-node's latest successful release dry run on main.
 - Both repositories are public, so the job's token can download the artifact.
@@ -211,8 +225,8 @@ takes about 20 minutes. AKS is never run by CI: it costs, and it needs a tenant'
   - A node has none: its tresor login is its ServiceAccount token, and its catalog login and kista's token come from
     tresor at use.
 - **What the demo proves about secrets.** The checks grep the operator's, the nodes' and the seed Job's logs, and the
-  platform namespace's resources, for the run's secrets and for tokens (`eyJ`). Any hit fails the run, and so does the
-  seed's Secret outliving its Job.
+  platform namespace's resources, for the run's secrets and for tokens (a JWT's shape: two base64 JSON parts before a
+  dot). Any hit fails the run, and so does the seed's Secret outliving its Job.
 
 ## Testing
 

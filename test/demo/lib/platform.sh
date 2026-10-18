@@ -9,7 +9,9 @@ install_operator() {
 	tls_secret hugr operator-tls operator
 	k -n hugr delete secret hugr-platform-tls --ignore-not-found >/dev/null
 	k -n hugr create secret tls hugr-platform-tls --cert "$WORK/operator.crt" --key "$WORK/operator.key" >/dev/null
-	k apply -k "$HERE/overlay" >"$WORK/operator-apply.log" 2>&1 || {
+	# the overlay names the image loaded into the cluster; on AKS it is the registry's, pulled
+	k kustomize "$HERE/overlay" | sed -e "s#image: hugr-platform:demo#image: $(img hugr-platform)#" \
+		-e "s#imagePullPolicy: Never#imagePullPolicy: $PULL#" | k apply -f - >"$WORK/operator-apply.log" 2>&1 || {
 		cat "$WORK/operator-apply.log" >&2
 		fail "the operator's install"
 	}
@@ -35,7 +37,9 @@ YAML
 
 install_platform() {
 	step "the platform: HugrPlatform, the groups a (2 nodes) and b (1)"
-	local g
+	local g audience="" scope=""
+	[ -z "$IDP_FEDERATION_AUDIENCE" ] || audience=", federationAudience: \"$IDP_FEDERATION_AUDIENCE\""
+	[ -z "$TRESOR_SCOPE" ] || scope=", scope: \"$TRESOR_SCOPE\""
 	for g in "${GROUPS_[@]}"; do
 		ca_cert "door-$g" "hugr-node-$g.hugr.svc"
 		tls_secret hugr "hugr-node-$g-tls" "door-$g"
@@ -45,18 +49,15 @@ apiVersion: platform.hugr.io/v1alpha1
 kind: HugrPlatform
 metadata: {name: hugr, namespace: hugr}
 spec:
-  node: {image: "hugr-node:demo", imagePullPolicy: Never}
-  idp:
-    issuer: "$KC_ISSUER"
-    # Keycloak's federated client authentication takes the realm's issuer as the assertion's audience
-    federationAudience: "$KC_ISSUER"
-  tresor: {host: "$TRESOR_HOST"}
+  node: {image: "$(img hugr-node)", imagePullPolicy: $PULL}
+  idp: {issuer: "$IDP_ISSUER"$audience}
+  tresor: {host: "$TRESOR_HOST"$scope}
   repository: {name: hugr, prefix: "$KISTA_PREFIX"}
   caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}}
   heartbeat: {intervalSeconds: 5}
   sizes:
     small:
-      resources: {requests: {cpu: "1", memory: 1Gi}, limits: {memory: 2Gi}}
+      resources: {requests: {cpu: "$NODE_CPU", memory: 1Gi}, limits: {memory: 2Gi}}
       temp: {medium: local, size: 2Gi}
   plan: {maxNodes: 4, sizes: [small]}
 YAML
@@ -73,17 +74,14 @@ spec:
   platform: hugr
   replicas: $replicas
   size: small
-  identity: {clientID: "system:serviceaccount:hugr:hugr-node-$g"}
+  identity: {clientID: "$(group_client_id "$g")"}
   drainSeconds: 10
   tls: {secretRef: {name: hugr-node-$g-tls}}
 YAML
 	done
 	# a run again: the catalog was made anew, so the nodes start anew (the group's restartedAt, as an operator would)
 	if [ -n "$again" ]; then
-		for g in "${GROUPS_[@]}"; do
-			k -n hugr patch hng "$g" --type merge -p "{\"spec\":{\"restartedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" >/dev/null
-		done
-		sleep 5
+		for g in "${GROUPS_[@]}"; do restart_group "$g"; done
 	fi
 	for g in "${GROUPS_[@]}"; do
 		eventually 60 "the operator makes group $g's Deployment" k -n hugr get "deploy/hugr-node-$g"
@@ -94,4 +92,17 @@ YAML
 		fi
 	done
 	ok "both groups' nodes serve"
+}
+
+# restart_group <g>: the group's restartedAt, as an operator sets it, and the roll it makes - waited for once the
+# operator has put it into the Deployment's pod template (a rollout status before that sees the last roll, finished)
+restart_group() {
+	local at
+	at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	k -n hugr patch hng "$1" --type merge -p "{\"spec\":{\"restartedAt\":\"$at\"}}" >/dev/null || fail "restarting group $1"
+	eventually 120 "the operator puts group $1's restart into its Deployment" template_restarted "$1" "$at"
+	k -n hugr rollout status "deploy/hugr-node-$1" --timeout 300s >/dev/null || fail "group $1 did not roll"
+}
+template_restarted() {
+	[ "$(k -n hugr get deploy "hugr-node-$1" -o jsonpath='{.spec.template.metadata.annotations.platform\.hugr\.io/restartedAt}')" = "$2" ]
 }

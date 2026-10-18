@@ -99,11 +99,21 @@ secret_b64() {
 	cat "$file"
 }
 
+# stop_forwards: the run's port-forwards end with it
+stop_forwards() {
+	[ -f "$WORK/forwards.pid" ] || return 0
+	local p
+	while read -r p; do kill "$p" 2>/dev/null || true; done <"$WORK/forwards.pid"
+	rm -f "$WORK/forwards.pid"
+}
+
 # forward <namespace> <target> <port>: a port-forward of the run's; prints the local port
 forward() {
-	local log="$WORK/forward.$1.$(echo "$2" | tr '/' '_').log" port=""
+	local log port=""
+	log="$WORK/forward.$1.$(echo "$2" | tr '/' '_').log"
 	k -n "$1" port-forward "$2" ":$3" >"$log" 2>&1 &
-	PIDS+=($!)
+	# called in $(...) too: the pid goes to a file the run's exit reads, a subshell's array would lose it
+	echo "$!" >>"$WORK/forwards.pid"
 	for _ in $(seq 60); do
 		port="$(sed -n 's/^Forwarding from 127.0.0.1:\([0-9]*\) .*/\1/p' "$log" | head -1)"
 		[ -n "$port" ] && break

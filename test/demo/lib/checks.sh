@@ -3,12 +3,11 @@
 # checker (test/demo/check: Flight SQL, the principal's token by client credentials, its secret read from a file).
 
 CHECKER=""
-KC_PORT=""
 
 checker_up() {
 	CHECKER="$WORK/check"
 	(cd "$HERE/check" && go build -o "$CHECKER" .) || fail "the checker did not build"
-	KC_PORT="$(forward idp svc/keycloak 8443)"
+	idp_checker_up
 	rm -rf "$WORK/ports" && mkdir -p "$WORK/ports"
 }
 
@@ -22,13 +21,14 @@ for p in json.load(sys.stdin)["items"]:
         print(p["metadata"]["name"])'
 }
 
-# as <client> <pod> <sql>: the statement's rows, or its refusal on stderr (exit 1)
+# as <principal> <pod> <sql>: the statement's rows, or its refusal on stderr (exit 1); principal: analyst-a,
+# analyst-b, admin
 as() {
-	local client="$1" pod="$2" sql="$3" group
+	local principal="$1" pod="$2" sql="$3" group
 	group="$(k -n hugr get pod "$pod" -o jsonpath='{.metadata.labels.platform\.hugr\.io/group}')"
 	[ -f "$WORK/ports/$pod" ] || forward hugr "pod/$pod" 32010 >"$WORK/ports/$pod"
-	"$CHECKER" -token-url "https://127.0.0.1:$KC_PORT/realms/hugr/protocol/openid-connect/token" \
-		-token-host keycloak.idp.svc -client "$client" -secret-file "$WORK/secrets/kc-${client#demo-}" \
+	# shellcheck disable=SC2046 # the IdP's flags are words
+	"$CHECKER" $(token_flags) -client "$(principal_id "$principal")" -secret-file "$WORK/secrets/principal-$principal" \
 		-node "127.0.0.1:$(cat "$WORK/ports/$pod")" -server-name "hugr-node-$group.hugr.svc" -ca "$WORK/ca.crt" -sql "$sql"
 }
 
@@ -41,7 +41,6 @@ deploy() { k -n hugr get deploy "hugr-node-$1" -o jsonpath="$2"; }
 status_is() { [ "$(status "$1" "$2")" = "$3" ]; }
 lease_is() { [ "$(lease "$1" "$2")" = "$3" ]; }
 deploy_is() { [ "$(deploy "$1" "$2")" = "$3" ]; }
-deploy_moved() { [ "$(deploy "$1" '{.metadata.generation}')" != "$2" ]; }
 group_ready() { status_is "$1" '{.status.readyReplicas}/{.status.resourceGroupKnown}' "$(status "$1" '{.spec.replicas}')/true"; }
 restarts_needed() { [ "$(status "$1" '{.status.profile.needsRestart[*]}' | wc -w | tr -d ' ')" = "$2" ]; }
 draining_is() { status_is "$1" '{.status.conditions[?(@.type=="Draining")].status}' "$2"; }
@@ -71,21 +70,22 @@ check_federation() {
 			fail "group $g's pods mount more than their doors' certificate: $volumes"
 		k -n hugr get deploy "hugr-node-$g" -o yaml | grep -qi 'secretKeyRef' && fail "group $g reads a secret into its env"
 	done
-	ok "a node's only Secret is its doors' certificate: its tresor login is its projected ServiceAccount token (Keycloak's federated client)"
+	ok "a node's only Secret is its doors' certificate: its tresor login is its projected ServiceAccount token ($IDP_NAME's federation)"
 }
 
 check_engine() {
-	step "3. the engine against the pod (2 GiB, 1 CPU, a 2 GiB spill volume)"
+	step "3. the engine against the pod (2 GiB, a CPU request of $NODE_CPU, a 2 GiB spill volume)"
 	local pod got want_memory want_temp
 	pod="$(first_pod a)"
-	got="$(as demo-admin "$pod" "ACL NATIVE SELECT current_setting('memory_limit'), current_setting('threads'), current_setting('max_temp_directory_size')")"
+	got="$(as admin "$pod" "ACL NATIVE SELECT current_setting('memory_limit'), current_setting('threads'), current_setting('max_temp_directory_size')")" ||
+		fail "the admin's query on $pod"
 	# what duckdb shows for the values the node sets: 80% and 90% of 2 GiB in whole MiB
 	want_memory="$(k -n hugr exec "$pod" -- /usr/local/bin/duckdb -noheader -csv -c "SET memory_limit='1638MiB'; SELECT current_setting('memory_limit')" | tail -1)"
 	want_temp="$(k -n hugr exec "$pod" -- /usr/local/bin/duckdb -noheader -csv -c "SET max_temp_directory_size='1843MiB'; SELECT current_setting('max_temp_directory_size')" | tail -1)"
 	[ "$got" = "$(printf '%s\t1\t%s' "$want_memory" "$want_temp")" ] || fail "the node's engine: $got (want $want_memory, 1, $want_temp)"
 	ok "the node runs memory_limit $want_memory, threads 1, max_temp_directory_size $want_temp: 80% / the CPU / 90%"
 	got="$(k -n hugr exec "$pod" -- /usr/local/bin/duckdb -noheader -csv -c "SELECT current_setting('memory_limit') || ' / ' || current_setting('threads')" | tail -1)"
-	CGROUP_FINDING="plain duckdb in the 2 GiB / 1-CPU-request container chooses memory_limit / threads = $got"
+	CGROUP_FINDING="plain duckdb in the 2 GiB-limit container with a CPU request of $NODE_CPU chooses memory_limit / threads = $got"
 	ok "$CGROUP_FINDING (recorded in spec 001's 'Still to verify')"
 }
 
@@ -94,9 +94,10 @@ check_placement() {
 	local a b got
 	a="$(first_pod a)"
 	b="$(first_pod b)"
-	got="$(as demo-analyst-a "$a" "SELECT region, sum(amount) FROM orders GROUP BY region ORDER BY region")"
+	got="$(as analyst-a "$a" "SELECT region, sum(amount) FROM orders GROUP BY region ORDER BY region")" ||
+		fail "analyst_a's read on $a"
 	[ "$got" = "$(printf 'north\t40\nsouth\t20')" ] || fail "analyst_a on a: $got"
-	if got="$(as demo-analyst-a "$b" "SELECT count(*) FROM orders" 2>&1)"; then fail "analyst_a is served on b"; fi
+	if got="$(as analyst-a "$b" "SELECT count(*) FROM orders" 2>&1)"; then fail "analyst_a is served on b"; fi
 	grep -q 'served by "a"' <<<"$got" || fail "analyst_a on b: $got"
 	ok "analyst_a reads demo.orders on a node of a; a node of b refuses it, naming a"
 }
@@ -105,36 +106,33 @@ check_hot() {
 	step "5. a hot item: ACL CLUSTER ATTACH … IN GROUP a, written through a node of a"
 	local writer pod version
 	writer="$(first_pod a)"
-	as demo-admin "$writer" "ACL CLUSTER ATTACH ':memory:' AS hot_a (TYPE duckdb) IN GROUP a" >/dev/null ||
+	as admin "$writer" "ACL CLUSTER ATTACH ':memory:' AS hot_a (TYPE duckdb) IN GROUP a" >/dev/null ||
 		fail "the hot ATTACH was refused"
-	version="$(as demo-admin "$writer" "ACL NATIVE SELECT acl_cluster_version()")"
+	version="$(as admin "$writer" "ACL NATIVE SELECT acl_cluster_version()")" || fail "the profile's version on $writer"
 	for pod in $(pods a); do
 		eventually 60 "node $pod applies version $version" lease_is "$pod" profile-applied "$version"
-		[ "$(as demo-admin "$pod" "ACL NATIVE SELECT count(*) FROM duckdb_databases() WHERE database_name = 'hot_a'")" = 1 ] ||
+		[ "$(as admin "$pod" "ACL NATIVE SELECT count(*) FROM duckdb_databases() WHERE database_name = 'hot_a'")" = 1 ] ||
 			fail "node $pod has no hot_a"
 	done
 	eventually 30 "group a's status: version $version applied by both" \
 		status_is a '{.status.profile.target}/{.status.profile.applied}' "$version/2"
 	pod="$(first_pod b)"
-	[ "$(as demo-admin "$(first_pod a)" "ACL NATIVE SELECT 1")" = 1 ] # the admin's session is on a; b's node is read by its log
+	[ "$(as admin "$(first_pod a)" "ACL NATIVE SELECT 1")" = 1 ] # the admin's session is on a; b's node is read by its log
 	k -n hugr logs "$pod" | grep -q 'hot_a' && fail "group b's node took group a's item"
 	ok "every node of a attached hot_a on its tick (version $version, group a: applied 2/2); b did not"
 }
 
 check_restart() {
 	step "6. a restart item, rolled: memory_limit 1GiB IN GROUP a, then the group's restartedAt"
-	local writer pod got want generation
+	local writer pod got want
 	writer="$(first_pod a)"
-	as demo-admin "$writer" "ACL CLUSTER SET memory_limit = '1GiB' IN GROUP a" >/dev/null || fail "the SET was refused"
+	as admin "$writer" "ACL CLUSTER SET memory_limit = '1GiB' IN GROUP a" >/dev/null || fail "the SET was refused"
 	eventually 60 "group a lists both nodes as needing a restart" restarts_needed a 2
 	ok "group a's status lists its 2 nodes in needsRestart"
-	generation="$(deploy a '{.metadata.generation}')"
-	k -n hugr patch hng a --type merge -p "{\"spec\":{\"restartedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" >/dev/null
-	eventually 30 "the restart reaches the Deployment" deploy_moved a "$generation"
-	k -n hugr rollout status deploy/hugr-node-a --timeout 300s >/dev/null || fail "group a did not roll"
+	restart_group a
 	eventually 120 "after the roll nobody needs a restart" restarts_needed a 0
 	pod="$(first_pod a)"
-	got="$(as demo-admin "$pod" "ACL NATIVE SELECT current_setting('memory_limit')")"
+	got="$(as admin "$pod" "ACL NATIVE SELECT current_setting('memory_limit')")" || fail "the admin's query on $pod"
 	want="$(k -n hugr exec "$pod" -- /usr/local/bin/duckdb -noheader -csv -c "SET memory_limit='1GiB'; SELECT current_setting('memory_limit')" | tail -1)"
 	[ "$got" = "$want" ] || fail "after the roll memory_limit is $got, want $want"
 	ok "the pods rolled one at a time; the new nodes run memory_limit $got, nobody waits"
@@ -144,13 +142,13 @@ check_dropped_group() {
 	step "7. a dropped resource group: its nodes drain themselves, and resume"
 	local admin pod
 	admin="$(first_pod a)"
-	as demo-admin "$admin" "DROP RESOURCE GROUP b" >/dev/null || fail "DROP RESOURCE GROUP b was refused"
+	as admin "$admin" "DROP RESOURCE GROUP b" >/dev/null || fail "DROP RESOURCE GROUP b was refused"
 	pod="$(first_pod b)"
 	eventually 60 "group b says Draining" draining_is b True
 	[ "$(lease "$pod" draining)" = true ] || fail "b's node does not report draining"
 	ok "group b's node drained itself; the group says Draining"
 	for statement in "CREATE RESOURCE GROUP b" "GRANT RESOURCE GROUP b TO ROLE analyst_b" "GRANT RESOURCE GROUP b TO ROLE platform_admin"; do
-		as demo-admin "$admin" "$statement" >/dev/null || fail "$statement was refused"
+		as admin "$admin" "$statement" >/dev/null || fail "$statement was refused"
 	done
 	eventually 60 "group b resumes" draining_is b False
 	eventually 30 "b's node admits sessions again" lease_is "$pod" draining false
@@ -179,15 +177,13 @@ check_policy() {
 	local out
 	eventually 30 "a hand-made pod as hugr-node-a refused" policy_refuses
 	ok "a pod made by hand to run as hugr-node-a is refused"
-	k -n hugr patch hng b --type merge -p "{\"spec\":{\"restartedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" >/dev/null
-	sleep 5
-	k -n hugr rollout status deploy/hugr-node-b --timeout 300s >/dev/null || fail "group b did not roll under the policy"
+	restart_group b
 	ok "and the groups keep rolling under it"
 	k delete -k "$ROOT/config/policy" >/dev/null 2>&1 || true
 }
 policy_refuses() {
 	local out
-	out="$(k -n hugr run by-hand --image=hugr-node:demo --image-pull-policy=Never --restart=Never \
+	out="$(k -n hugr run by-hand --image="$(img hugr-node)" --image-pull-policy="$PULL" --restart=Never \
 		--overrides='{"spec":{"serviceAccountName":"hugr-node-a"}}' 2>&1)" && {
 		k -n hugr delete pod by-hand --wait=false >/dev/null 2>&1
 		return 1
@@ -210,7 +206,8 @@ check_no_secrets() {
 	for file in "$WORK"/secrets/*; do
 		grep -qF "$(cat "$file")" "$WORK/scan.txt" && hits="$hits $(basename "$file")"
 	done
-	grep -q 'eyJ[A-Za-z0-9_-]\{20,\}' "$WORK/scan.txt" && hits="$hits a-token"
+	# a JWT by its shape - a header and a claims part, both base64 JSON - not three letters a certificate may hold
+	grep -Eq 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.' "$WORK/scan.txt" && hits="$hits a-token"
 	rm -f "$WORK/scan.txt"
 	[ -z "$hits" ] || fail "found in the logs or the resources of the platform's namespace:$hits"
 	ok "no secret of the run and no token in the operator's, the nodes' or the seed's logs, nor in the namespace's resources; the seed's SQL is gone"

@@ -3,11 +3,18 @@
 # on the node's image - tresor's secrets for the groups' identities, then the policy catalog written directly as the
 # database's operator: the IdP, the roles, a virtual catalog over the source, the resource groups, the first profile.
 
-# the platform's CA bundle: HUGR_CA_FILE replaces the node's system roots, so it holds them plus the run's CA
+# the platform's CA bundle: HUGR_CA_FILE replaces the node's system roots, so it holds them plus the run's CA. The
+# roots are read from the node's image in the cluster, wherever it was built.
 install_ca_bundle() {
 	namespace hugr
-	docker run --rm --entrypoint cat hugr-node:demo /etc/ssl/certs/ca-certificates.crt >"$WORK/bundle.crt" ||
-		fail "the node image's system roots"
+	k -n hugr delete pod ca-roots --ignore-not-found --wait >/dev/null
+	k -n hugr run ca-roots --image="$(img hugr-node)" --image-pull-policy="$PULL" --restart=Never \
+		--command -- cat /etc/ssl/certs/ca-certificates.crt >/dev/null || fail "the node image's system roots"
+	k -n hugr wait --for=jsonpath='{.status.phase}'=Succeeded pod/ca-roots --timeout=300s >/dev/null ||
+		fail "the node image's system roots: $(k -n hugr get pod ca-roots -o jsonpath='{.status.containerStatuses[0].state}')"
+	k -n hugr logs ca-roots >"$WORK/bundle.crt"
+	k -n hugr delete pod ca-roots --wait=false >/dev/null
+	grep -q 'BEGIN CERTIFICATE' "$WORK/bundle.crt" || fail "the node image holds no system roots"
 	cat "$WORK/ca.crt" >>"$WORK/bundle.crt"
 	k -n hugr delete configmap hugr-ca --ignore-not-found >/dev/null
 	k -n hugr create configmap hugr-ca --from-file=ca.crt="$WORK/bundle.crt" >/dev/null
@@ -16,12 +23,13 @@ install_ca_bundle() {
 seed() {
 	step "the first deployment: tresor's secrets, the policy catalog - one Job, in its own process"
 	install_ca_bundle
-	local pg seeder g grants=""
+	local pg seeder g grants="" scope=""
+	[ -z "$TRESOR_SCOPE" ] || scope=", OAUTH_SCOPE '$TRESOR_SCOPE'"
 	pg="$(secret_value pg)"
-	seeder="$(secret_value kc-seeder)"
-	# the nodes' identities are one group: the secrets go to it
+	seeder="$(secret_value principal-seeder)"
+	# every node's identity is the one tresor principal: the secrets go to it
 	for s in hugr_policy_catalog sales; do
-		grants="${grants}CALL owner.grant_secret('$s', 'group:hugr-nodes', ['use']);
+		grants="${grants}CALL owner.grant_secret('$s', '$NODES_PRINCIPAL', ['use']);
 "
 	done
 	# the SQL carries the run's secrets: it goes into a Secret of the demo's cluster, never a ConfigMap or a log
@@ -35,8 +43,8 @@ SET GLOBAL allow_extension_repositories = 'allowed';
 CREATE OR REPLACE EXTENSION REPOSITORY hugr WITH PREFIX '$KISTA_PREFIX';
 INSTALL postgres_scanner FROM hugr;
 LOAD postgres_scanner FROM hugr;
-CREATE SECRET seeder (TYPE tresor, SCOPE 'tresor:$TRESOR_HOST', FLOW 'client_credentials', CLIENT_ID 'demo-seeder',
-    CLIENT_SECRET '$seeder', ISSUER '$KC_ISSUER');
+CREATE SECRET seeder (TYPE tresor, SCOPE 'tresor:$TRESOR_HOST', FLOW 'client_credentials',
+    CLIENT_ID '$(principal_id seeder)', CLIENT_SECRET '$seeder', ISSUER '$IDP_ISSUER'$scope);
 ATTACH 'tresor:$TRESOR_HOST' AS owner (SECRET seeder);
 CREATE OR REPLACE PERSISTENT SECRET hugr_policy_catalog IN owner (TYPE postgres, HOST 'pg.db.svc', PORT '5432',
     DATABASE 'hugr', USER 'postgres', PASSWORD '$pg');
@@ -49,8 +57,8 @@ ATTACH 'tresor:$TRESOR_HOST' AS owner (SECRET seeder);
 ATTACH 'host=pg.db.svc port=5432 dbname=hugr user=postgres password=$pg' AS pg (TYPE postgres);
 SELECT acl_use_db('pg', 'acl', true);
 SET GLOBAL acl_allow_anonymous_admin = true;
-ACL ADMIN CREATE ISSUER IF NOT EXISTS kc URL '$KC_ISSUER';
-ACL ADMIN CREATE CLIENT IF NOT EXISTS demo ISSUER kc AUDIENCES ('hugr') ROLES FROM ('realm_access.roles') UNMAPPED AS ROLE;
+ACL ADMIN CREATE ISSUER IF NOT EXISTS idp URL '$IDP_ISSUER';
+ACL ADMIN CREATE CLIENT IF NOT EXISTS demo ISSUER idp AUDIENCES ('$HUGR_AUDIENCE') ROLES FROM ('$HUGR_ROLES_CLAIM') UNMAPPED AS ROLE;
 ACL ADMIN CREATE ROLE IF NOT EXISTS analyst_a;
 ACL ADMIN CREATE ROLE IF NOT EXISTS analyst_b;
 ACL ADMIN CREATE ROLE IF NOT EXISTS platform_admin;
@@ -79,7 +87,7 @@ SQL
 	k -n hugr create secret generic demo-seed --from-file=seed.sql="$WORK/seed.sql" >/dev/null
 	rm -f "$WORK/seed.sql"
 	k -n hugr delete job demo-seed --ignore-not-found --wait >/dev/null
-	k apply -f - >/dev/null <<'YAML'
+	k apply -f - >/dev/null <<YAML
 apiVersion: batch/v1
 kind: Job
 metadata: {name: demo-seed, namespace: hugr}
@@ -91,8 +99,8 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001}
       containers:
         - name: seed
-          image: hugr-node:demo
-          imagePullPolicy: Never
+          image: $(img hugr-node)
+          imagePullPolicy: $PULL
           command: [/usr/local/bin/duckdb, -bail, -csv, -noheader, -c, .read /seed/seed.sql]
           volumeMounts:
             - {name: seed, mountPath: /seed, readOnly: true}

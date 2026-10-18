@@ -7,12 +7,16 @@
 #   test/demo/run.sh kind                           CI: makes the cluster, runs everything, deletes it
 #   test/demo/run.sh aks [up | check | down | leftovers]   by hand: one run makes and deletes everything of Azure
 #
+# The IdP is Keycloak in the cluster on kind and minikube, Entra ID on AKS. The checks change the profile: they run
+# once per up (a run without a command does both).
+#
 # Without a command a run does up and check (and, on kind and aks, down). The run's state - its CA, its secrets - is in
 # ~/.cache/hugr-platform-demo/<provider> (mode 0700); nothing of a token or a secret is printed.
 #   HUGR_NODE_DIST    the node's release assets (dist-linux_<arch>) instead of hugr-node's latest release dry run
 #   NODE_IMAGE        a published hugr-node image instead of both
 #   TRESOR_SERVER_DIR, KISTA_DIR, HUGR_NODE_DIR   checkouts instead of each one's main
 #   HUGR_DEMO_ONLY    up to a step: images, db, idp, tresor, kista, seed, operator, platform (for working on one)
+#   HUGR_DEMO_NODE_CPU  a node's CPU request (1; CI's 4-core runner: 250m - the node rounds it up to 1 thread)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$ROOT/test/demo"
@@ -29,8 +33,7 @@ esac
 CACHE="${HUGR_DEMO_CACHE:-$HOME/.cache/hugr-platform-demo}"
 WORK="$CACHE/$PROVIDER"
 mkdir -p "$WORK" && chmod 700 "$WORK"
-PIDS=()
-trap 'for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done' EXIT
+trap 'stop_forwards' EXIT
 
 . "$HERE/lib/common.sh"
 . "$HERE/lib/images.sh"
@@ -39,6 +42,11 @@ trap 'for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done' 
 . "$HERE/lib/platform.sh"
 . "$HERE/lib/checks.sh"
 . "$HERE/lib/provider-$PROVIDER.sh"
+if [ "$PROVIDER" = aks ]; then
+	. "$HERE/lib/idp-entra.sh"
+else
+	. "$HERE/lib/idp-keycloak.sh"
+fi
 
 need docker kubectl helm go gh openssl python3 git
 provider_need
@@ -76,18 +84,25 @@ case "$COMMAND" in
 up) up ;;
 check) run_checks ;;
 down) provider_down ;;
+leftovers)
+	[ "$PROVIDER" = aks ] || {
+		echo "leftovers is AKS's: kind and minikube keep nothing outside this machine" >&2
+		exit 2
+	}
+	provider_leftovers
+	;;
 all)
 	if [ "$PROVIDER" = minikube ]; then
 		up
 		[ -n "${DONE_ONLY:-}" ] || run_checks
 	else
-		trap 'provider_down; for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done' EXIT
+		trap 'stop_forwards; provider_down' EXIT
 		up
 		[ -n "${DONE_ONLY:-}" ] || run_checks
 	fi
 	;;
 *)
-	echo "the command is up, check, down or nothing" >&2
+	echo "the command is up, check, down, leftovers (aks) or nothing" >&2
 	exit 2
 	;;
 esac

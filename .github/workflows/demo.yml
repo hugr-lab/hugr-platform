@@ -1,0 +1,47 @@
+# spec 004: the platform in one cluster - the operator, two groups of hugr-node pods, Keycloak logging the nodes in by
+# their ServiceAccount tokens, tresor-server, kista and PostgreSQL - on kind, with the checks of spec 001 and hugr-node
+# spec 010. On main and on dispatch, not on every PR: a run takes about half an hour. The node's image is built from
+# the assets of hugr-node's latest successful release dry run on main (a dispatch there makes one).
+name: Demo
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: demo-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  kind:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      # both repositories are public: the job's token reads hugr-node's artifacts
+      GH_TOKEN: ${{ github.token }}
+      # four nodes at once (check 8) on a 4-core runner; the node rounds a request up to whole threads
+      HUGR_DEMO_NODE_CPU: 250m
+      HUGR_DEMO_KEEP: "1"
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Tools
+      run: |
+        go install sigs.k8s.io/kind@v0.33.0
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+    - name: The demo
+      run: test/demo/run.sh kind
+    - name: The cluster's state
+      if: failure()
+      run: |
+        redact() { sed -E 's/eyJ[A-Za-z0-9_.-]+/<token>/g'; }
+        k() { kubectl --context kind-hugr-demo "$@"; }
+        k get pods -A -o wide || true
+        k get events -A --sort-by=.lastTimestamp | tail -60 || true
+        k -n hugr get hng,hp -o yaml | redact || true
+        k -n hugr logs deploy/hugr-platform --tail 100 | redact || true
+        for pod in $(k -n hugr get pods -l platform.hugr.io/group -o name); do
+          echo "== $pod"; k -n hugr logs "$pod" --tail 60 | redact || true
+        done
