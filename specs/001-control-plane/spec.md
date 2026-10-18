@@ -1,25 +1,26 @@
 # Spec 001: the operator - node groups, a node's entry, the fleet's state
 
 - **Status**: accepted
-- **Date**: 2026-10-18 (supersedes the draft of 2026-10-17: a service with its own database)
+- **Date**: 2026-10-18 (supersedes the draft of 2026-10-17, a service with its own database). Amended the same day:
+  the pools are named in SQL.
 
 ## Summary
 
-The platform's control part is a Kubernetes operator. It is built on controller-runtime and has no database of its
-own: the desired state lives in two custom resources, and the fleet's state lives in Leases and resource statuses.
-It does four things:
+The platform's control part is a Kubernetes operator built on controller-runtime, with no database of its own. It
+does four things:
 
-- It deploys the nodes of each group.
-- It answers a node's entry: the node presents its service-account token and gets its bootstrap document.
-- It records the heartbeat, so that a lost node is an expired Lease and a group's convergence is in its status.
-- It is a client of the nodes with an identity of its own: it creates a group's resource group, writes the
-  platform's integrations into the cluster profile and reads the nodes' load, through SQL like any principal.
+- **It keeps each node group's pods** as the policy catalog says. How many nodes of which size a group has is a
+  cluster profile item, written in SQL like the rest of the profile. The operator makes Kubernetes match it.
+- **It answers a node's entry.** The node presents its ServiceAccount token and gets its bootstrap document.
+- **It records the heartbeat.** A lost node is an expired Lease, and a group's convergence is in its status.
+- **It is a client of the nodes with an identity of its own.** It reads, through SQL like any principal, the items
+  that name the pools and the nodes' load. It writes nothing into the policy.
 
 It decides nothing for a node, and it holds no profile, policy or secret. The front that routes clients to the
 nodes (spec 002) and the web console (spec 003) come from the same repository and are specified separately.
 
 Shared logic sits in Go packages with no Kubernetes dependency: the node protocol (the document, the heartbeat) and
-the expansion of a group into its pieces. A bare-metal service without Kubernetes comes only when one is needed; until
+the expansion of a pool into its pieces. A bare-metal service without Kubernetes comes only when one is needed; until
 then hugr-node spec 006's static document covers it.
 
 ## Problem
@@ -32,9 +33,19 @@ then hugr-node spec 006's static document covers it.
 
 ## Design
 
+### Who decides what
+
+| what | where | who writes it |
+| --- | --- | --- |
+| a resource group, its limits, which roles land on it (duckdb-acl specs 085, 096) | the policy | the policy administrator: `CREATE RESOURCE GROUP`, `GRANT … TO ROLE` |
+| how many nodes a group has, and of which size | the cluster profile, an item of kind `nodes` (hugr-node) | whoever holds the `cluster` bundle: `ACL CLUSTER SET NODES etl COUNT 3 SIZE 'large'` |
+| what a size is in Kubernetes (requests, the VM pool, tolerations, the temp volume) and the plan's bounds | `HugrPlatform` | the installation (in Azure, the Managed Application's plan) |
+| the pods, their Services, their status | `HugrNodeGroup` and the objects it owns | the operator, nobody else |
+
 ### The resources (`platform.hugr.io/v1alpha1`, namespaced)
 
-**`HugrPlatform`** - one per namespace: the pointers every node of the platform needs. No field holds a credential.
+**`HugrPlatform`** - one per namespace, the installation's: the pointers every node needs, the sizes, the plan's
+bounds and the first group. No field holds a credential.
 
 ```yaml
 apiVersion: platform.hugr.io/v1alpha1
@@ -51,27 +62,28 @@ spec:
   repository: {name: hugr, prefix: "https://kista.example/<tenant>/<channel>"}
   catalog: {secret: hugr_policy_catalog, schema: acl}   # the defaults: the reserved secret's type is the catalog's
   caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}} # optional: HUGR_CA_FILE
+  sizes:                                   # what a size named in SQL means in this cluster
+    large:
+      resources: {requests: {cpu: "16", memory: 128Gi}, limits: {memory: 128Gi}}
+      scheduling: {nodeSelector: {agentpool: e16ds}, tolerations: [...]}   # one pod per VM of the pool
+      temp: {medium: local, size: 600Gi}   # the spill volume: the VM's local NVMe / temp disk (emptyDir)
+  plan: {maxNodes: 12, sizes: [large]}     # what the operator will run, whatever SQL asks
+  initialGroup: {name: general, nodes: 2, size: large}   # until the profile names it: somebody must read SQL
+  groupIdentities:                         # the workload identity of each group's ServiceAccount (Azure: a managed
+    general: {clientID: "<…>"}             # identity per group, made by the deployment)
+    etl: {clientID: "<…>"}
 status:
-  conditions: [...]                        # Ready, and why not
+  conditions: [...]                        # Ready, PolicyAccess, and refusals: a size or a count past the plan
 ```
 
-**`HugrNodeGroup`** - one pool of nodes.
+**`HugrNodeGroup`** - one pool, **written by the operator only**. It is created when the profile names a group, and
+its `spec` mirrors the item. People read it with `kubectl`, and a hand edit is reconciled away.
 
 ```yaml
 apiVersion: platform.hugr.io/v1alpha1
 kind: HugrNodeGroup
 metadata: {name: etl, namespace: hugr}
-spec:
-  platform: hugr
-  replicas: 3                              # phase 1: set by hand (or by the Azure plan); autoscale in phase 2
-  resources: {requests: {cpu: "8", memory: 64Gi}, limits: {memory: 64Gi}}
-  scheduling: {nodeSelector: {hugr.io/pool: etl}, tolerations: [...]}   # a VM pool per group, one pod per VM
-  identity: {clientID: "<the group's workload identity>"}   # federated from the group's ServiceAccount (Azure: a
-                                           # user-assigned managed identity per group, made by the deployment)
-  resourceGroup: etl                       # the duckdb-acl resource group (spec 096); default: the group's name
-  drainSeconds: 300                        # SIGTERM -> acl_drain; the pod's grace is drainSeconds + 30
-  doors: {flight: true, quack: true}
-  tls: {secretRef: {name: hugr-node-etl-tls}}   # the doors' certificate (cert-manager or the operator's admin)
+spec: {platform: hugr, nodes: 3, size: large, source: "profile v12"}   # or "initialGroup"
 status:
   replicas: 3
   readyReplicas: 3
@@ -81,16 +93,32 @@ status:
   conditions: [...]
 ```
 
+### Where a group's nodes come from
+
+- **The item.** `ACL CLUSTER SET NODES <group> COUNT <n> SIZE '<size>'` is an item of the cluster profile.
+  - It is new in hugr-node's cluster part, kind `nodes`, one per group, and it is the `cluster` bundle's.
+  - At write, hugr-node refuses a group the policy has no resource group for, so a pool never runs for nobody.
+  - `COUNT 0` keeps the group with no nodes. `ACL CLUSTER REMOVE NODES <group>` is the explicit end, and the operator
+    then drains and removes the pool. Nothing goes by itself.
+- **How the operator hears of a change.** The heartbeat already carries the profile version (`config.target`).
+  - When a node reports a version the operator has not read, the operator reads `platform.cluster_items` through a
+    ready node and reconciles. It does the same at start and every 5 minutes, in case a heartbeat was missed.
+  - A change takes at most a heartbeat interval plus a reconcile. Provisioning a VM then takes minutes, so SQL
+    records an intent and the status shows the fact.
+- **The first group.** No node can read SQL before one runs, so `HugrPlatform.initialGroup` starts the first pool. As
+  soon as the profile has a `nodes` item for that group, the item decides.
+- **The plan's bounds.** A size the plan does not list, or a total past `maxNodes`, is not run. The platform's status
+  says which item and why, and the pools already running are kept.
+
 ### What the operator builds for a group
 
-The leader reconciles each `HugrNodeGroup` into the following objects, owned by the group and recreated when they
-differ:
+The leader reconciles each `HugrNodeGroup` into the following objects, owned by it and recreated when they differ:
 
 - **A ServiceAccount** `hugr-node-<group>`. The group is the identity: a node is of the group whose ServiceAccount it
-  runs as.
+  runs as. It is annotated with the group's workload identity.
 - **A Deployment** `hugr-node-<group>`, not a StatefulSet: scaling down removes the idlest pod, not the
   highest-numbered one. Its pods get:
-  - the image;
+  - the image, and the size's resources and scheduling;
   - an env with no credential in it:
     - `HUGR_ORCHESTRATOR`: the operator's in-cluster URL;
     - `HUGR_NODE_LABEL`: the pod's name, through the Downward API. It becomes duckdb-acl's `acl_node_label`
@@ -98,11 +126,24 @@ differ:
     - `HUGR_FLIGHT` / `HUGR_QUACK`;
     - `HUGR_DRAIN_DEADLINE`;
     - `HUGR_CA_FILE`;
-  - two projected service-account tokens: one with the audience `hugr-platform` for the entry and the heartbeat, one
-    with the IdP's federation audience (`api://AzureADTokenExchange` in Entra). The second is the client assertion
-    with which the node gets the IdP's token for tresor (FLOW `federated`), as the group's workload identity;
+    - the engine's settings that follow from the pod, set by the bootstrap before the lock:
+      - `HUGR_MEMORY_LIMIT`: 80% of the pod's memory limit, DuckDB's own ratio of the machine;
+      - `HUGR_THREADS`: the pod's CPU;
+      - `HUGR_TEMP_DIRECTORY`: the spill volume's mount;
+      - `HUGR_MAX_TEMP_SIZE`: 90% of that volume.
+
+      An explicit profile item for the same setting wins.
+  - **The spill volume** of the size, mounted at `HUGR_TEMP_DIRECTORY`.
+    - When memory runs out, DuckDB spills to `temp_directory`, by default up to 90% of the free space.
+    - In a pod that space is the node's ephemeral storage, and past its limit kubelet evicts the pod: every session
+      on it dies at once.
+    - With `max_temp_directory_size` under the volume's size, an overflow fails the one query instead.
+  - two projected ServiceAccount tokens:
+    - one with the audience `hugr-platform`, for the entry and the heartbeat;
+    - one with the IdP's federation audience (`api://AzureADTokenExchange` in Entra). It is the client assertion with
+      which the node gets the IdP's token for tresor (FLOW `federated`), as the group's workload identity.
   - the doors' TLS secret mounted;
-  - `terminationGracePeriodSeconds = drainSeconds + 30`;
+  - `terminationGracePeriodSeconds = drainSeconds + 30` (`drainSeconds` 300 by default);
   - a readiness probe on the Flight port;
   - rolling updates with `maxSurge: 1, maxUnavailable: 0`, so that new nodes come up before old ones drain.
 - **A headless Service** `hugr-node-<group>`. Its EndpointSlice is the front's node list (spec 002): pod name, address,
@@ -175,36 +216,24 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
     with a federated credential for that ServiceAccount.
   - The nodes already trust the IdP. The policy gets a CLIENT for the operator (its `azp`), whose own mapping gives
     the role `hugr_operator` (duckdb-acl spec 095: a privileged role is reached only through a client's own mapping).
-  - That CLIENT is part of the platform's initial policy, written at installation. Until it exists the operator's
-    writes are refused, and the platform's condition `PolicyAccess` says so.
-- **Its rights** are the `cluster` bundle (spec 118 there: `cluster` ⊇ `operate` ⊇ `observe`), plus the resource
-  groups' definitions.
-  - Today `CREATE / ALTER / DROP RESOURCE GROUP` needs an unrestricted `manage`, which is the whole policy.
-  - A duckdb-acl spec moves the definitions (a group of nodes and its limits are infrastructure) to the `cluster`
-    bundle.
-  - `GRANT RESOURCE GROUP … TO ROLE`, which roles land on which nodes, stays the policy administrator's.
-- **What it does with them**, on reconcile:
-  - `CREATE RESOURCE GROUP <g> (…)` for a group whose resource group is missing, with the group's limits.
-    - It never drops one by itself (nothing is rolled back automatically): a deleted `HugrNodeGroup` leaves its
-      resource group, and the platform's status names it as orphaned.
-    - A drop is an explicit command.
-  - The integrations of `HugrPlatform` as `ACL CLUSTER SET` items, as far as the `cluster` bundle allows: the
-    lineage naming (`acl_lineage_namespace`, `acl_lineage_level`) is on its allowlist (hugr-node's
-    `ClusterBundleMaySet`).
-    - Where the telemetry and the OpenLineage events go (the receiver's endpoint, its key's tresor name) is a data
-      path. That allowlist leaves it to `passthrough` on purpose (the 118.2 review), so the installation sets it, not
-      the operator (decision 4).
-    - A key is always named by its tresor secret, never carried.
-  - Reads of the nodes' load and sessions for the console (spec 003).
-- **Where it connects**: directly to one ready node of the group, in the cluster, with the group's TLS name. The front
-  is for clients.
+  - Until that CLIENT exists, the operator's reads are refused and the platform's condition `PolicyAccess` says so.
+    The first group still starts from `initialGroup`.
+- **Its rights are reads only**: the `observe` bundle (the load report and the sessions) and a point grant on the
+  view `platform.cluster_items` (duckdb-acl spec 117: a point grant on one view, written by `passthrough`). It holds
+  neither `cluster` nor `policy`, and writes nothing into the policy.
+- **The installation writes these, once, as a `passthrough` administrator:**
+  1. the role `hugr_operator`;
+  2. the CLIENT for the operator's identity, with its mapping;
+  3. `GRANT ADMIN observe TO ROLE hugr_operator`;
+  4. `GRANT VIEW platform.cluster_items TO ROLE hugr_operator`;
+  5. the first group's resource group: `CREATE RESOURCE GROUP general … DEFAULT`;
+  6. the integrations' receivers (decision 4).
+- **Where it connects**: directly to one ready node, in the cluster, with the group's TLS name. The front is for
+  clients.
 - **Whose identity a call carries** is decided by who started it.
-  - **The operator's own** carries the technical calls nobody asked for:
-    - reconcile: the resource group, the profile's naming;
-    - reads of the nodes' load and sessions;
-    - checks.
-
-    Each carries the reconcile run's trace, so the node's audit shows `hugr_operator` and joins the run.
+  - **The operator's own** carries the technical calls nobody asked for: reading the items, the nodes' load and
+    sessions, checks. Each carries the reconcile run's trace, so the node's audit shows `hugr_operator` and joins the
+    run.
   - **A person's** carries what a person does.
   - **No identity at all** is needed for what the console shows from the fleet's state (Leases, the groups' status):
     that is Kubernetes, read as the operator, with no node called.
@@ -245,6 +274,9 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
   - The doors' TLS key is a Kubernetes Secret, which cert-manager or the cluster's administrator provides. The
     operator only names it.
   - The operator logs a refusal with its reason, the ServiceAccount and the pod, never a token.
+- **SQL decides how many nodes, the installation decides the most.** A principal with the `cluster` bundle can grow a
+  pool, which costs money. The plan's bounds are the installation's, out of SQL's reach, and the operator never
+  passes them.
 - **Who may call.**
   - `/v1/bootstrap` and `/v1/heartbeat` answer a pod of a group, bound by TokenReview; a group's pointers go only to
     that group's pods.
@@ -254,26 +286,33 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
   - In its namespace: ServiceAccounts, Deployments, Services, PodDisruptionBudgets, NetworkPolicies, Leases, its
     resources and their status. It may read Pods and EndpointSlices and annotate Pods.
   - Cluster-wide: only `tokenreviews/create` (`system:auth-delegator`).
+  - In the policy: reads only (`observe`, the items view).
   - Its egress goes to the API server, to the nodes' doors and to the IdP (its own token).
 
 ## Testing
 
 - **Unit tests**:
-  - the expansion of a group into its objects (golden YAML);
+  - a pool's expansion into its objects (golden YAML), including the derived settings: the memory, the threads, the
+    temp volume and its 90%;
   - the document built from a platform and a group;
   - TokenReview answers: a foreign ServiceAccount, an unbound token, a pod of another group, a missing pod;
   - the 409 for a `node_id` not the token's pod;
   - status aggregation from Leases;
-  - the SQL it sends as a client: a missing resource group created with the group's limits, an existing one left
-    alone, a deleted group's never dropped, the integrations as `ACL CLUSTER SET` items naming tresor secrets.
+  - the profile's `nodes` items into pools:
+    - the initial group until an item names it;
+    - a size or a total past the plan refused, with what already runs kept;
+    - `COUNT 0` and `REMOVE` drain;
+    - a hand edit of a `HugrNodeGroup` reconciled away.
 - **envtest** (controller-runtime's API server and etcd, no kubelet):
   - reconcile creates, updates and recreates the objects;
-  - scaling changes the Deployment;
+  - a changed item changes the Deployment;
   - a Lease that stops being renewed makes a node lost;
   - the pod-deletion cost follows the reported sessions.
-- **kind e2e**: the operator, one group of two hugr-node pods, tresor-server and a repository. It comes with
-  hugr-node's document-v2 spec, since the real node is what proves the entry - and that the operator's own token is
-  admitted by the nodes' policy for its writes and refused for anything past its bundle.
+- **kind e2e**: the operator, hugr-node pods, tresor-server and a repository. It comes with hugr-node's spec (the
+  document v2, the `nodes` item, the derived settings) and proves:
+  - the entry;
+  - that `ACL CLUSTER SET NODES` grows a pool, through the heartbeat;
+  - that the operator's token is admitted for its reads and refused for a write.
 - **CI**: `go test ./...`, `go vet`, `staticcheck`, and the envtest binaries pinned. The image is distroless at
   `ghcr.io/hugr-lab/hugr-platform`, released like hugr-node's.
 
@@ -281,19 +320,29 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
 
 | # | question | decision |
 | --- | --- | --- |
-| 1 | The operator writing into the policy catalog | it is a client of the nodes with its own identity, from the start: the console needs it too. Its role holds the `cluster` bundle and the resource groups' definitions (a duckdb-acl spec); grants stay the policy administrator's |
+| 1 | The operator and the policy | a client of the nodes with its own identity from the start (the console needs it too), reading only: `observe` and the items view. No write into the policy, so no acl change |
 | 2 | How a node logs in to tresor | a workload identity per group, federated into the organisation's IdP (Azure: a managed identity with a federated credential for the group's ServiceAccount). tresor-server and kista are products of their own, used by the organisation's people as well, so they trust the organisation's IdP, never the cluster |
 | 3 | The doors' certificate inside the cluster | one certificate per group, its SAN `hugr-node-<group>.<ns>.svc`; the front and the operator dial a pod's address with that name as the TLS server name. cert-manager when the cluster has it, otherwise a Secret the administrator provides |
-| 4 | The integrations' endpoints (where the telemetry and the OpenLineage events go) | a data path, so the installation (a `passthrough` administrator) sets the receivers; the operator writes only the naming its `cluster` bundle allows. The allowlist does not grow |
+| 4 | The integrations' endpoints (where the telemetry and the OpenLineage events go) | a data path, so the installation (a `passthrough` administrator) sets the receivers; the `cluster` bundle's allowlist does not grow |
+| 5 | Where a pool is decided | in SQL: a `nodes` item of the cluster profile names a group's count and size; the operator makes Kubernetes match, inside the plan's bounds. What a size is in Kubernetes is the installation's |
+| 6 | The engine against the pod | memory, threads and the spill volume follow from the pod (env, at bootstrap): `max_temp_directory_size` under the volume, so an overflow fails a query instead of evicting the pod |
 
-Still to verify: outside Azure, the IdP's federation of Kubernetes ServiceAccount tokens (Keycloak's client
-authentication by a federated JWT). Without it, a node's or the operator's client secret would have to live
-somewhere, which the platform refuses.
+Still to verify:
+
+- Outside Azure, the IdP's federation of Kubernetes ServiceAccount tokens (Keycloak's client authentication by a
+  federated JWT). Without it, a node's or the operator's client secret would have to live somewhere, which the
+  platform refuses.
+- Whether DuckDB at our pin already reads the cgroup's memory and CPU. If it does, the env values only make explicit
+  what it would choose anyway.
 
 ## Alternatives considered
 
 - **A service with its own database** (the 2026-10-17 draft). Replaced: Kubernetes is the store, so there is nothing
   to migrate or back up, and Leases are what kubelet already uses for liveness.
+- **The pool in the CRD, the resource group created from it.** Replaced the same day (decision 5).
+  - The pool and its resource group would be two halves with one name in two places.
+  - The administrator works in SQL for everything else of the platform: the policy, the profile, the platform
+    catalog.
 - **A StatefulSet per group.** Its scale-down removes the highest ordinal, whoever holds sessions there.
 - **The node registering itself with the API server.** Refused: the node would need Kubernetes rights; with the
   heartbeat it needs none.
@@ -302,12 +351,16 @@ somewhere, which the platform refuses.
 
 ## Follow-ups
 
-- spec 002, the front: routing by the label (duckdb-acl spec 134), the node list from EndpointSlices, placement by
-  the Lease's summary.
-- spec 003, the console: the shell with tresor-server's and kista's micro-frontends, and the fleet view.
-- hugr-node: the document v2 and the orchestrator-first entry; setting `acl_node_label` from `HUGR_NODE_LABEL`; the
-  heartbeat sender.
-- duckdb-acl: the resource groups' definitions under the `cluster` bundle.
-- Packaging: the Azure Managed Application (with the publisher's just-in-time access, never standing access) and a
-  Helm chart.
-- Phase 2: autoscaling from the nodes' load, and a group's idle stop.
+- **spec 002, the front**: routing by the label (duckdb-acl spec 134), the node list from EndpointSlices, placement
+  by the Lease's summary.
+- **spec 003, the console**: the shell with tresor-server's and kista's micro-frontends, and the fleet view.
+- **hugr-node**:
+  - the document v2 and the orchestrator-first entry;
+  - `acl_node_label` from `HUGR_NODE_LABEL`;
+  - the heartbeat sender;
+  - the `nodes` item kind (`ACL CLUSTER SET | REMOVE NODES`, refused for a group the policy lacks);
+  - the derived settings from env (`HUGR_MEMORY_LIMIT`, `HUGR_THREADS`, `HUGR_TEMP_DIRECTORY`,
+    `HUGR_MAX_TEMP_SIZE`).
+- **Packaging**: the Azure Managed Application (with the publisher's just-in-time access, never standing access) and
+  a Helm chart.
+- **Phase 2**: autoscaling from the nodes' load, and a group's idle stop.
