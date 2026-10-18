@@ -1,0 +1,33 @@
+metadata:
+  labels:
+    app.kubernetes.io/instance: etl
+    app.kubernetes.io/managed-by: hugr-platform
+    app.kubernetes.io/name: hugr-node
+    app.kubernetes.io/part-of: hugr-platform
+    platform.hugr.io/group: etl
+  name: hugr-node-etl
+  namespace: hugr
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - key: app.kubernetes.io/component
+          operator: In
+          values:
+          - operator
+          - front
+        matchLabels:
+          app.kubernetes.io/part-of: hugr-platform
+    ports:
+    - port: 32010
+      protocol: TCP
+    - port: 9494
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: etl
+      app.kubernetes.io/name: hugr-node
+      platform.hugr.io/group: etl
+  policyTypes:
+  - Ingress

@@ -1,6 +1,8 @@
 # Spec 001: the operator - node groups, a node's entry, the fleet's state
 
-- **Status**: accepted
+- **Status**: implemented, but for three parts that come with their consumers: the operator's client pool to the nodes
+  (spec 003's console API is its first user), the kind e2e (the platform's demo, with hugr-node and the front), and
+  the image's release workflow (with the first release; CI builds the image on every change)
 - **Date**: 2026-10-18 (supersedes the draft of 2026-10-17, a service with its own database). Settled the same day,
   after weighing SQL as the master: the infrastructure is Kubernetes', and SQL keeps the policy and the profile.
 
@@ -17,8 +19,9 @@ three things:
 It decides nothing for a node, and it holds no profile, policy or secret. The front that routes clients to the
 nodes (spec 002) and the web console (spec 003) come from the same repository and are specified separately.
 
-Shared logic sits in Go packages with no Kubernetes dependency: the node protocol (the document, the heartbeat) and
-the expansion of a group into its pieces. A bare-metal service without Kubernetes comes only when one is needed; until
+Shared logic sits in Go packages with no Kubernetes dependency: the node protocol (the document, the heartbeat, the
+Lease's summary, `pkg/nodeproto`) and the plan's judgement of groups (`pkg/plan`). A group's Kubernetes objects are
+`internal/build`'s. A bare-metal service without Kubernetes comes only when one is needed; until
 then hugr-node spec 006's static document covers it.
 
 ## Problem
@@ -60,12 +63,15 @@ spec:
     image: ghcr.io/hugr-lab/hugr-node:v0.1.0
   idp:                                     # the organisation's IdP: users, nodes, the operator, tresor and kista trust it
     issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
+    federationAudience: api://AzureADTokenExchange   # the default: the audience of a node's client assertion
   tresor: {host: tresor.example:443, scope: "api://tresor/.default"}   # a product of its own, reached directly
   operator:
     identity: {clientID: "<the operator's workload identity>"}         # federated from its ServiceAccount
   repository: {name: hugr, prefix: "https://kista.example/<tenant>/<channel>"}
   catalog: {secret: hugr_policy_catalog, schema: acl}   # the defaults: the reserved secret's type is the catalog's
-  caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}} # optional: HUGR_CA_FILE
+  caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}} # HUGR_CA_FILE: it REPLACES the node's system roots (hugr-node
+                                           # spec 006), so it holds them plus the CA of the operator's certificate
+  heartbeat: {intervalSeconds: 15}         # the default; a node is lost after three
   sizes:                                   # what a group's size means in this cluster
     large:
       resources: {requests: {cpu: "16", memory: 128Gi}, limits: {memory: 128Gi}}
@@ -73,7 +79,7 @@ spec:
       temp: {medium: local, size: 600Gi}   # the spill volume: the VM's local NVMe / temp disk (emptyDir)
   plan: {maxNodes: 12, sizes: [large]}     # what the operator will run (in Azure, the Managed Application's plan)
 status:
-  conditions: [...]
+  conditions: [...]                        # reserved: nothing writes them yet
 ```
 
 **`HugrNodeGroup`** - one pool, edited by people.
@@ -90,7 +96,7 @@ spec:
   identity: {clientID: "<the group's workload identity>"}   # Azure: a managed identity per group, with a federated
                                            # credential for the group's ServiceAccount
   drainSeconds: 300                        # SIGTERM -> acl_drain; the pod's grace is drainSeconds + 30
-  doors: {flight: true, quack: true}
+  doors: {quack: true}                     # Flight is always open
   tls: {secretRef: {name: hugr-node-etl-tls}}
   restartedAt: ""                          # set to a new time to roll the group (see "Applying a change")
 status:
@@ -109,13 +115,23 @@ status:
   - the group's name is a DNS label of at most 36 characters, so that its pods' names (`hugr-node-<group>-<hash>-<id>`)
     are DNS labels too: a pod's name is the node's label (duckdb-acl spec 134), which the node refuses otherwise;
   - the size is one `HugrPlatform` lists;
-  - the plan's sizes and `maxNodes` hold, summed over every group with this change in it.
+  - the plan's sizes and `maxNodes` hold, summed over every group of the namespace with this change in it (one
+    platform per namespace);
+  - a change that does not grow a group (a scale-down, a restart, a label) passes even while the namespace is past
+    the plan - it is how a group gets back within it - and so does a group being deleted;
+  - the doors' certificate is a Secret named `hugr-node-…`: a group mounts no other Secret of the namespace (the
+    operator's own serving key, a catalog's).
 
   A refusal reaches `kubectl apply`, the console or the Managed Application with its reason, and nothing is written.
   An operator that does not answer refuses the change too.
 - **When it is reconciled, again.** Two changes may each pass alone and exceed the plan together. The controller
-  re-checks, and a group past the plan keeps what already runs and says `Refused` with the reason. Nothing that runs
-  is taken away by itself.
+  re-checks every group, reading the Deployments from the API server: what runs counts as it runs (an orphaned
+  Deployment included), and the growing groups, in the order of their creation, grow only while everything running
+  plus their growth stays within `maxNodes` - so the reconcile never takes the namespace past the plan by itself. A
+  scale-down frees its nodes once its Deployment runs fewer. A group past the plan keeps what already runs (its
+  Deployment is left as it is, a restart included, but a scale-down is applied) and says `Refused` with the reason;
+  the size's own checks (a memory limit, a CPU request, a spill volume) are judged here too, after a platform edit.
+  Nothing that runs is taken away by itself.
 - **The plan's bounds are the installation's**, in `HugrPlatform`, under Kubernetes' (and Azure's) access control.
 
 ### What the operator builds for a group
@@ -137,8 +153,7 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
     - the container's resources, through the Downward API with divisor 1: `HUGR_POD_MEMORY` (`limits.memory`, in
       bytes - the line past which the pod is OOM-killed) and `HUGR_POD_CPU` (`requests.cpu`, whole cores - what the
       pod is guaranteed; a size sets no CPU limit, which would only throttle);
-    - `HUGR_TEMP_DIRECTORY` and `HUGR_TEMP_SIZE`: the spill volume's mount and its size, the `sizeLimit` as written
-      (`600Gi`).
+    - `HUGR_TEMP_DIRECTORY` and `HUGR_TEMP_SIZE`: the spill volume's mount and its size in bytes.
 
     From these the node sets the engine's defaults before the lock:
     - `memory_limit` at 80% of the pod's memory, DuckDB's own ratio of the machine;
@@ -148,7 +163,8 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
     A profile item for the same setting (`IN GROUP g`) wins, but is cut to a ceiling and reported as drift. The
     ceilings are 90% of the pod's memory, its CPU, and 90% of the volume. The node's label (duckdb-acl spec 134
     `acl_node_label`, the name its sessions carry for the front) is the pod's name, and comes in the document.
-  - **The spill volume** of the size, mounted at `HUGR_TEMP_DIRECTORY`.
+  - **HOME** (`/var/lib/hugr-node`, where duckdb installs the extensions from the repository) on an emptyDir of
+    2 GiB, and **the spill volume** of the size, mounted at `HUGR_TEMP_DIRECTORY` inside it.
     - When memory runs out, DuckDB spills to `temp_directory`, by default up to 90% of the free space.
     - In a pod that space is the node's ephemeral storage, and past its limit kubelet evicts the pod: every session
       on it dies at once.
@@ -160,7 +176,9 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
   - the doors' TLS secret mounted;
   - `terminationGracePeriodSeconds = drainSeconds + 30`;
   - a readiness probe on the Flight port (the process serves, and nothing more: see "Where clients go");
-  - the pod template's annotation `platform.hugr.io/restartedAt`, from the group's `restartedAt`;
+  - the pod template's annotations `platform.hugr.io/restartedAt`, from the group's `restartedAt`, and
+    `platform.hugr.io/heartbeat-seconds`, the interval its document carries and its Lease is judged by - a new
+    interval rolls the pods, never a pod beating at one interval and judged at another;
   - rolling updates with `maxSurge: 1, maxUnavailable: 0`, so that new nodes come up before old ones drain.
 - **A headless Service** `hugr-node-<group>`. Its EndpointSlice is the front's node list (spec 002): pod name, address,
   and `ready` / `serving`.
@@ -168,7 +186,9 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
 - **A NetworkPolicy**: the doors' ports accept the front and the operator only. Egress is open, because the nodes
   reach the sources, the repository, tresor and the IdP.
 - **The pod-deletion cost.** The leader writes `controller.kubernetes.io/pod-deletion-cost` on each pod from its live
-  sessions in the last heartbeat. A scale-down removes the pod with the fewest sessions, and that pod drains.
+  sessions in the last heartbeat, in powers of two (a pod is patched when its load changes in kind, not at every
+  session), and -1 for a lost node. A scale-down removes a lost node first, then the pod with the fewest sessions, and
+  that pod drains.
 
 ### Applying a change
 
@@ -195,8 +215,8 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
   - Restarting is setting the group's `restartedAt`, the console's button or a `kubectl patch`. The operator puts it
     into the pod template, and Kubernetes rolls the pods one at a time: a new pod up, the old one drained by SIGTERM.
     Each new pod applies the profile at its start.
-  - Nothing restarts by itself. (`kubectl rollout restart` on the Deployment would be reconciled away; the group's
-    field is the handle.)
+  - Nothing restarts by itself. The group's field is the handle (`kubectl rollout restart` on the Deployment rolls the
+    pods too: its annotation is kubectl's field, which the operator's server-side apply leaves alone).
 - **New nodes** always start with the current profile.
 - **Where the outcome is seen.**
   - Per node: `platform.drift` (hugr-node), what matches the profile, what is missing, what is extra.
@@ -287,12 +307,17 @@ The leader reconciles each `HugrNodeGroup` into the following objects, owned by 
 
   The front and the console read it (specs 002 and 003). The full report is not stored; the metrics travel through
   acl_otel when a receiver is set.
-- **The group's status** is aggregated by the leader from its pods' Leases, at most every 5 s:
+- **The group's status** is aggregated by the leader from its pods' Leases every 5 s, and when one of the group's own
+  objects changes - never per heartbeat:
   - the target (the highest any live node reports) and how many have applied it;
   - who needs a restart;
   - who is lost;
   - whether the nodes know the resource group.
-- **Load.** For 1000 nodes at 15 s that is about 67 Lease updates a second, the order of kubelet's own node Leases.
+- **Load.** For 1000 nodes at 15 s that is about 67 Lease updates a second (read from the operator's cache, written to
+  the API server), the order of kubelet's own node Leases; a node's token is reviewed once a minute, not at each
+  heartbeat (a positive review is kept a minute, by the token's hash).
+- **The Lease is the pod's alone.** A Lease named like the pod that the operator did not write for it (the leader
+  election's, anyone's) is never taken over: the heartbeat is answered 409.
 
 ### The first deployment, and the break-glass door
 
@@ -366,31 +391,50 @@ technical calls to come use it.
 - **Who may call.**
   - `/v1/bootstrap` and `/v1/heartbeat` answer a pod of a group, bound by TokenReview; a group's pointers go only to
     that group's pods.
-  - `/healthz` and `/readyz` are unauthenticated and answer nothing about the fleet.
-  - The webhook answers the API server only.
+  - `/healthz` and `/readyz` are unauthenticated and answer nothing about the fleet; a replica is ready once its node
+    API listens and its webhook serves.
+  - The webhook is registered with the API server for the platform's namespace only.
+  - The metrics are https behind TokenReview and SubjectAccessReview.
+  - A NetworkPolicy lets only a group's pods reach the node API; a bearer that is no JWT, or past 16 KiB, costs no
+    review, and at most 32 reviews run at once, each within 10 s.
+- **The namespace is the boundary.** Kubernetes lets anyone who may create pods in a namespace run one as any of its
+  ServiceAccounts, and the ownerReferences the entry checks are the pod's own, which its creator writes. So whoever
+  may create pods (or exec into them, or request a ServiceAccount's token) in the platform's namespace can act as a
+  group: its entry, its Lease, its federated login to tresor. The namespace is the platform's alone. The optional
+  admission policies `config/policy` (ValidatingAdmissionPolicies, Kubernetes 1.30+) let a pod, a ReplicaSet or a
+  Deployment that runs as a group's account come only from the chain that owns it: the operator writes the
+  Deployment, the deployment controller its ReplicaSets, the ReplicaSet controller its pods.
 - **The operator's rights.**
-  - In its namespace: ServiceAccounts, Deployments, Services, PodDisruptionBudgets, NetworkPolicies, Leases, its
-    resources and their status. It may read Pods and EndpointSlices and annotate Pods.
-  - Cluster-wide: `tokenreviews/create` (`system:auth-delegator`) and its webhook's registration.
+  - In its namespace (a RoleBinding): ServiceAccounts, Deployments, Services, PodDisruptionBudgets, NetworkPolicies,
+    Leases (create, update - no delete: the garbage collector removes what its owners leave), its resources, their
+    status and the groups' finalizers. It reads ReplicaSets and Pods and annotates Pods.
+  - Cluster-wide: `tokenreviews/create` and `subjectaccessreviews/create` (`system:auth-delegator`: the entry and the
+    metrics) and its webhook's registration.
   - In the policy: `observe` only.
-  - Its egress goes to the API server, to the nodes' doors and to the IdP (its own token).
+  - Its egress needs the API server, the nodes' doors and the IdP (its own token).
 
 ## Testing
 
 - **Unit tests**:
   - a group's expansion into its objects (golden YAML), including the engine's defaults and the spill volume;
-  - the webhook: a size not in the plan, a total past `maxNodes` over every group, a fitting change;
+  - the webhook: a size not in the plan, a total past `maxNodes` over every group, a fitting change, a change that
+    does not grow passing while past the plan, a certificate that is another Secret;
   - the reconcile's re-check: two changes that fit alone and not together, the second `Refused` with what runs kept;
+    an older group whose size comes back never growing into a newer group's nodes;
   - the document built from a platform and a group;
-  - TokenReview answers: a foreign ServiceAccount, an unbound token, a pod of another group, a missing pod;
-  - the 409 for a `node_id` not the token's pod;
+  - TokenReview answers: a foreign ServiceAccount, an unbound token, a pod of another group, a missing pod, a
+    ReplicaSet of another uid; a bearer that is no token costing no review; the review cache;
+  - the 409 for a `node_id` not the token's pod, and for a Lease that is not the pod's;
   - status aggregation from Leases: target, applied, needs restart, lost, the resource group unknown;
-  - `restartedAt` into the pod template.
+  - `restartedAt` and the heartbeat interval into the pod template; the deletion cost's buckets.
 - **envtest** (controller-runtime's API server and etcd, no kubelet):
   - reconcile creates, updates and recreates the objects;
   - the webhook refuses through the API server;
   - a Lease that stops being renewed makes a node lost;
-  - the pod-deletion cost follows the reported sessions.
+  - the pod-deletion cost follows the reported sessions;
+  - a node's entry and heartbeats on real bound tokens (TokenRequest bound to the pod, TokenReview), a token of the
+    federation audience refused, a deleted pod's token refused;
+  - the optional admission policies refusing a pod and a ReplicaSet made by hand to run as a group's account.
 - **kind e2e**: the operator, two groups of hugr-node pods, tresor-server and a repository. It comes with hugr-node's
   spec and proves:
   - the entry;

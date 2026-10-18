@@ -1,0 +1,23 @@
+# the operator's own doors: the node API answers a group's pods only; the webhook, the metrics (behind TokenReview and
+# SubjectAccessReview) and the probes stay reachable - the API server and kubelet are no pods a policy can name
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hugr-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: hugr-platform
+      app.kubernetes.io/component: operator
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - {key: platform.hugr.io/group, operator: Exists}
+    ports:
+    - {protocol: TCP, port: 8443}
+  - ports:
+    - {protocol: TCP, port: 9443}
+    - {protocol: TCP, port: 8080}
+    - {protocol: TCP, port: 8081}

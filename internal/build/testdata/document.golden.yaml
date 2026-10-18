@@ -1,0 +1,17 @@
+catalog:
+  schema: acl
+  secret: hugr_policy_catalog
+heartbeat:
+  interval_seconds: 15
+node_group: etl
+node_label: hugr-node-etl-7f9c-x2k8p
+repository:
+  name: hugr
+  prefix: https://kista.example/t/prod
+tresor:
+  host: tresor.example:443
+  identity:
+    client_id: etl-app
+    issuer: https://login.example/t/v2.0
+    scope: api://tresor/.default
+version: 2

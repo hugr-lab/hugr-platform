@@ -1,0 +1,31 @@
+apiVersion: platform.hugr.io/v1alpha1
+kind: HugrPlatform
+metadata: {name: hugr, namespace: hugr}
+spec:
+  node:
+    image: ghcr.io/hugr-lab/hugr-node:v0.1.0
+  idp:
+    issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
+  tresor: {host: "tresor.example:443", scope: "api://tresor/.default"}
+  operator:
+    identity: {clientID: "<the operator's workload identity>"}
+  repository: {name: hugr, prefix: "https://kista.example/<tenant>/<channel>"}
+  catalog: {secret: hugr_policy_catalog, schema: acl}
+  caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}}
+  sizes:
+    large:
+      resources: {requests: {cpu: "16", memory: 128Gi}, limits: {memory: 128Gi}}
+      scheduling: {nodeSelector: {agentpool: e16ds}}
+      temp: {medium: local, size: 600Gi}
+  plan: {maxNodes: 12, sizes: [large]}
+---
+apiVersion: platform.hugr.io/v1alpha1
+kind: HugrNodeGroup
+metadata: {name: etl, namespace: hugr}
+spec:
+  platform: hugr
+  replicas: 3
+  size: large
+  identity: {clientID: "<the group's workload identity>"}
+  doors: {quack: true}
+  tls: {secretRef: {name: hugr-node-etl-tls}}

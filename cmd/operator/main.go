@@ -1,0 +1,190 @@
+// The hugr platform's operator (spec 001): it keeps each node group's objects, answers a node's entry and records its
+// heartbeat. Every replica answers HTTP (the node API, the webhook, the probes); the leader reconciles.
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"flag"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"time"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
+	"github.com/hugr-lab/hugr-platform/internal/build"
+	"github.com/hugr-lab/hugr-platform/internal/controller"
+	"github.com/hugr-lab/hugr-platform/internal/nodeapi"
+	groupwebhook "github.com/hugr-lab/hugr-platform/internal/webhook"
+)
+
+func main() {
+	var (
+		namespace       string
+		orchestratorURL string
+		nodeAPIAddr     string
+		certDir         string
+		metricsAddr     string
+		probeAddr       string
+		leaderElect     bool
+		webhooks        bool
+	)
+	flag.StringVar(&namespace, "namespace", os.Getenv("POD_NAMESPACE"), "the namespace the operator serves")
+	flag.StringVar(&orchestratorURL, "orchestrator-url", "", "the operator's in-cluster https URL the nodes reach (HUGR_ORCHESTRATOR)")
+	flag.StringVar(&nodeAPIAddr, "node-api-address", ":8443", "where the node API listens (https)")
+	flag.StringVar(&certDir, "cert-dir", "/etc/hugr-platform/tls", "the serving certificate (tls.crt, tls.key) of the node API and the webhook")
+	flag.StringVar(&metricsAddr, "metrics-address", ":8080", "where the metrics listen, https behind TokenReview + SubjectAccessReview (0 = off)")
+	flag.StringVar(&probeAddr, "health-probe-address", ":8081", "where /healthz and /readyz listen")
+	flag.BoolVar(&leaderElect, "leader-elect", true, "elect a leader to reconcile")
+	flag.BoolVar(&webhooks, "webhooks", true, "serve the validating webhook")
+	opts := zap.Options{}
+	opts.BindFlags(flag.CommandLine)
+	flag.Parse()
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	logger := ctrl.Log.WithName("hugr-platform")
+
+	if namespace == "" || orchestratorURL == "" {
+		logger.Error(errors.New("--namespace and --orchestrator-url are required"), "not starting")
+		os.Exit(2)
+	}
+
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(v1alpha1.AddToScheme(scheme))
+
+	options := ctrl.Options{
+		Scheme: scheme,
+		Cache:  cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
+		// the metrics say how the fleet is reconciled: https, and only for a caller allowed to get /metrics
+		Metrics: metricsserver.Options{BindAddress: metricsAddr, SecureServing: true,
+			FilterProvider: filters.WithAuthenticationAndAuthorization},
+		HealthProbeBindAddress:  probeAddr,
+		LeaderElection:          leaderElect,
+		LeaderElectionID:        "hugr-platform-operator",
+		LeaderElectionNamespace: namespace,
+	}
+	if webhooks {
+		options.WebhookServer = webhook.NewServer(webhook.Options{Port: 9443, CertDir: certDir})
+	}
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
+	if err != nil {
+		logger.Error(err, "no manager")
+		os.Exit(1)
+	}
+
+	reconciler := &controller.GroupReconciler{Client: mgr.GetClient(), Direct: mgr.GetAPIReader(), Scheme: mgr.GetScheme(),
+		Settings: build.Settings{OrchestratorURL: orchestratorURL}}
+	if err := reconciler.SetupWithManager(mgr); err != nil {
+		logger.Error(err, "no group controller")
+		os.Exit(1)
+	}
+	if webhooks {
+		if err := (&groupwebhook.GroupValidator{Reader: mgr.GetAPIReader()}).SetupWithManager(mgr); err != nil {
+			logger.Error(err, "no webhook")
+			os.Exit(1)
+		}
+	}
+
+	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		logger.Error(err, "no clientset")
+		os.Exit(1)
+	}
+	api := &nodeapi.Server{
+		Auth: &nodeapi.Authenticator{Reviewer: nodeapi.KubeReviewer{Client: clientset}, Reader: mgr.GetClient(),
+			Direct: mgr.GetAPIReader(), Namespace: namespace},
+		Leases: mgr.GetClient(),
+		Direct: mgr.GetAPIReader(),
+		Log:    logger.WithName("node-api"),
+	}
+	door := &nodeAPI{addr: nodeAPIAddr, certDir: certDir, handler: api.Handler()}
+	if err := mgr.Add(door); err != nil {
+		logger.Error(err, "no node API")
+		os.Exit(1)
+	}
+
+	utilruntime.Must(mgr.AddHealthzCheck("healthz", healthz.Ping))
+	// ready once what a node calls answers: a node that finds no orchestrator stops, so a replica is not ready before
+	utilruntime.Must(mgr.AddReadyzCheck("node-api", door.Ready))
+	if webhooks {
+		utilruntime.Must(mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()))
+	}
+	logger.Info("starting", "namespace", namespace)
+	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		logger.Error(err, "stopped")
+		os.Exit(1)
+	}
+}
+
+// nodeAPI serves the node API over TLS on every replica, its certificate re-read when it rotates.
+type nodeAPI struct {
+	addr      string
+	certDir   string
+	handler   http.Handler
+	listening atomic.Bool
+}
+
+// Ready says whether the node API listens.
+func (n *nodeAPI) Ready(*http.Request) error {
+	if !n.listening.Load() {
+		return errors.New("the node API does not listen yet")
+	}
+	return nil
+}
+
+var _ manager.LeaderElectionRunnable = &nodeAPI{}
+
+func (n *nodeAPI) NeedLeaderElection() bool {
+	return false
+}
+
+func (n *nodeAPI) Start(ctx context.Context) error {
+	watcher, err := certwatcher.New(filepath.Join(n.certDir, "tls.crt"), filepath.Join(n.certDir, "tls.key"))
+	if err != nil {
+		return err
+	}
+	go func() {
+		_ = watcher.Start(ctx)
+	}()
+	server := &http.Server{
+		Addr:              n.addr,
+		Handler:           n.handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: watcher.GetCertificate},
+	}
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdown)
+	}()
+	listener, err := net.Listen("tcp", n.addr)
+	if err != nil {
+		return err
+	}
+	n.listening.Store(true)
+	defer n.listening.Store(false)
+	if err := server.ServeTLS(listener, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}

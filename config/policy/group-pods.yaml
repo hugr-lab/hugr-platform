@@ -1,0 +1,113 @@
+# Optional (spec 001, Security): a group's identity is its ServiceAccount, and Kubernetes lets anyone who may create
+# pods - or a ReplicaSet or a Deployment that makes them - in the namespace run one as any of its accounts. These
+# policies let a pod, a ReplicaSet or a Deployment that runs as a group's account (hugr-node-*) come only from the
+# chain that owns it: the operator writes the group's Deployment, the deployment controller its ReplicaSets, the
+# ReplicaSet controller its pods. So nobody else's pod borrows a group's identity - nor its entry, its Lease or its
+# federated login to tresor. Kubernetes >= 1.30. The controllers' user is the cluster's: with kube-controller-manager's
+# --use-service-account-credentials (kubeadm, kind, AKS) each runs as its own ServiceAccount in kube-system; a cluster
+# whose controllers run as system:kube-controller-manager is listed too. The operator is the ServiceAccount
+# hugr-platform of the namespace hugr (config/default). kubectl rollout restart on a group's Deployment is refused:
+# the group's restartedAt is the handle.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: hugr-platform-group-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      operations: [CREATE]
+      resources: [pods]
+  matchConditions:
+  - name: runs-as-a-group
+    expression: has(object.spec.serviceAccountName) && object.spec.serviceAccountName.startsWith('hugr-node-')
+  validations:
+  - expression: >-
+      request.userInfo.username in ['system:serviceaccount:kube-system:replicaset-controller',
+      'system:kube-controller-manager']
+    message: a pod that runs as a node group's ServiceAccount is created by its Deployment only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: hugr-platform-group-replicasets
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [apps]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE]
+      resources: [replicasets]
+  matchConditions:
+  - name: runs-as-a-group
+    expression: >-
+      has(object.spec.template.spec.serviceAccountName) &&
+      object.spec.template.spec.serviceAccountName.startsWith('hugr-node-')
+  validations:
+  - expression: >-
+      request.userInfo.username in ['system:serviceaccount:kube-system:deployment-controller',
+      'system:serviceaccount:kube-system:generic-garbage-collector', 'system:kube-controller-manager']
+    message: a ReplicaSet that runs as a node group's ServiceAccount is its Deployment's only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: hugr-platform-group-deployments
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [apps]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE]
+      resources: [deployments]
+  matchConditions:
+  - name: runs-as-a-group
+    expression: >-
+      has(object.spec.template.spec.serviceAccountName) &&
+      object.spec.template.spec.serviceAccountName.startsWith('hugr-node-')
+  validations:
+  - expression: >-
+      request.userInfo.username in ['system:serviceaccount:hugr:hugr-platform',
+      'system:serviceaccount:kube-system:deployment-controller',
+      'system:serviceaccount:kube-system:generic-garbage-collector', 'system:kube-controller-manager']
+    message: a Deployment that runs as a node group's ServiceAccount is the operator's only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: hugr-platform-group-pods
+spec:
+  policyName: hugr-platform-group-pods
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: hugr
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: hugr-platform-group-replicasets
+spec:
+  policyName: hugr-platform-group-replicasets
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: hugr
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: hugr-platform-group-deployments
+spec:
+  policyName: hugr-platform-group-deployments
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: hugr

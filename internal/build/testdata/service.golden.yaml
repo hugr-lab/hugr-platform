@@ -1,0 +1,26 @@
+metadata:
+  labels:
+    app.kubernetes.io/instance: etl
+    app.kubernetes.io/managed-by: hugr-platform
+    app.kubernetes.io/name: hugr-node
+    app.kubernetes.io/part-of: hugr-platform
+    platform.hugr.io/group: etl
+  name: hugr-node-etl
+  namespace: hugr
+spec:
+  clusterIP: None
+  ports:
+  - name: flight
+    port: 32010
+    protocol: TCP
+    targetPort: flight
+  - name: quack
+    port: 9494
+    protocol: TCP
+    targetPort: quack
+  selector:
+    app.kubernetes.io/instance: etl
+    app.kubernetes.io/name: hugr-node
+    platform.hugr.io/group: etl
+status:
+  loadBalancer: {}
