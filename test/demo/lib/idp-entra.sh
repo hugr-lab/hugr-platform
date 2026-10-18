@@ -177,14 +177,19 @@ idp_down() {
 		sp="$(entra_get "sp-$name")"
 		app_gone() { ! graph GET "applications/$object" -o none 2>/dev/null || graph DELETE "applications/$object" -o none; }
 		eventually 120 "the app $name deleted" app_gone
+		# a deleted app reaches the recycle bin in a while: it is waited for there, then purged (a 404 right after the
+		# delete is a bin not caught up, not a purge)
 		purged() {
-			local id
-			for id in "$object" $sp; do
-				graph GET "directory/deletedItems/$id" -o none 2>/dev/null || continue
-				graph DELETE "directory/deletedItems/$id" -o none 2>/dev/null || return 1
-			done
+			[ -f "$WORK/entra/purged-$object" ] && return 0
+			graph GET "directory/deletedItems/$object" -o none 2>/dev/null || return 1
+			graph DELETE "directory/deletedItems/$object" -o none 2>/dev/null || return 1
+			: >"$WORK/entra/purged-$object"
 		}
 		eventually 300 "the app $name purged from the recycle bin" purged
+		# its service principal, if the bin holds it (leftovers lists one that arrives later)
+		if [ -n "$sp" ] && graph GET "directory/deletedItems/$sp" -o none 2>/dev/null; then
+			graph DELETE "directory/deletedItems/$sp" -o none 2>/dev/null || true
+		fi
 		rm -f "$f"
 	done
 	rm -rf "$WORK/entra"

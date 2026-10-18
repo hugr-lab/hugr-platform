@@ -61,14 +61,16 @@ plain_duckdb() {
 
 check_entry() {
 	step "1. the entry: through the operator, tresor by the node's own token, the catalog by its secret's type"
-	local g pod log
+	local g pod
+	# entered <pod>: its log (kept from its start; a follower just started fills it in a moment) shows the entry
+	entered() {
+		grep -q 'step 2 bootstrap document: ok' "$WORK/logs/$1.log" && grep -q 'step 3 tresor: ok' "$WORK/logs/$1.log" &&
+			grep -q 'step 5 policy catalog: ok' "$WORK/logs/$1.log" && grep -q 'hugr_node: ready' "$WORK/logs/$1.log"
+	}
 	for g in "${GROUPS_[@]}"; do
 		eventually 120 "group $g ready with its resource group known" group_ready "$g"
 		for pod in $(pods "$g"); do
-			log="$WORK/logs/$pod.log"
-			grep -q 'step 2 bootstrap document: ok' "$log" && grep -q 'step 3 tresor: ok' "$log" &&
-				grep -q 'step 5 policy catalog: ok' "$log" && grep -q 'hugr_node: ready' "$log" ||
-				fail "node $pod did not enter: $(redact <"$log" | tail -5)"
+			eventually 30 "node $pod's log shows its entry" entered "$pod"
 			[ "$(k -n hugr get lease "$pod" -o jsonpath='{.spec.holderIdentity}')" = "$pod" ] || fail "no Lease of $pod"
 		done
 	done
