@@ -459,13 +459,15 @@ technical calls to come use it.
 | 8 | A restart | by the group's `restartedAt` (the console's button), rolled one node at a time; nothing restarts by itself |
 | 9 | Clients to their group | the node decides (spec 096) and the front re-seats on its machine-readable `wrong_resource_group`; a dropped resource group drains its nodes by themselves |
 
-Still to verify:
+Verified by the demo (spec 004, minikube, 2026-10-18):
 
-- Outside Azure, the IdP's federation of Kubernetes ServiceAccount tokens (Keycloak's client authentication by a
-  federated JWT). Without it, a node's or the operator's client secret would have to live somewhere, which the
-  platform refuses.
-- Whether DuckDB at our pin already reads the cgroup's memory and CPU. If it does, the env values only make explicit
-  what it would choose anyway.
+- Outside Azure, the IdP's federation of Kubernetes ServiceAccount tokens works: Keycloak 26.6's client authentication
+  by a federated JWT, the client named by the token's subject. A node holds no credential of its own: its login is its
+  ServiceAccount token, and the only Secret it mounts is its doors' TLS certificate. (The operator's identity to the
+  nodes, decision 1, is not exercised yet: it comes with the console.)
+- DuckDB at our pin reads the cgroup's memory limit: in a 2 GiB-limit container it chooses `memory_limit` 1.5 GiB (80%,
+  the node's own value), so the env's memory only makes it explicit. With a CPU request and no limit there is no quota,
+  and DuckDB counts the host's cores (12): the env's CPU is what bounds the threads. A CPU limit was not tried.
 
 ## Alternatives considered
 
