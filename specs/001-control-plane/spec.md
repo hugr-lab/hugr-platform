@@ -110,6 +110,51 @@ status:
 - **The plan's bounds.** A size the plan does not list, or a total past `maxNodes`, is not run. The platform's status
   says which item and why, and the pools already running are kept.
 
+### A change of a pool: checked when written, applied after
+
+- **Checked when written, in the write's own transaction.**
+  - A profile write in hugr-node already applies a hot change before its commit, and a failure there rolls the write
+    back (spec 093). For a `nodes` item that step is `POST /v1/pools/check`, with the node's own token, the one its
+    heartbeat carries.
+  - The operator answers whether the change fits: the size is known, and the plan's sizes and `maxNodes` hold, with
+    this change counted across every group. It also refuses a change to a group being removed. It answers with what
+    it will do (`+2 nodes`) or with a refusal and its reason.
+  - **A refusal, or an operator that does not answer, fails the statement with the reason.** The write is rolled
+    back, so the catalog never shows the item, the profile version does not move, and no node sees it.
+  - The check judges feasibility, not rights. Whether the principal may change pools is the node's ACL (the
+    `cluster` bundle) before the check is asked.
+  - `ACL CLUSTER CHECK NODES etl COUNT 5 SIZE 'large'` asks the same question and writes nothing, like
+    `platform.check_grant` (duckdb-acl spec 122).
+- **The check reserves nothing.** It only says the change is allowed. The operator applies only what the catalog
+  holds after the commit, so a check that passed before a commit that failed leaves no trace.
+- **Applied after, and re-checked.** The operator judges every item again when it applies it.
+  - Two writes may each pass alone and exceed the plan together.
+  - An item may arrive through `ACL NATIVE`, which is break-glass and stays open.
+
+  An item that does not fit is `refused`, with its reason; the pools already running are kept.
+- **The state of a pool**, per group:
+  - what is wanted: the count, the size, and the profile version that wrote it;
+  - how many nodes are ready;
+  - one of the states below, since when, with a message.
+
+  | state | what it means |
+  | --- | --- |
+  | `converged` | the pool matches the item |
+  | `scaling` | 3 of 5 ready |
+  | `waiting_capacity` | pods Pending, with the scheduler's reason: a quota, a VM size not in the region |
+  | `draining` | a scale-down's pod, with its sessions left |
+  | `failed` | an image pull, a crash loop |
+  | `refused` | the item did not pass the check when it was applied |
+
+- **A write and its result are joined by the profile version.** `SET NODES` answers the version it wrote, and a
+  converged pool reports the version it has applied.
+- **Where the state is seen.**
+  - In SQL, hugr-node's view `platform.pools` reads `GET /v1/pools` from the operator when queried. Nothing is stored
+    in the policy.
+  - The console (spec 003) shows the same.
+  - In Kubernetes, the `HugrNodeGroup` status and its Events show it.
+- **One trace.** The write's `traceparent` goes into the check and into the reconcile it causes.
+
 ### What the operator builds for a group
 
 The leader reconciles each `HugrNodeGroup` into the following objects, owned by it and recreated when they differ:
@@ -263,8 +308,8 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
 
 ### Replicas and what stays outside
 
-- **Replicas.** Any operator replica answers HTTP (`/v1/bootstrap`, `/v1/heartbeat`, `/healthz`, `/readyz`); leader
-  election picks the one that reconciles.
+- **Replicas.** Any operator replica answers HTTP (`/v1/bootstrap`, `/v1/heartbeat`, `/v1/pools/check`, `/v1/pools`,
+  `/healthz`, `/readyz`); leader election picks the one that reconciles.
 - **Not in this spec:** packaging - the Azure Managed Application (it also makes the workload identities of the
   operator and of each group in the plan) and a Helm chart for private Kubernetes. A spec of their own.
 
@@ -278,8 +323,9 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
   pool, which costs money. The plan's bounds are the installation's, out of SQL's reach, and the operator never
   passes them.
 - **Who may call.**
-  - `/v1/bootstrap` and `/v1/heartbeat` answer a pod of a group, bound by TokenReview; a group's pointers go only to
-    that group's pods.
+  - `/v1/bootstrap`, `/v1/heartbeat`, `/v1/pools/check` and `/v1/pools` answer a pod of a group, bound by
+    TokenReview; a group's pointers go only to that group's pods. A node asks about pools only for a statement its ACL
+    already admitted.
   - `/healthz` and `/readyz` are unauthenticated and answer nothing about the fleet.
   - The console's API is spec 003's.
 - **The operator's rights.**
@@ -302,7 +348,13 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
     - the initial group until an item names it;
     - a size or a total past the plan refused, with what already runs kept;
     - `COUNT 0` and `REMOVE` drain;
-    - a hand edit of a `HugrNodeGroup` reconciled away.
+    - a hand edit of a `HugrNodeGroup` reconciled away;
+  - `/v1/pools/check`:
+    - a size not in the plan, and a total past `maxNodes` counted across groups, refused with the reason;
+    - a fitting change answered with what it will do;
+  - the apply-time re-check: two changes that fit alone and not together, the second `refused`;
+  - the pool states from pods: Pending with a reason, ready counts, a draining pod, a crash loop;
+  - the applied version reported once converged.
 - **envtest** (controller-runtime's API server and etcd, no kubelet):
   - reconcile creates, updates and recreates the objects;
   - a changed item changes the Deployment;
@@ -312,6 +364,8 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
   document v2, the `nodes` item, the derived settings) and proves:
   - the entry;
   - that `ACL CLUSTER SET NODES` grows a pool, through the heartbeat;
+  - that a refused check leaves the catalog unchanged;
+  - that `platform.pools` shows `scaling` and then `converged` at the version written;
   - that the operator's token is admitted for its reads and refused for a write.
 - **CI**: `go test ./...`, `go vet`, `staticcheck`, and the envtest binaries pinned. The image is distroless at
   `ghcr.io/hugr-lab/hugr-platform`, released like hugr-node's.
@@ -325,6 +379,7 @@ The operator talks to the nodes the way any principal does: Flight SQL, its own 
 | 3 | The doors' certificate inside the cluster | one certificate per group, its SAN `hugr-node-<group>.<ns>.svc`; the front and the operator dial a pod's address with that name as the TLS server name. cert-manager when the cluster has it, otherwise a Secret the administrator provides |
 | 4 | The integrations' endpoints (where the telemetry and the OpenLineage events go) | a data path, so the installation (a `passthrough` administrator) sets the receivers; the `cluster` bundle's allowlist does not grow |
 | 5 | Where a pool is decided | in SQL: a `nodes` item of the cluster profile names a group's count and size; the operator makes Kubernetes match, inside the plan's bounds. What a size is in Kubernetes is the installation's |
+| 7 | Knowing a pool change took | checked when written, in the write's transaction, by the operator (a refusal or an unanswered check rolls the write back, so the catalog never shows it); applied after and re-checked; the pool's state and the applied profile version are read from the operator through `platform.pools` |
 | 6 | The engine against the pod | memory, threads and the spill volume follow from the pod (env, at bootstrap): `max_temp_directory_size` under the volume, so an overflow fails a query instead of evicting the pod |
 
 Still to verify:
@@ -358,7 +413,9 @@ Still to verify:
   - the document v2 and the orchestrator-first entry;
   - `acl_node_label` from `HUGR_NODE_LABEL`;
   - the heartbeat sender;
-  - the `nodes` item kind (`ACL CLUSTER SET | REMOVE NODES`, refused for a group the policy lacks);
+  - the `nodes` item kind (`ACL CLUSTER SET | REMOVE | CHECK NODES`, refused for a group the policy lacks), whose
+    pre-commit step is the operator's `/v1/pools/check`, so that a refusal rolls the write back;
+  - the view `platform.pools`, read from the operator's `/v1/pools`;
   - the derived settings from env (`HUGR_MEMORY_LIMIT`, `HUGR_THREADS`, `HUGR_TEMP_DIRECTORY`,
     `HUGR_MAX_TEMP_SIZE`).
 - **Packaging**: the Azure Managed Application (with the publisher's just-in-time access, never standing access) and
