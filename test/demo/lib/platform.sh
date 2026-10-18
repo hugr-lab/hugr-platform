@@ -1,0 +1,89 @@
+# shellcheck shell=bash
+# The operator and the platform (spec 004): the operator from this checkout (its certificate the run's), the
+# HugrPlatform pointing at the demo's services, the groups a and b.
+
+install_operator() {
+	step "the operator: CRDs, its rights, the webhook, the node API"
+	namespace hugr
+	ca_cert operator hugr-platform.hugr.svc hugr-platform.hugr.svc.cluster.local
+	tls_secret hugr operator-tls operator
+	k -n hugr delete secret hugr-platform-tls --ignore-not-found >/dev/null
+	k -n hugr create secret tls hugr-platform-tls --cert "$WORK/operator.crt" --key "$WORK/operator.key" >/dev/null
+	k apply -k "$HERE/overlay" >"$WORK/operator-apply.log" 2>&1 || {
+		cat "$WORK/operator-apply.log" >&2
+		fail "the operator's install"
+	}
+	local bundle
+	bundle="$(base64 <"$WORK/ca.crt" | tr -d '\n')"
+	k patch validatingwebhookconfiguration hugr-platform --type json \
+		-p "[{\"op\":\"add\",\"path\":\"/webhooks/0/clientConfig/caBundle\",\"value\":\"$bundle\"}]" >/dev/null
+	k -n hugr rollout restart deploy/hugr-platform >/dev/null
+	rollout hugr hugr-platform
+	# the webhook answers through its Service once the new pod's endpoint is in: a dry run of a group, judged
+	webhook_answers() {
+		k -n hugr apply --dry-run=server -f - >/dev/null 2>"$WORK/webhook.err" <<'YAML'
+apiVersion: platform.hugr.io/v1alpha1
+kind: HugrNodeGroup
+metadata: {name: probe, namespace: hugr}
+spec: {platform: hugr, replicas: 0, size: small, identity: {}, tls: {secretRef: {name: hugr-node-probe-tls}}}
+YAML
+		! grep -q 'failed calling webhook' "$WORK/webhook.err"
+	}
+	eventually 60 "the webhook answers" webhook_answers
+	ok "the operator serves: the node API on https://hugr-platform.hugr.svc:8443, the webhook"
+}
+
+install_platform() {
+	step "the platform: HugrPlatform, the groups a (2 nodes) and b (1)"
+	local g
+	for g in "${GROUPS_[@]}"; do
+		ca_cert "door-$g" "hugr-node-$g.hugr.svc"
+		tls_secret hugr "hugr-node-$g-tls" "door-$g"
+	done
+	k apply -f - >/dev/null <<YAML
+apiVersion: platform.hugr.io/v1alpha1
+kind: HugrPlatform
+metadata: {name: hugr, namespace: hugr}
+spec:
+  node: {image: "hugr-node:demo", imagePullPolicy: Never}
+  idp:
+    issuer: "$KC_ISSUER"
+    # Keycloak's federated client authentication takes the realm's issuer as the assertion's audience
+    federationAudience: "$KC_ISSUER"
+  tresor: {host: "$TRESOR_HOST"}
+  repository: {name: hugr, prefix: "$KISTA_PREFIX"}
+  caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}}
+  heartbeat: {intervalSeconds: 5}
+  sizes:
+    small:
+      resources: {requests: {cpu: "1", memory: 1Gi}, limits: {memory: 2Gi}}
+      temp: {medium: local, size: 2Gi}
+  plan: {maxNodes: 4, sizes: [small]}
+YAML
+	local replicas
+	for g in "${GROUPS_[@]}"; do
+		replicas=1
+		[ "$g" = a ] && replicas=2
+		k apply -f - >/dev/null <<YAML
+apiVersion: platform.hugr.io/v1alpha1
+kind: HugrNodeGroup
+metadata: {name: $g, namespace: hugr}
+spec:
+  platform: hugr
+  replicas: $replicas
+  size: small
+  identity: {clientID: "system:serviceaccount:hugr:hugr-node-$g"}
+  drainSeconds: 10
+  tls: {secretRef: {name: hugr-node-$g-tls}}
+YAML
+	done
+	for g in "${GROUPS_[@]}"; do
+		eventually 60 "the operator makes group $g's Deployment" k -n hugr get "deploy/hugr-node-$g"
+		if ! k -n hugr rollout status "deploy/hugr-node-$g" --timeout 300s >/dev/null 2>&1; then
+			k -n hugr get pods -o wide >&2 || true
+			k -n hugr logs -l "platform.hugr.io/group=$g" --tail 60 --prefix 2>&1 | redact >&2 || true
+			fail "group $g's nodes are not ready"
+		fi
+	done
+	ok "both groups' nodes serve"
+}

@@ -1,0 +1,22 @@
+# The demo's install (spec 004): config/default without cert-manager - the run makes the operator's certificate
+# (Secret hugr-platform-tls) and writes its CA into the webhook's caBundle. One replica, the image loaded into the
+# cluster.
+namespace: hugr
+resources:
+- ../../../config/crd
+- ../../../config/rbac
+- ../../../config/manager
+- ../../../config/webhook
+images:
+- name: ghcr.io/hugr-lab/hugr-platform
+  newName: hugr-platform
+  newTag: demo
+patches:
+- target: {kind: Deployment, name: hugr-platform}
+  patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 1
+    - op: add
+      path: /spec/template/spec/containers/0/imagePullPolicy
+      value: Never
