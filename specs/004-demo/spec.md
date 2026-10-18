@@ -40,7 +40,9 @@ It also closes the two items spec 001 left "to verify":
 ### What runs where
 
 `test/demo/run.sh <kind | minikube | aks> [up | check | down | leftovers]` builds or loads the images, installs
-everything and runs the checks. The provider is the only difference between the clusters:
+everything and runs the checks. **minikube is the main run** (the owner, 2026-10-18): every attempt runs there and costs
+nothing; AKS is for what only Azure can prove (Entra, the managed identities), run by hand when it is needed. The
+provider is the only difference between the clusters:
 
 | | kind (CI) | minikube (a developer's machine) | aks (by hand) |
 | --- | --- | --- | --- |
