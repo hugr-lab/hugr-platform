@@ -33,6 +33,8 @@ jobs:
         go install sigs.k8s.io/kind@v0.33.0
         echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
     - name: The demo
+      # its own limit, under the job's: a hang still leaves the diagnosis its time
+      timeout-minutes: 55
       run: test/demo/run.sh kind
     - name: The cluster's state
       if: failure()

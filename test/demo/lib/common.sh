@@ -38,6 +38,20 @@ need() {
 	done
 }
 
+# bounded <seconds> <command...>: an external command that may not hang the run - ended and failed past its time
+# where timeout(1) is at hand (Linux, CI; GNU coreutils' gtimeout on macOS), run as it is otherwise
+bounded() {
+	local secs="$1"
+	shift
+	if command -v timeout >/dev/null; then
+		timeout "$secs" "$@"
+	elif command -v gtimeout >/dev/null; then
+		gtimeout "$secs" "$@"
+	else
+		"$@"
+	fi
+}
+
 # kubectl on the demo's cluster only - never the caller's current context
 k() { command kubectl --context "$DEMO_CONTEXT" "$@"; }
 helm_() { command helm --kube-context "$DEMO_CONTEXT" "$@"; }
@@ -69,6 +83,14 @@ diagnose() {
 			echo "== $pod"
 			k -n hugr logs "$pod" --tail 60
 		done
+		local log
+		for log in "$WORK"/forward.*.log; do
+			[ -f "$log" ] || continue
+			echo "== ${log##*/}"
+			tail -20 "$log"
+		done
+		echo "== the run's processes"
+		ps -eo pid,ppid,etime,command | grep -E 'kubectl|check|duckdb|run.sh' | grep -v grep
 	} 2>&1 | redact
 }
 
