@@ -247,6 +247,10 @@ What the code settled that the design above left open, and where it reads more n
   - **A Flight client that keeps no cookie** (ADBC's default, a plain pyarrow or arrow-go client) has no session
     beyond one call (duckdb-acl spec 050: no transaction, no temp table, no USE). Its statements and prepared
     statements work through the front (below).
+  - The demo through the front (spec 004's check 4b) covers scenarios 1 (a re-seat by the node's refusal), 6 (no
+    node of the group) and 7 (the front's logs in the scan), with a client that keeps no cookie. Scenario 4 (quack
+    through the front) is `test/front/run.sh`'s against real nodes; 2 (a replica deleted under a session), 3 (a node
+    deleted under a session) and 5 (a draining node keeps its own) are follow-ups.
   - Arrow C++ sends a status's binary details raw in `grpc-status-details-bin`, which grpc-go reads as a
     `google.rpc.Status`: such details would not pass the front. The node sends none today.
 - **Tests**: `internal/front/{quackwire,route,fleet,flightproxy,quackproxy}` (fake nodes, no proto, the quack corpus

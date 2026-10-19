@@ -37,6 +37,26 @@ as() {
 		-node "127.0.0.1:$(cat "$WORK/ports/$pod")" -server-name "hugr-node-$group.hugr.svc" -ca "$WORK/ca.crt" -sql "$sql"
 }
 
+# via_front <principal> <sql>: as `as`, through the front (spec 002) - one front pod, so its metrics are the calls' own
+via_front() {
+	local principal="$1" sql="$2"
+	if [ ! -s "$WORK/ports/front" ]; then
+		forward hugr "pod/$(front_pod)" 32010 >"$WORK/ports/front.new" && mv "$WORK/ports/front.new" "$WORK/ports/front" ||
+			return 1
+	fi
+	# shellcheck disable=SC2046 # the IdP's flags are words
+	bounded 120 "$CHECKER" $(token_flags) -client "$(principal_id "$principal")" -secret-file "$WORK/secrets/principal-$principal" \
+		-node "127.0.0.1:$(cat "$WORK/ports/front")" -server-name hugr-front.hugr.svc -ca "$WORK/ca.crt" -sql "$sql"
+}
+front_pod() { k -n hugr get pods -l app.kubernetes.io/name=hugr-front -o jsonpath='{.items[0].metadata.name}'; }
+# front_metric <series>: the value of one of the front pod's metrics (its internal port, never the Service's)
+front_metric() {
+	if [ ! -s "$WORK/ports/front-internal" ]; then
+		forward hugr "pod/$(front_pod)" 8081 >"$WORK/ports/front-internal"
+	fi
+	curl -fsS "http://127.0.0.1:$(cat "$WORK/ports/front-internal")/metrics" | awk -v s="$1" '$1 == s {print $2}'
+}
+
 first_pod() { pods "$1" | head -1; }
 status() { k -n hugr get hng "$1" -o jsonpath="$2"; }
 lease() { k -n hugr get lease "$1" -o jsonpath="{.metadata.annotations.platform\.hugr\.io/$2}"; }
@@ -145,6 +165,36 @@ check_placement() {
 	if got="$(as analyst-a "$b" "SELECT count(*) FROM orders" 2>&1)"; then fail "analyst_a is served on b"; fi
 	grep -q 'code = Unavailable' <<<"$got" && grep -q 'served by "a"' <<<"$got" || fail "analyst_a on b: $got"
 	ok "analyst_a reads demo.orders on a node of a; a node of b refuses it (UNAVAILABLE), naming a"
+}
+
+check_front() {
+	step "4b. the front: one address, every principal on its group's node (spec 002)"
+	local admin a b got want reseats
+	admin="$(first_pod a)"
+	a="$(first_pod a)"
+	b="$(first_pod b)"
+	# group a is the policy's default: a new connection is seated there first, and a node of a sends analyst_b on
+	as admin "$admin" "ALTER RESOURCE GROUP a SET DEFAULT" >/dev/null || fail "ALTER RESOURCE GROUP a SET DEFAULT"
+	eventually 30 "a's node reports the default group" lease_is "$a" group-default true
+	want="$(as analyst-b "$b" "SELECT count(*) FROM orders")" || fail "analyst_b's read on b"
+	for _ in 1 2 3; do
+		got="$(via_front analyst-b "SELECT count(*) FROM orders")" || fail "analyst_b through the front: $got"
+		[ "$got" = "$want" ] || fail "analyst_b through the front read $got, on b $want"
+		got="$(via_front analyst-a "SELECT region, sum(amount) FROM orders GROUP BY region ORDER BY region")" ||
+			fail "analyst_a through the front: $got"
+		[ "$got" = "$(printf 'north\t40\nsouth\t20')" ] || fail "analyst_a through the front: $got"
+	done
+	reseats="$(front_metric 'hugr_front_reseats{reason="wrong_resource_group"}')"
+	[ "${reseats:-0}" -ge 3 ] || fail "the front re-seated analyst_b ${reseats:-0} times, want 3 (a node of a names b)"
+	ok "both analysts read through the front; analyst_b, seated on the default group a, was re-seated on b by a's refusal"
+	# no node of b takes a new session: refused after the wait, never seated in another group
+	as admin "$b" "DRAIN NODE" >/dev/null || fail "DRAIN NODE on b"
+	eventually 30 "b's node admits no new session" lease_is "$b" admit-new-session false
+	if got="$(via_front analyst-b "SELECT count(*) FROM orders" 2>&1)"; then fail "analyst_b was served with b drained"; fi
+	grep -q 'hugr: no node of group b can take a new session - retry' <<<"$got" || fail "analyst_b with b drained: $got"
+	as admin "$b" "RESUME NODE" >/dev/null || fail "RESUME NODE on b"
+	eventually 30 "b's node admits sessions again" lease_is "$b" admit-new-session true
+	ok "with b's node drained, analyst_b is refused after the wait, naming b - never seated on a"
 }
 
 check_hot() {
@@ -290,6 +340,7 @@ check_no_secrets() {
 			k -n hugr logs "$pod" --previous 2>/dev/null || true
 		done
 		k -n hugr logs deploy/hugr-platform --tail -1
+		k -n hugr logs -l app.kubernetes.io/name=hugr-front --tail -1 --prefix
 		k -n hugr logs job/demo-seed --tail -1
 		# the stack's services; OpenBao's dev mode prints its own root token, on purpose (spec 004)
 		for ns in idp tresor kista db; do
@@ -320,6 +371,7 @@ run_checks() {
 	check_federation
 	check_engine
 	check_placement
+	check_front
 	check_hot
 	check_restart
 	check_dropped_group

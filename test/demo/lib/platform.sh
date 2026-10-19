@@ -43,6 +43,9 @@ install_platform() {
 		ca_cert "door-$g" "hugr-node-$g.hugr.svc"
 		tls_secret hugr "hugr-node-$g-tls" "door-$g" >/dev/null # a rerun restarts the groups, the new one included
 	done
+	# the front's public certificate (spec 002): the run's CA here, the organisation's or cert-manager's in a cluster
+	ca_cert front "hugr-front.hugr.svc"
+	tls_secret hugr hugr-front front >/dev/null
 	k apply -f - >/dev/null <<YAML
 apiVersion: platform.hugr.io/v1alpha1
 kind: HugrPlatform
@@ -54,6 +57,7 @@ spec:
   repository: {name: hugr, prefix: "$KISTA_PREFIX"}
   caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}}
   heartbeat: {intervalSeconds: 5}
+  front: {replicas: 2, certificate: {secretName: hugr-front}}
   sizes:
     small:
       resources: {requests: {cpu: "$NODE_CPU", memory: 1Gi}, limits: {memory: 2Gi}}
@@ -93,8 +97,13 @@ YAML
 			fail "group $g's nodes are not ready"
 		fi
 	done
+	eventually 60 "the operator makes the front's Deployment" k -n hugr get deploy/hugr-front
+	if ! k -n hugr rollout status deploy/hugr-front --timeout 180s >/dev/null 2>&1; then
+		k -n hugr logs -l app.kubernetes.io/name=hugr-front --tail 40 --prefix 2>&1 | redact >&2 || true
+		fail "the front is not ready"
+	fi
 	follow_logs
-	ok "both groups' nodes serve"
+	ok "both groups' nodes serve, and the front"
 }
 
 # restart_group <g>: the group's restartedAt, as an operator sets it, and the roll it makes - waited for once the
@@ -113,8 +122,9 @@ restart_group() {
 follow_logs() {
 	mkdir -p "$WORK/logs"
 	local pod pid
-	for pod in $(k -n hugr get pods -l platform.hugr.io/group --field-selector=status.phase=Running \
-		-o jsonpath='{.items[*].metadata.name}'); do
+	for pod in $(k -n hugr get pods -l 'platform.hugr.io/group' --field-selector=status.phase=Running \
+		-o jsonpath='{.items[*].metadata.name}') $(k -n hugr get pods -l app.kubernetes.io/name=hugr-front \
+		--field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}'); do
 		pid="$(cat "$WORK/logs/$pod.pid" 2>/dev/null || true)"
 		[ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q 'kubectl.*logs' && continue
 		# kubectl itself, never the function k (forward says why)
