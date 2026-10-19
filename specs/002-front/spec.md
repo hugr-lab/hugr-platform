@@ -1,8 +1,8 @@
 # Spec 002: the front - one address for the clients, every call on its node
 
-- **Status**: built, the demo through it pending (the owner accepted it 2026-10-19: «спека одобрена»; Q1-Q6 as
-  recommended). Tested by unit tests, envtest and `test/front/run.sh` against real nodes; the demo's checks through
-  the front (below) wait for duckdb-acl's spec 096 addendum to reach hugr-node's image.
+- **Status**: implemented (the owner accepted it 2026-10-19: «спека одобрена»; Q1-Q6 as recommended; a cookie-less
+  client by its handle: option B). Tested by unit tests, envtest, `test/front/run.sh` against real nodes and spec
+  004's demo through the front (check 4b, kind: demo run 39297799295 on the re-pinned node, hugr-node #12).
 - **Date**: 2026-10-19
 
 ## Summary

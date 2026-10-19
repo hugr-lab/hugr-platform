@@ -27,8 +27,8 @@ The node is [hugr-node](https://github.com/hugr-lab/hugr-node), and the image is
 platform's design and status are in the phase 1 document, and the work here goes spec by spec (`specs/`).
 
 > **Status:** spec 001, the operator, is built: the resources, the group's objects, the plan's checks, the entry
-> and the heartbeat, with unit tests and envtest. The front (002) is built; the demo through it and the console
-> (003) follow.
+> and the heartbeat, with unit tests and envtest. The front (002) is built and the demo runs through it; the console
+> (003) follows.
 
 ## Install
 

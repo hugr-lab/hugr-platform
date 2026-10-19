@@ -7,4 +7,4 @@ rewrite history.
 | spec | what | status |
 | --- | --- | --- |
 | [001](001-control-plane/spec.md) | the operator: node groups, a node's entry, the fleet's state | accepted |
-| [002](002-front/spec.md) | the front: one address for the clients, every call on its node | built, demo pending |
+| [002](002-front/spec.md) | the front: one address for the clients, every call on its node | implemented |
