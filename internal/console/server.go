@@ -380,7 +380,22 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request, token string
 		problem(w, http.StatusBadRequest, "bad_request", "not a session id")
 		return
 	}
-	s.run(w, r, token, p, statement)
+	n, ok := s.nodeOf(w, r)
+	if !ok {
+		return
+	}
+	result, err := s.Nodes.Query(r.Context(), *n, token, statement)
+	if err != nil {
+		nodeProblem(w, err)
+		return
+	}
+	// acl_session_kill answers false for an id the node does not hold (ended already, or another node's)
+	if len(result.Rows) != 1 || len(result.Rows[0]) != 1 || result.Rows[0][0] != true {
+		problem(w, http.StatusNotFound, "not_found", "this node holds no such session; it may have ended")
+		return
+	}
+	s.Log.Info("node action", "node", n.Label, "by", p.subject, "action", "KILL")
+	answer(w, map[string]any{"ended": true})
 }
 
 func (s *Server) action(statement string) personHandler {
@@ -429,10 +444,11 @@ func nodeProblem(w http.ResponseWriter, err error) {
 	switch refused.Code {
 	case codes.Unauthenticated:
 		status = http.StatusUnauthorized
-	case codes.PermissionDenied:
+	case codes.PermissionDenied, codes.InvalidArgument:
+		// the node judged the statement and refused it (duckdb-acl answers a refusal as a binder error)
 		status = http.StatusForbidden
-	case codes.InvalidArgument, codes.NotFound:
-		status = http.StatusBadRequest
+	case codes.NotFound:
+		status = http.StatusNotFound
 	case codes.Unavailable:
 		status = http.StatusServiceUnavailable
 	}

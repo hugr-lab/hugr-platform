@@ -133,6 +133,10 @@ func askRights(ctx context.Context, nodes Caller, view *fleet.View, token string
 		switch {
 		case errors.As(err, &refused) && refused.Code == codes.Unauthenticated:
 			return Info{}, errRefused
+		case errors.As(err, &refused) && (refused.Code == codes.InvalidArgument || refused.Code == codes.PermissionDenied):
+			// the node judged the read and refused it: a principal with no administration at all, whose rights are
+			// none (the console shows it nothing)
+			return Info{}, nil
 		case errors.As(err, &refused) && len(refused.Groups) > 0:
 			groups = refused.Groups
 		case errors.As(err, &refused) && refused.Code == codes.Unavailable:

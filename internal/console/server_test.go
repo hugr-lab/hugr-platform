@@ -139,6 +139,12 @@ func newHarness(t *testing.T, info *Result, nodes ...fleet.Node) *harness {
 		case stmtSessions:
 			return &Result{Columns: []string{"id", "subject"}, Rows: [][]any{{"0A1B2C3D4E5F", "svc@example.org"}}}, nil
 		}
+		if strings.HasPrefix(statement, "KILL SESSION '0A1B2C3D4E5F'") {
+			return &Result{Columns: []string{"kill_session"}, Rows: [][]any{{true}}}, nil
+		}
+		if strings.HasPrefix(statement, "KILL SESSION") {
+			return &Result{Columns: []string{"kill_session"}, Rows: [][]any{{false}}}, nil
+		}
 		return &Result{Columns: []string{"ok"}, Rows: [][]any{{true}}}, nil
 	}}
 	w := &fakeWriter{}
@@ -283,6 +289,21 @@ func TestRefusedToken(t *testing.T) {
 	}
 }
 
+func TestNoAdministration(t *testing.T) {
+	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
+	h.nodes.answer = func(fleet.Node, string) (*Result, error) {
+		return nil, &NodeError{Code: codes.InvalidArgument,
+			Message: `acl: Binder Error: acl_rewrite: no access to table function "platform.console_info"`}
+	}
+	code, out, _ := h.do(t, "GET", APIPrefix+"me", opsToken, "")
+	if code != 200 || out["rights"].(map[string]any)["fleet"] != false {
+		t.Fatalf("a principal the node refuses console_info has no rights, and sees nothing: %d %v", code, out)
+	}
+	if code, _, _ := h.do(t, "GET", APIPrefix+"groups", opsToken, ""); code != http.StatusForbidden {
+		t.Errorf("and every page is refused: %d", code)
+	}
+}
+
 func TestRightsFromThePersonsGroup(t *testing.T) {
 	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"), node("hugr-node-general-a", "general"))
 	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
@@ -311,6 +332,11 @@ func TestEndSessionChecksTheID(t *testing.T) {
 	code, _, _ = h.do(t, "POST", APIPrefix+"nodes/hugr-node-etl-a/sessions/0a1b2c3d4e5f/end", opsToken, "")
 	if code != 200 || h.nodes.statements("KILL SESSION '0A1B2C3D4E5F'") != 1 {
 		t.Errorf("an ops id ends the session: %d %v", code, h.nodes.calls)
+	}
+	// the node answers false for a session it does not hold: a 404, never a success
+	code, out, _ := h.do(t, "POST", APIPrefix+"nodes/hugr-node-etl-a/sessions/FFFFFFFFFFFF/end", opsToken, "")
+	if code != http.StatusNotFound || out["error"] != "not_found" {
+		t.Errorf("no such session on the node: %d %v", code, out)
 	}
 	for _, c := range h.nodes.calls {
 		if c.token != opsToken || c.label != "hugr-node-etl-a" {
