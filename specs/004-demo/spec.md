@@ -244,8 +244,13 @@ The run's generated values are masked in the job's log (`::add-mask::`); on a fa
 AKS is never run by CI: it costs, and it needs a tenant's rights.
 
 - It uses the node assets of hugr-node's latest successful release dry run on main.
-- The job's own token may not read another repository's Actions: a fine-grained token (Actions: read on hugr-node) in
-  the secret `HUGR_NODE_ARTIFACTS_TOKEN` is used when set. gh's refusal is reported as such.
+- The job's own token reads hugr-node's artifacts (both repositories are public; proven by run 39180509095,
+  2026-10-19). A fine-grained token (Actions: read on hugr-node) in the secret `HUGR_NODE_ARTIFACTS_TOKEN` is used
+  instead when set; gh's refusal is reported as such.
+- The demo step has its own limit (55 minutes) under the job's (75): a hang fails the step and the diagnosis still
+  runs. The checker and `kubectl exec` are bounded too (`timeout`, 120 s). The first main run hung in check 3: a
+  backgrounded shell function kept a `$(...)` pipe open under bash 5 (macOS's bash 3.2 does not), so the background
+  processes are kubectl itself.
 - A run that finds no such artifact fails and says so; it never skips silently.
 - tresor-server and kista are built from their main: the run breaks when theirs does.
 
