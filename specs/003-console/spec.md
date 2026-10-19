@@ -1,7 +1,8 @@
 # Spec 003: the console - one place to run the platform
 
 - **Status**: accepted (the owner, 2026-10-19: Q1-Q5 as recommended); the look is made with Claude Design on the Hugr Lab
-  design system (hugr-lab.com)
+  design system (hugr-lab.com). **Round 2** (the owner's asks after the first design, 2026-10-19) is a draft: see
+  "Round 2" below, decisions Q6-Q11 pending
 - **Date**: 2026-10-19
 
 ## Summary
@@ -181,9 +182,147 @@ tresor's and kista's mounts. Later: the audit's history (C2), a client's workloa
 **Q5. Who may scale and restart.** *Recommendation:* the `cluster` bundle (the infrastructure's right, duckdb-acl spec
 118). Alternative: `operate`.
 
+## Round 2 (draft): what a node is made of, how it is doing, what the cluster is set to
+
+The owner's asks after the first design (2026-10-19): a node's metrics (memory first); its profile as it came up (the
+sources attached and their state, the extensions, the logs); tracing a session; dynamic scaling, prepared for though
+not built; the node's identity; the telemetry; the cluster's settings (OTel, lineage, ...).
+
+### What is new where
+
+| repository | what | spec |
+| --- | --- | --- |
+| duckdb-acl | the engine's memory: `memory` in the load report (used, limit, spill used, spill limit), `platform.node_memory` (by duckdb's tag), gauges `acl.node.memory.*` (so acl-otel exports them); the node's inventory: `platform.node_databases`, `platform.node_extensions` | a new spec there |
+| hugr-node | `platform.telemetry`: acl_otel's state on this node (signals on, the receiver's host, `acl_otel_healthy()`, queued, dropped) - hugr-node's, since acl-otel links no acl symbol and cannot register a view | a new spec there |
+| hugr-platform (this spec) | the operator reads the pods' metrics (`metrics.k8s.io`), logs and events, the doors' certificate expiry; the API and the pages below; the scaling shape reserved | here |
+
+### A node's metrics
+
+- **The pod's** CPU and memory against the size's request and limit, from the Kubernetes metrics API
+  (`metrics.k8s.io`: metrics-server, which AKS runs). The pod's restart count and the last termination's reason
+  (`OOMKilled` is the one that matters) from its status. The operator reads them; `observe`.
+- **The engine's**, which the pod's number does not show: the buffer pool used against `memory_limit` (by tag,
+  `duckdb_memory()`) and the spill (`duckdb_temporary_files()`) against `max_temp_directory_size` - the decision 7 of
+  spec 001 put the spill under the volume so an overflow fails a query instead of evicting the pod; the console shows
+  how close it is. duckdb-acl's (above); read on the node with the person's token; `observe`.
+- **Now, not a history**: the page reads when it opens. Series over time are the telemetry backend's (below).
+
+### What a node came up with (its profile and bootstrap)
+
+The node's page gains the tabs **Sources and extensions** and **Logs**:
+
+- **Sources**: each attached database - name, type (postgres, ducklake, mssql, ...), read-only, attached or not -
+  joined with the profile item it comes from (`platform.cluster_effective`) and drift's state (`platform.drift`:
+  same, differs, node_only, profile_only, bootstrap). Never the ATTACH string: the profile keeps credentials out of it
+  (spec 006), a `NATIVE` attach may not. Whether a source answers is not probed from the console; the listings' mark
+  (duckdb-acl spec 136) and the audit say it.
+- **Extensions**: name, loaded, version, the repository it came from; with drift. **Settings**: drift's setting rows,
+  the node's value against the profile's.
+- **Logs**: the pod's log through the Kubernetes API (`pods/log`; the operator's RBAC gains `get`), the last 500 lines
+  or 1 MiB, the current container or the previous one - a node whose bootstrap failed restarts, and the reason is in
+  the previous log (spec 006). With the pod's events (scheduling, image pull, OOM). Read on open and on refresh, never
+  streamed; a line is text, never interpreted. `cluster` (Q6).
+- **A node that does not answer still has its page**: Kubernetes' part (pod, events, logs, metrics) is the operator's;
+  the node's part says it does not answer. The person's rights come from another node.
+
+### Tracing a session
+
+- The sessions' table shows each session's audit level and profile level and where each comes from
+  (`audit_level_source`, `profile_source`: the node, the policy's rule, an operator's override), and sets them:
+  `SET SESSION '<id>' AUDIT LEVEL off|denied|decisions|all|DEFAULT`, `PROFILE SESSION '<id>' ON|SAMPLED|OFF`
+  (duckdb-acl spec 118; `operate`). The override lives on that node's session record.
+- A profile becomes spans where acl_otel's `acl_otel_profile_spans` is on; the page says so when the cluster's
+  settings have it off.
+- The policy-wide rules (acl_otel's level rules, by role or claim) are shown on the Cluster page, read only.
+
+### Dynamic scaling, prepared for
+
+The autoscaler is phase 2 (spec 001). The console is built for a group that is either manual or autoscaled, so its
+pages do not change when the autoscaler lands:
+
+- The API's group carries `scaling: {mode: manual|auto, min, max, last: {at, from, to, reason}}`; until the autoscaler
+  exists every group is `manual`.
+- **Manual**: Scale sets the replicas, as now. **Auto**: the dialog edits min and max within the plan and never the
+  replicas - the autoscaler owns `spec.replicas` (its server-side apply field), and the console never takes it back.
+  Switching between the two is the same right (`cluster`).
+- The fleet shows an autoscaled group's bounds, its last decision and the reason; a group at 0 (the idle stop of phase
+  2) shows "stopped - starts on the first client" (the front holds that client, `noNodeWaitSeconds`).
+- The plan's check counts an autoscaled group at its max.
+- The CRD's fields and the signals are the autoscaler's spec; this spec reserves only the API's shape (Q8).
+
+### The node's identity
+
+On the group's page (it is the group's) and the node's:
+
+- **who it is**: the ServiceAccount, the IdP client id (`spec.identity.clientID`), the subject the IdP sees
+  (`system:serviceaccount:<ns>:<sa>`), the tresor host it logs in to;
+- **what it answers as**: the doors' TLS name (`hugr-node-<group>.<ns>.svc`) and the certificate's expiry (the group's
+  Secret: the operator reads `notAfter`, nothing else), the label, the pod's IP, the Kubernetes node and zone;
+- **what it runs**: the image's digest, the duckdb version, the hugr-node build (the heartbeat's).
+- Never a token, never the projected token's content.
+
+### Telemetry: the direction (beyond this spec)
+
+- The console stores no telemetry and queries no telemetry backend: that would be a second data path and a credential
+  for it.
+- What it shows itself: a node's **recent audit events** (`platform.audit_events`, the node's ring, `observe`) - the
+  "recent" half of design/082's C2. The history is the sinks'.
+- **Links out**: `HugrPlatform.spec.console.links`, URL templates for the organisation's backend (Grafana, Azure
+  Monitor) with `{node}`, `{group}`, `{session}`, `{trace}`; the console renders "Open in ..." on a node, a session, an
+  event. An https URL, checked, never a secret (Q9).
+
+### The cluster's settings (read only)
+
+A page **Cluster**:
+
+- **The profile** (`platform.cluster_items`): per scope (the cluster, a group) the extensions, sources and settings,
+  each with its version, class (hot, restart, drain) and dependencies; the profile's version.
+- **The integrations**: telemetry (acl_otel's receiver host, protocol, the signals on; `platform.telemetry` per node:
+  healthy, queued, dropped) and lineage (`platform.lineage_status` per node: namespace, level, sending, and why not).
+- **Drift**: per node, counted (the heartbeat's `drift`), listed on the node's page.
+- Rights: `cluster` for the profile and drift (CLUSTER views); `observe` for the integrations' state. The writes stay
+  SQL - `ACL CLUSTER ...`, and the receivers a passthrough administrator's (spec 001, decision 4) (Q10).
+
+### The API, added
+
+| method, path | does | right |
+| --- | --- | --- |
+| `GET nodes/{label}/kubernetes` | the pod: status, restarts, last termination, metrics, events | observe |
+| `GET nodes/{label}/logs?previous=&lines=` | the pod's log, bounded | cluster |
+| `GET nodes/{label}/inventory` | sources, extensions, settings; drift's states with `cluster` | observe |
+| `GET nodes/{label}/events` | the node's audit ring | observe |
+| `POST nodes/{label}/sessions/{id}/tracing` `{audit, profile}` | the two statements above | operate |
+| `GET cluster` | the profile, the integrations, drift counted | cluster / observe |
+| `PATCH groups/{g}` `{scaling: {mode, min, max}}` | when the autoscaler exists | cluster |
+
+### Decisions for the owner (round 2)
+
+**Q6. Who reads a node's logs.** *Recommendation:* `cluster` - a log names hosts and sources, and it is the
+infrastructure's view. Alternative: `observe`, beside the events.
+
+**Q7. Where the engine's memory is measured.** *Recommendation:* duckdb-acl - every node has an engine, the load report
+is acl's, and acl-otel then exports it too. Alternative: hugr-node only.
+
+**Q8. Scaling in the console before the autoscaler.** *Recommendation:* reserve the API's shape now and show manual
+groups; an autoscaled group's dialog edits min and max only. Alternative: leave scaling's shape to the autoscaler's
+spec and change the page then.
+
+**Q9. Telemetry.** *Recommendation:* the node's ring and links out, no queries to a backend. Alternative: the console
+reads Prometheus/Tempo through the operator - a credential and a second data path.
+
+**Q10. Editing the cluster's settings in the console.** *Recommendation:* read only in v1; later the same `ACL
+CLUSTER ...` statements under the person's token, judged by the node. Alternative: edit in v1.
+
+**Q11. Tracing a session.** *Recommendation:* in the sessions' table, per session on its node. Alternative: also a
+"trace everything of this principal" action - that is the policy's rule (acl_otel's rules table), not a session's.
+
 ## Follow-ups
 
 - The packaging spec: the console's Ingress / load balancer, the IdP registrations (the console's client, the API
   permissions on tresor's and kista's resources), the Managed Application's own.
 - C2 and C4 (design/082), when the audit's storage is decided.
+- Round 2's pieces in the other repositories: duckdb-acl (the engine's memory, the node's inventory), hugr-node
+  (`platform.telemetry`) - a spec each, after Q6-Q11.
+- To check: what a session moved by duckdb-acl spec 135 keeps of an operator's tracing override (the override is on
+  the old node's record).
 - Languages: tresor's and kista's `locale`, once the console has more than English.
