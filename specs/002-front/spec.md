@@ -1,6 +1,8 @@
 # Spec 002: the front - one address for the clients, every call on its node
 
-- **Status**: accepted (the owner, 2026-10-19: «спека одобрена»; Q1-Q6 as recommended)
+- **Status**: built, the demo through it pending (the owner accepted it 2026-10-19: «спека одобрена»; Q1-Q6 as
+  recommended). Tested by unit tests, envtest and `test/front/run.sh` against real nodes; the demo's checks through
+  the front (below) wait for duckdb-acl's spec 096 addendum to reach hugr-node's image.
 - **Date**: 2026-10-19
 
 ## Summary
@@ -184,6 +186,35 @@ One addendum to spec 096 (the front needs both; neither changes a decision of th
 - **Polling every node's `/.well-known/acl-node`** for the placement (design/017's first idea): the Leases already carry
   the summary, refreshed with each heartbeat, and the report needs an `observe` bearer the front should not hold.
 - **Routing per statement**: breaks the seats' accounting and quack, and loses the node's caches (design/017).
+
+## As built (2026-10-19)
+
+What the code settled that the design above left open, and where it reads more narrowly:
+
+- **The group a node serves is its Lease's**, not its Service's: a HugrNodeGroup's `resourceGroup` may differ from
+  its name, and the node knows which group it serves. The operator writes the load report's `group` as the Lease
+  annotation `platform.hugr.io/resource-group` (beside `group-default`); the Service's name is the doors' TLS name.
+- **What a node says machine-readably is what the front re-seats on**: Flight - another group (UNAVAILABLE and the
+  `x-acl-resource-groups` trailer) and a drain (UNAVAILABLE, the node's words); quack - another group (the header) and
+  a full node (the error answer's text, `acl: node at capacity`). Flight's refusal at `acl_max_sessions` and quack's
+  refusal while draining read `authentication failed` (duckdb-acl spec 040: a door says no more) and go to the client;
+  the Lease's `admit-new-session` keeps the front off such a node from its next heartbeat on.
+- **A node that does not answer** the dial is passed over (the same two-node budget as a busy one). A call is sent
+  again only when nothing of it reached the node: a `GetFlightInfo` that writes (duckdb-acl spec 111 runs it there)
+  is never run twice. When every node tried was silent the client gets `hugr: the node did not answer`, not "no node".
+- **A CONNECT is always seated**, whatever cookie it carries: a new connection is a new placement.
+- **The certificate is a Secret** (`spec.front.certificate.secretName`, default `hugr-front`): a cert-manager
+  Certificate writes it, as for the nodes'; the operator makes no Certificate. `spec.front.caBundle` (the nodes'
+  CA) defaults to the platform's `caBundle`.
+- **The image is the operator's**, read from the operator's own pod (`POD_NAME`; `HUGR_FRONT_IMAGE` overrides).
+- **No `spec.front`, no front**: removing it deletes the front's objects (the change that asked for it is explicit).
+- **Tests**: `internal/front/{quackwire,route,fleet,flightproxy,quackproxy}` (fake nodes, no proto, the quack corpus
+  of `quackwire/testdata`, made by `capture/capture.sh` from duckdb's own client and a duckdb-acl node);
+  `test/envtest/front_test.go` (the objects; the watcher on a real API server: an EndpointSlice and a Lease appear,
+  change, expire; a Lease the operator does not keep is not read; ready only after sync); `test/front/run.sh` (two
+  duckdb-acl nodes behind the front's proxies over a static fleet, the ADBC driver and duckdb's quack client: every
+  call of a connection on the node that seated it, both nodes used, 2M rows streamed, the log clean) - a runbook test,
+  it needs a duckdb-acl build.
 
 ## Decisions (owner, 2026-10-19): Q1-Q6 as recommended below
 

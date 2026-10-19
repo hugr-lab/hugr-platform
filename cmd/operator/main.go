@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -45,6 +47,8 @@ func main() {
 		probeAddr       string
 		leaderElect     bool
 		webhooks        bool
+		frontImage      string
+		frontPull       string
 	)
 	flag.StringVar(&namespace, "namespace", os.Getenv("POD_NAMESPACE"), "the namespace the operator serves")
 	flag.StringVar(&orchestratorURL, "orchestrator-url", "", "the operator's in-cluster https URL the nodes reach (HUGR_ORCHESTRATOR)")
@@ -54,6 +58,8 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-address", ":8081", "where /healthz and /readyz listen")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "elect a leader to reconcile")
 	flag.BoolVar(&webhooks, "webhooks", true, "serve the validating webhook")
+	flag.StringVar(&frontImage, "front-image", os.Getenv("HUGR_FRONT_IMAGE"), "the image the front runs: the operator's own (spec 002)")
+	flag.StringVar(&frontPull, "front-image-pull-policy", os.Getenv("HUGR_FRONT_IMAGE_PULL_POLICY"), "the front's image pull policy")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -89,10 +95,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		logger.Error(err, "no clientset")
+		os.Exit(1)
+	}
+	if frontImage == "" {
+		// the front runs the operator's own image (spec 002 Q1): read from this pod, so an install that renames the
+		// image (kustomize, a Managed Application) needs nothing more
+		frontImage, frontPull = ownImage(clientset, namespace)
+	}
+	settings := build.Settings{OrchestratorURL: orchestratorURL, FrontImage: frontImage,
+		FrontImagePullPolicy: corev1.PullPolicy(frontPull)}
 	reconciler := &controller.GroupReconciler{Client: mgr.GetClient(), Direct: mgr.GetAPIReader(), Scheme: mgr.GetScheme(),
-		Settings: build.Settings{OrchestratorURL: orchestratorURL}}
+		Settings: settings}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		logger.Error(err, "no group controller")
+		os.Exit(1)
+	}
+	if err := (&controller.FrontReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Settings: settings}).
+		SetupWithManager(mgr); err != nil {
+		logger.Error(err, "no front controller")
 		os.Exit(1)
 	}
 	if webhooks {
@@ -102,11 +125,6 @@ func main() {
 		}
 	}
 
-	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
-	if err != nil {
-		logger.Error(err, "no clientset")
-		os.Exit(1)
-	}
 	api := &nodeapi.Server{
 		Auth: &nodeapi.Authenticator{Reviewer: nodeapi.KubeReviewer{Client: clientset}, Reader: mgr.GetClient(),
 			Direct: mgr.GetAPIReader(), Namespace: namespace},
@@ -187,4 +205,25 @@ func (n *nodeAPI) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// ownImage is the image and pull policy of this pod's operator container (empty when it cannot be read: the front's
+// condition then says so).
+func ownImage(clientset kubernetes.Interface, namespace string) (string, string) {
+	name := os.Getenv("POD_NAME")
+	if name == "" {
+		return "", ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", ""
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.Name == "operator" {
+			return c.Image, string(c.ImagePullPolicy)
+		}
+	}
+	return "", ""
 }

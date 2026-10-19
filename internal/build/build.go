@@ -53,10 +53,13 @@ const (
 	NodeUID          = 10001
 )
 
-// Settings are the operator's own: where the nodes reach it.
+// Settings are the operator's own: where the nodes reach it, and the front's image (its own, spec 002 Q1).
 type Settings struct {
 	// OrchestratorURL is the operator's in-cluster https URL (HUGR_ORCHESTRATOR).
 	OrchestratorURL string
+	// FrontImage is the image the front runs (HUGR_FRONT_IMAGE): the operator's own, whose `front` binary it starts.
+	FrontImage           string
+	FrontImagePullPolicy corev1.PullPolicy
 }
 
 // Name is the name of every object of a group.

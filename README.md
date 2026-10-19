@@ -27,7 +27,8 @@ The node is [hugr-node](https://github.com/hugr-lab/hugr-node), and the image is
 platform's design and status are in the phase 1 document, and the work here goes spec by spec (`specs/`).
 
 > **Status:** spec 001, the operator, is built: the resources, the group's objects, the plan's checks, the entry
-> and the heartbeat, with unit tests and envtest. The kind demo, the front (002) and the console (003) follow.
+> and the heartbeat, with unit tests and envtest. The front (002) is built; the demo through it and the console
+> (003) follow.
 
 ## Install
 
@@ -45,7 +46,15 @@ kubectl apply -f config/samples/platform.yaml   # a HugrPlatform and a HugrNodeG
 A group's pods need the doors' TLS Secret it names (`tls.secretRef`, named `hugr-node-…`, SAN
 `hugr-node-<group>.hugr.svc`). The namespace is the platform's alone: whoever may create pods in it can run one as a
 group's ServiceAccount. `kubectl apply -k config/policy` (Kubernetes 1.30+) lets a group's pods, ReplicaSets and
-Deployment come only from the operator and the cluster's own controllers. Packaging proper - a Helm chart, the Azure Managed Application - is a spec of its own.
+Deployment come only from the operator and the cluster's own controllers.
+
+The front (spec 002) is the clients' one address: `spec.front` in the HugrPlatform makes the operator run it - the
+operator's own image, a Service with the Flight SQL (32010) and quack (9494) doors, of `serviceType` `ClusterIP` or
+`LoadBalancer`. It needs the public certificate's Secret (`hugr-front` by default; a cert-manager Certificate can
+write it) and verifies the nodes by `caBundle`. It keeps no table of sessions: a connection stays on the node that
+seated it by the label the node wrote into its cookie or connection id.
+
+Packaging proper - a Helm chart, the Azure Managed Application - is a spec of its own.
 
 Business Source License 1.1 (see `LICENSE`): production use is allowed, except offering it to third parties as a
 hosted or managed service. Each version changes to Apache-2.0 four years after its release.

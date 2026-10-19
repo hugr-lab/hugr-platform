@@ -12,6 +12,7 @@ spec:
   repository: {name: hugr, prefix: "https://kista.example/<tenant>/<channel>"}
   catalog: {secret: hugr_policy_catalog, schema: acl}
   caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}}
+  front: {replicas: 2, serviceType: LoadBalancer, certificate: {secretName: hugr-front}}   # spec 002
   sizes:
     large:
       resources: {requests: {cpu: "16", memory: 128Gi}, limits: {memory: 128Gi}}

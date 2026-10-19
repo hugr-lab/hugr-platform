@@ -27,6 +27,7 @@ rules:
   - services
   verbs:
   - create
+  - delete
   - get
   - list
   - patch
@@ -38,6 +39,7 @@ rules:
   - deployments
   verbs:
   - create
+  - delete
   - get
   - list
   - patch
@@ -61,6 +63,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - networking.k8s.io
@@ -92,6 +102,7 @@ rules:
   - platform.hugr.io
   resources:
   - hugrnodegroups/status
+  - hugrplatforms/status
   verbs:
   - get
   - patch
@@ -102,6 +113,20 @@ rules:
   - poddisruptionbudgets
   verbs:
   - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
   - get
   - list
   - patch

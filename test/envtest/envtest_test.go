@@ -35,6 +35,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -49,6 +50,8 @@ import (
 )
 
 const ns = "hugr"
+
+var skipNameValidation = true
 
 type cluster struct {
 	client    client.Client
@@ -76,6 +79,8 @@ func start(t *testing.T) *cluster {
 	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		// every test starts its own manager in this one process
+		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
 		WebhookServer: webhook.NewServer(webhook.Options{Host: hooks.LocalServingHost, Port: hooks.LocalServingPort,
 			CertDir: hooks.LocalServingCertDir}),
 	})
@@ -88,6 +93,11 @@ func start(t *testing.T) *cluster {
 		t.Fatal(err)
 	}
 	if err := (&groupwebhook.GroupValidator{Reader: mgr.GetAPIReader()}).SetupWithManager(mgr); err != nil {
+		t.Fatal(err)
+	}
+	front := &controller.FrontReconciler{Client: mgr.GetClient(), Scheme: scheme,
+		Settings: build.Settings{FrontImage: "ghcr.io/hugr-lab/hugr-platform:dev"}}
+	if err := front.SetupWithManager(mgr); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
