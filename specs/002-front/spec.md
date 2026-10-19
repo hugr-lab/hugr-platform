@@ -1,6 +1,6 @@
 # Spec 002: the front - one address for the clients, every call on its node
 
-- **Status**: draft
+- **Status**: accepted (the owner, 2026-10-19: «спека одобрена»; Q1-Q6 as recommended)
 - **Date**: 2026-10-19
 
 ## Summary
@@ -185,7 +185,7 @@ One addendum to spec 096 (the front needs both; neither changes a decision of th
   the summary, refreshed with each heartbeat, and the report needs an `observe` bearer the front should not hold.
 - **Routing per statement**: breaks the seats' accounting and quack, and loses the node's caches (design/017).
 
-## Open questions for the owner (with recommendations)
+## Decisions (owner, 2026-10-19): Q1-Q6 as recommended below
 
 **Q1. One image or two?** *Recommendation:* one image, two binaries (`operator`, `front`): one release, one scan, and
 the front is small.
