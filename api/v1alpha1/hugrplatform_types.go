@@ -30,6 +30,9 @@ type HugrPlatformSpec struct {
 	// Heartbeat is how often a node reports.
 	// +optional
 	Heartbeat HeartbeatSpec `json:"heartbeat,omitempty"`
+	// Front is the clients' one address for the nodes' doors (spec 002); without it the operator builds no front.
+	// +optional
+	Front *FrontSpec `json:"front,omitempty"`
 	// Sizes says what a group's size means in this cluster.
 	// +kubebuilder:validation:MinProperties=1
 	Sizes map[string]SizeSpec `json:"sizes"`
@@ -120,6 +123,55 @@ type HeartbeatSpec struct {
 	// +kubebuilder:validation:Maximum=3600
 	// +optional
 	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
+}
+
+// FrontSpec is the front (spec 002): a stateless proxy for the nodes' Flight SQL and quack doors.
+type FrontSpec struct {
+	// Replicas of the front. Default 2.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+	// ServiceType of the front's Service: ClusterIP (the default), or LoadBalancer where the clients come from
+	// outside the cluster.
+	// +kubebuilder:validation:Enum=ClusterIP;LoadBalancer
+	// +optional
+	ServiceType corev1.ServiceType `json:"serviceType,omitempty"`
+	// Certificate is the Secret (kubernetes.io/tls) of the public certificate the clients see - the administrator's,
+	// or the secretName of a cert-manager Certificate. Default hugr-front.
+	// +optional
+	Certificate FrontCertificateSpec `json:"certificate,omitempty"`
+	// CABundle verifies the nodes' doors (their group's certificate, spec 001 decision 3). Default: the platform's
+	// caBundle.
+	// +optional
+	CABundle *CABundleSpec `json:"caBundle,omitempty"`
+	// FlightPort of the Service. Default 32010, the nodes' own.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	FlightPort int32 `json:"flightPort,omitempty"`
+	// QuackPort of the Service. Default 9494.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	QuackPort int32 `json:"quackPort,omitempty"`
+	// NoNodeWaitSeconds is how long a new connection waits for a node of its group before it is refused. Default 5.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=300
+	// +optional
+	NoNodeWaitSeconds *int32 `json:"noNodeWaitSeconds,omitempty"`
+	// Resources of the front's container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// FrontCertificateSpec names the public certificate's Secret.
+type FrontCertificateSpec struct {
+	// SecretName is hugr-front or starts with hugr-front-: the front mounts no other Secret of the namespace (the
+	// operator's own, a group's door key), as a group mounts only hugr-node-... ones.
+	// +kubebuilder:validation:Pattern=`^hugr-front(-[a-z0-9]([-a-z0-9]*[a-z0-9])?)?$`
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
 }
 
 // SizeSpec is what one size means: the container's resources, where it runs, and its spill volume.

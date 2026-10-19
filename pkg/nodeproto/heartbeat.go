@@ -39,9 +39,11 @@ type Pending struct {
 
 // Load is the part of acl_node_load() the fleet reads.
 type Load struct {
-	Draining   bool  `json:"draining"`
-	GroupKnown *bool `json:"group_known"`
-	Sessions   struct {
+	Draining     bool   `json:"draining"`
+	Group        string `json:"group"` // the policy's resource group the node serves (empty: none, it serves everyone)
+	GroupKnown   *bool  `json:"group_known"`
+	GroupDefault bool   `json:"group_default"` // the node's group is the policy's default (duckdb-acl spec 096 addendum)
+	Sessions     struct {
 		Live int64 `json:"live"`
 		Max  int64 `json:"max"`
 	} `json:"sessions"`
@@ -95,7 +97,9 @@ type Summary struct {
 	NeedsRestart bool
 	AdmitSession bool
 	Draining     bool
+	Group        string // the resource group the node serves, as it reported (the front seats by it, spec 002)
 	GroupKnown   *bool
+	GroupDefault bool // where the front seats a principal whose group it does not know yet (spec 002)
 	Sessions     int64
 	SeatsLeft    int64 // -1: the node opens no quack door
 }
@@ -115,10 +119,23 @@ func SummaryOf(report Report, load Load) Summary {
 		NeedsRestart: report.Config.NeedsRestart,
 		AdmitSession: load.Admit.NewSession,
 		Draining:     load.Draining,
+		Group:        load.Group,
 		GroupKnown:   load.GroupKnown,
+		GroupDefault: load.GroupDefault,
 		Sessions:     load.Sessions.Live,
 		SeatsLeft:    seats,
 	}
+}
+
+// Placed is the summary as the operator writes it for a node it gave the resource group `group`: the group is the
+// operator's, never the node's word, and a node that reports serving another (reconfigured, or lying) takes no new
+// session and is no default - the front seats by these, and would otherwise send it other groups' principals.
+func (s Summary) Placed(group string) Summary {
+	if s.Group != group {
+		s.AdmitSession, s.GroupDefault = false, false
+	}
+	s.Group = group
+	return s
 }
 
 // The Lease's annotation keys.
@@ -128,7 +145,9 @@ const (
 	AnnotationNeedsRestart = "platform.hugr.io/needs-restart"
 	AnnotationAdmitSession = "platform.hugr.io/admit-new-session"
 	AnnotationDraining     = "platform.hugr.io/draining"
+	AnnotationGroup        = "platform.hugr.io/resource-group"
 	AnnotationGroupKnown   = "platform.hugr.io/group-known"
+	AnnotationGroupDefault = "platform.hugr.io/group-default"
 	AnnotationSessions     = "platform.hugr.io/sessions"
 	AnnotationSeatsLeft    = "platform.hugr.io/seats-left"
 )
@@ -141,6 +160,8 @@ func (s Summary) Annotations() map[string]string {
 		AnnotationNeedsRestart: strconv.FormatBool(s.NeedsRestart),
 		AnnotationAdmitSession: strconv.FormatBool(s.AdmitSession),
 		AnnotationDraining:     strconv.FormatBool(s.Draining),
+		AnnotationGroup:        s.Group,
+		AnnotationGroupDefault: strconv.FormatBool(s.GroupDefault),
 		AnnotationSessions:     strconv.FormatInt(s.Sessions, 10),
 		AnnotationSeatsLeft:    strconv.FormatInt(s.SeatsLeft, 10),
 	}
@@ -167,6 +188,8 @@ func ParseSummary(annotations map[string]string) Summary {
 		NeedsRestart: flag(AnnotationNeedsRestart),
 		AdmitSession: flag(AnnotationAdmitSession),
 		Draining:     flag(AnnotationDraining),
+		Group:        annotations[AnnotationGroup],
+		GroupDefault: flag(AnnotationGroupDefault),
 		Sessions:     num(AnnotationSessions),
 		SeatsLeft:    -1,
 	}

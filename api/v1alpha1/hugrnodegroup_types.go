@@ -124,6 +124,11 @@ const (
 	DefaultCatalogSecret      = "hugr_policy_catalog"
 	DefaultCatalogSchema      = "acl"
 	DefaultFederationAudience = "api://AzureADTokenExchange"
+	DefaultFrontReplicas      = 2
+	DefaultFrontSecret        = "hugr-front"
+	DefaultFrontFlightPort    = 32010
+	DefaultFrontQuackPort     = 9494
+	DefaultFrontNoNodeWait    = 5
 )
 
 // EffectiveResourceGroup is the policy's resource group the group's nodes serve.
@@ -148,4 +153,40 @@ func (p *HugrPlatform) EffectiveHeartbeatSeconds() int32 {
 		return p.Spec.Heartbeat.IntervalSeconds
 	}
 	return DefaultHeartbeatSeconds
+}
+
+// EffectiveReplicas of the front.
+func (f *FrontSpec) EffectiveReplicas() int32 {
+	if f.Replicas != nil {
+		return *f.Replicas
+	}
+	return DefaultFrontReplicas
+}
+
+// EffectiveSecret of the front's public certificate.
+func (f *FrontSpec) EffectiveSecret() string {
+	if f.Certificate.SecretName != "" {
+		return f.Certificate.SecretName
+	}
+	return DefaultFrontSecret
+}
+
+// EffectivePorts of the front's Service: Flight, quack.
+func (f *FrontSpec) EffectivePorts() (int32, int32) {
+	flight, quack := f.FlightPort, f.QuackPort
+	if flight == 0 {
+		flight = DefaultFrontFlightPort
+	}
+	if quack == 0 {
+		quack = DefaultFrontQuackPort
+	}
+	return flight, quack
+}
+
+// EffectiveNoNodeWaitSeconds of the front.
+func (f *FrontSpec) EffectiveNoNodeWaitSeconds() int32 {
+	if f.NoNodeWaitSeconds != nil {
+		return *f.NoNodeWaitSeconds
+	}
+	return DefaultFrontNoNodeWait
 }

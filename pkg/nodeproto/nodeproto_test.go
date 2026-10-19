@@ -46,7 +46,7 @@ const report = `{"node_id": "hugr-node-etl-a", "image": "v0.1.0", "duckdb": "f8f
  "config": {"target": 12, "applied": 11, "needs_restart": true,
             "pending": [{"kind": "setting", "name": "memory_limit", "class": "restart", "error": ""}]},
  "drift": {"same": 4, "cut": 1},
- "load": {"draining": false, "group_known": true, "sessions": {"live": 7, "max": 1000},
+ "load": {"draining": false, "group": "etl", "group_known": true, "group_default": true, "sessions": {"live": 7, "max": 1000},
           "quack": {"doors": [{"uri": "quack:0.0.0.0:9494", "seats_left": 9}, {"seats_left": 3}]},
           "admit": {"new_session": true}}}`
 
@@ -59,7 +59,8 @@ func TestReadReport(t *testing.T) {
 		t.Errorf("the config is read wrong: %+v", r.Config)
 	}
 	s := SummaryOf(r, load)
-	if s.Sessions != 7 || s.SeatsLeft != 12 || !s.AdmitSession || s.Draining || s.GroupKnown == nil || !*s.GroupKnown {
+	if s.Sessions != 7 || s.SeatsLeft != 12 || !s.AdmitSession || s.Draining || s.GroupKnown == nil || !*s.GroupKnown ||
+		!s.GroupDefault || s.Group != "etl" {
 		t.Errorf("the summary is wrong: %+v", s)
 	}
 	if _, _, err := ReadReport(strings.NewReader(report), "hugr-node-etl-b"); !errors.Is(err, ErrForeignNode) {
@@ -80,15 +81,26 @@ func TestSummaryAnnotations(t *testing.T) {
 	back := ParseSummary(s.Annotations())
 	if back.Target != s.Target || back.Applied != s.Applied || back.NeedsRestart != s.NeedsRestart ||
 		back.AdmitSession != s.AdmitSession || back.Draining != s.Draining || back.Sessions != s.Sessions ||
-		back.SeatsLeft != s.SeatsLeft || back.GroupKnown == nil || *back.GroupKnown != *s.GroupKnown {
+		back.SeatsLeft != s.SeatsLeft || back.GroupKnown == nil || *back.GroupKnown != *s.GroupKnown ||
+		back.GroupDefault != s.GroupDefault || back.Group != s.Group {
 		t.Errorf("the summary does not survive its annotations: %+v -> %+v", s, back)
 	}
 	none := ParseSummary(nil)
-	if none.AdmitSession || none.GroupKnown != nil || none.SeatsLeft != -1 {
+	if none.AdmitSession || none.GroupKnown != nil || none.GroupDefault || none.Group != "" || none.SeatsLeft != -1 {
 		t.Errorf("a node that never reported admits somebody: %+v", none)
 	}
 	noQuack := SummaryOf(Report{}, Load{})
 	if noQuack.SeatsLeft != -1 {
 		t.Errorf("a node without a quack door has seats: %d", noQuack.SeatsLeft)
+	}
+}
+
+func TestPlaced(t *testing.T) {
+	s := Summary{Group: "etl", AdmitSession: true, GroupDefault: true}
+	if p := s.Placed("etl"); !p.AdmitSession || !p.GroupDefault || p.Group != "etl" {
+		t.Errorf("a node serving its own group: %+v", p)
+	}
+	if p := s.Placed("interactive"); p.AdmitSession || p.GroupDefault || p.Group != "interactive" {
+		t.Errorf("a node reporting another group than the operator gave it: %+v", p)
 	}
 }
