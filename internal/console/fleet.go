@@ -35,7 +35,20 @@ type GroupAnswer struct {
 	Conditions         []ConditionAnswer `json:"conditions"`
 	// Scaling is the shape the autoscaler will fill (spec 003 round 2, Q8); every group is manual until it exists.
 	Scaling ScalingAnswer `json:"scaling"`
-	Nodes   []NodeAnswer  `json:"nodes"`
+	// Identity is who the group's nodes are (round 2): every node of a group is the same workload.
+	Identity IdentityAnswer `json:"identity"`
+	// MemoryLimitBytes is a node's pod limit, its size's (0 when the size names none).
+	MemoryLimitBytes int64        `json:"memoryLimitBytes"`
+	Nodes            []NodeAnswer `json:"nodes"`
+}
+
+// IdentityAnswer is a group's workload identity and the name its doors answer as - never a token.
+type IdentityAnswer struct {
+	ServiceAccount string `json:"serviceAccount"`
+	Subject        string `json:"subject"` // what the IdP sees of the projected token
+	ClientID       string `json:"clientID"`
+	Tresor         string `json:"tresor"`
+	TLSName        string `json:"tlsName"`
 }
 
 // ProfileAnswer is a group's convergence on the cluster profile.
@@ -75,6 +88,8 @@ type NodeAnswer struct {
 	Target       int64  `json:"target"`
 	Applied      int64  `json:"applied"`
 	NeedsRestart bool   `json:"needsRestart"`
+	// Usage is the pod's CPU and memory by the metrics API; nil without it.
+	Usage *Usage `json:"usage"`
 }
 
 // groupOf names the node group a node belongs to: its Service is hugr-node-<group> (spec 001).
@@ -88,7 +103,7 @@ func groupOf(n *fleet.Node) string {
 
 // FleetOf the platform's groups and the fleet's view, at `now`.
 func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, view *fleet.View,
-	now time.Time) FleetAnswer {
+	now time.Time, usage map[string]Usage) FleetAnswer {
 	answer := FleetAnswer{Plan: PlanAnswer{Sizes: []string{}}, Groups: []GroupAnswer{}}
 	if platform != nil {
 		answer.Plan = PlanAnswer{MaxNodes: platform.Spec.Plan.MaxNodes, Sizes: append([]string{}, platform.Spec.Plan.Sizes...)}
@@ -96,7 +111,11 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 	byGroup := map[string][]NodeAnswer{}
 	if view != nil {
 		for _, n := range view.Nodes() {
-			byGroup[groupOf(n)] = append(byGroup[groupOf(n)], nodeAnswer(n, now))
+			a := nodeAnswer(n, now)
+			if u, ok := usage[n.Label]; ok {
+				a.Usage = &u
+			}
+			byGroup[groupOf(n)] = append(byGroup[groupOf(n)], a)
 		}
 	}
 	for _, g := range groups {
@@ -113,7 +132,14 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 			conditions = append(conditions, ConditionAnswer{Type: c.Type, Status: string(c.Status), Reason: c.Reason,
 				Message: c.Message})
 		}
+		var limit int64
+		if platform != nil {
+			if size, ok := platform.Spec.Sizes[g.Spec.Size]; ok {
+				limit = size.Resources.Limits.Memory().Value()
+			}
+		}
 		answer.Groups = append(answer.Groups, GroupAnswer{
+			MemoryLimitBytes:   limit,
 			Name:               g.Name,
 			Size:               g.Spec.Size,
 			Replicas:           g.Spec.Replicas,
@@ -126,11 +152,22 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 			RestartedAt: g.Spec.RestartedAt,
 			Conditions:  conditions,
 			Scaling:     ScalingAnswer{Mode: "manual"},
+			Identity:    identityOf(platform, &g),
 			Nodes:       nodes,
 		})
 	}
 	sort.Slice(answer.Groups, func(i, j int) bool { return answer.Groups[i].Name < answer.Groups[j].Name })
 	return answer
+}
+
+func identityOf(platform *v1alpha1.HugrPlatform, g *v1alpha1.HugrNodeGroup) IdentityAnswer {
+	name := build.Name(g)
+	out := IdentityAnswer{ServiceAccount: name, Subject: "system:serviceaccount:" + g.Namespace + ":" + name,
+		ClientID: g.Spec.Identity.ClientID, TLSName: name + "." + g.Namespace + ".svc"}
+	if platform != nil {
+		out.Tresor = platform.Spec.Tresor.Host
+	}
+	return out
 }
 
 func nodeAnswer(n *fleet.Node, now time.Time) NodeAnswer {

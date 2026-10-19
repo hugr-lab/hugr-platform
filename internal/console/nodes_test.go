@@ -206,6 +206,12 @@ func TestPoolAgainstADoor(t *testing.T) {
 		t.Errorf("another token never carries alice's cookie: %q", seen[4])
 	}
 
+	if at, ok := pool.CertificateExpiry(n.Label); !ok || at.Before(time.Now()) {
+		t.Errorf("the doors' certificate's expiry, from the handshake: %v %v", at, ok)
+	}
+	if _, ok := pool.CertificateExpiry("never-spoken-to"); ok {
+		t.Error("a node never spoken to has no known certificate")
+	}
 	if closed := pool.SignOut(ctx, "alice-token"); closed != 1 {
 		t.Errorf("sign-out closes alice's one session: %d", closed)
 	}

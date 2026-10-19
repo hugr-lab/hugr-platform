@@ -36,6 +36,8 @@ type Server struct {
 	Fleet *fleet.Fleet
 	// Nodes runs a statement on a node with the person's token.
 	Nodes Caller
+	// Kube reads a node's pod, events, log and usage (round 2); nil reads none.
+	Kube Kube
 	// Web serves the web build; nil serves nothing but the API.
 	Web http.Handler
 	Log logr.Logger
@@ -87,6 +89,17 @@ func (s *Server) Handler() http.Handler {
 		s.person(func(r Rights) bool { return r.Drain }, s.action(stmtDrain)))
 	mux.Handle("POST "+APIPrefix+"nodes/{label}/resume",
 		s.person(func(r Rights) bool { return r.Resume }, s.action(stmtResume)))
+	// round 2
+	fleetRight := func(r Rights) bool { return r.Fleet }
+	mux.Handle("GET "+APIPrefix+"nodes/{label}/kubernetes", s.person(fleetRight, s.kubernetes))
+	mux.Handle("GET "+APIPrefix+"nodes/{label}/memory", s.person(fleetRight, s.memory))
+	mux.Handle("GET "+APIPrefix+"nodes/{label}/inventory", s.person(fleetRight, s.inventory))
+	mux.Handle("GET "+APIPrefix+"nodes/{label}/logs",
+		s.person(func(r Rights) bool { return r.Infrastructure }, s.logs))
+	mux.Handle("GET "+APIPrefix+"nodes/{label}/events", s.person(func(r Rights) bool { return r.Events }, s.events))
+	mux.Handle("POST "+APIPrefix+"nodes/{label}/sessions/{id}/tracing",
+		s.person(func(r Rights) bool { return r.Tracing }, s.tracing))
+	mux.Handle("GET "+APIPrefix+"cluster", s.person(fleetRight, s.cluster))
 	mux.Handle("POST "+APIPrefix+"sign-out", s.bearer(s.signOut))
 	mux.HandleFunc(APIPrefix, func(w http.ResponseWriter, _ *http.Request) {
 		problem(w, http.StatusNotFound, "not_found", "no such route")
@@ -254,7 +267,11 @@ func (s *Server) groups(w http.ResponseWriter, r *http.Request, _ string, _ *per
 		problem(w, http.StatusServiceUnavailable, "kubernetes", "the groups could not be read")
 		return
 	}
-	answer(w, FleetOf(platform, list.Items, s.view(), s.now()))
+	var usage map[string]Usage
+	if s.Kube != nil {
+		usage, _ = s.Kube.UsageAll(r.Context()) // best effort: without the metrics API the page shows none
+	}
+	answer(w, FleetOf(platform, list.Items, s.view(), s.now(), usage))
 }
 
 // GroupPatch is `PATCH groups/{g}`: one of a count or a restart.

@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - pods/log
   verbs:
   - get
 - apiGroups:
@@ -16,6 +17,8 @@ rules:
   - events
   verbs:
   - create
+  - get
+  - list
   - patch
 - apiGroups:
   - ""
@@ -78,6 +81,13 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - metrics.k8s.io
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
 - apiGroups:
   - networking.k8s.io
   resources:

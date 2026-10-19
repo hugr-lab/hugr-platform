@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
@@ -87,9 +88,10 @@ type Pool struct {
 }
 
 type channel struct {
-	address string
-	roots   *x509.CertPool
-	client  *flightsql.Client
+	address  string
+	roots    *x509.CertPool
+	client   *flightsql.Client
+	notAfter time.Time // the doors' certificate, as the last handshake showed it
 }
 
 type sessionKey struct {
@@ -134,8 +136,11 @@ func (p *Pool) Query(ctx context.Context, node fleet.Node, token, statement stri
 	ctx, cancel := context.WithTimeout(ctx, p.timeout())
 	defer cancel()
 	var header, trailer metadata.MD
-	info, err := client.Execute(p.outgoing(ctx, key, token), statement, grpc.Header(&header), grpc.Trailer(&trailer))
+	var remote peer.Peer
+	info, err := client.Execute(p.outgoing(ctx, key, token), statement, grpc.Header(&header), grpc.Trailer(&trailer),
+		grpc.Peer(&remote))
 	p.keep(key, header)
+	p.handshake(node.Label, &remote)
 	if err != nil {
 		return nil, withGroups(nodeError(err), trailer)
 	}
@@ -193,6 +198,29 @@ func plain(v any) any {
 		return string(raw)
 	}
 	return out
+}
+
+// handshake keeps the expiry of the certificate the node answered with.
+func (p *Pool) handshake(label string, remote *peer.Peer) {
+	info, ok := remote.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(info.State.PeerCertificates) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c := p.channels[label]; c != nil {
+		c.notAfter = info.State.PeerCertificates[0].NotAfter
+	}
+}
+
+// CertificateExpiry of a node's doors, once the console has spoken to it.
+func (p *Pool) CertificateExpiry(label string) (time.Time, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c := p.channels[label]; c != nil && !c.notAfter.IsZero() {
+		return c.notAfter, true
+	}
+	return time.Time{}, false
 }
 
 // SignOut closes the sessions the pool holds for the token, on every node.

@@ -42,7 +42,7 @@ func TestFleetOf(t *testing.T) {
 	starting.Lease = nil
 	starting.Ready = false
 	view := fleet.NewView([]fleet.Node{node("hugr-node-etl-b", "etl"), node("hugr-node-etl-a", "etl"), starting})
-	got := FleetOf(platform, groups, view, testNow)
+	got := FleetOf(platform, groups, view, testNow, map[string]Usage{"hugr-node-etl-a": {MemoryBytes: 42}})
 	if got.Plan.MaxNodes != 12 || !reflect.DeepEqual(got.Plan.Sizes, []string{"small", "large"}) {
 		t.Errorf("the plan: %+v", got.Plan)
 	}
@@ -59,7 +59,8 @@ func TestFleetOf(t *testing.T) {
 		t.Fatalf("its nodes in order: %+v", etl.Nodes)
 	}
 	a, c := etl.Nodes[0], etl.Nodes[2]
-	if a.LeaseAge == nil || *a.LeaseAge != 4 || !a.Current || a.Sessions != 3 || a.SeatsLeft != 9 || !a.Admitting {
+	if a.LeaseAge == nil || *a.LeaseAge != 4 || !a.Current || a.Sessions != 3 || a.SeatsLeft != 9 || !a.Admitting ||
+		a.Usage == nil || a.Usage.MemoryBytes != 42 || etl.Nodes[1].Usage != nil {
 		t.Errorf("a node from its Lease: %+v", a)
 	}
 	if c.LeaseAge != nil || c.Current || c.SeatsLeft != -1 || c.Ready {

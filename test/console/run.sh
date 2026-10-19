@@ -61,6 +61,8 @@ ACL ADMIN MAP CLAIM 'analyst' FROM CLIENT 'test/idp/s' TO ROLE analyst;
 ACL ADMIN MAP CLAIM 'ops' FROM CLIENT 'test/idp/s' TO ROLE ops;
 ACL ADMIN GRANT ADMIN observe TO ROLE ops;
 ACL ADMIN GRANT ADMIN operate TO ROLE ops;
+ACL ADMIN GRANT FUNCTION CATEGORY meta TO ROLE ops;
+ACL ADMIN GRANT FUNCTION CATEGORY environment TO ROLE ops;
 SET GLOBAL acl_allow_anonymous_admin = false;
 SET GLOBAL acl_node_label = 'hugr-node-etl-a';
 SELECT acl_flight_serve('grpc+tls://127.0.0.1:$PORT', '$WORK/node.crt', '$WORK/node.key');
@@ -86,6 +88,19 @@ probe "$WORK/ops.token" \
 	"SELECT * FROM platform.node_load" \
 	"SELECT id, subject, roles, door, idle_seconds, expires_at, audit_level, audit_level_source, profile_level, profile_source, groups, charged_group FROM platform.sessions" \
 	"DRAIN NODE" "RESUME NODE" "KILL SESSION '0A1B2C3D4E5F'" >"$WORK/ops.json" || fail "the operator's probe"
+# round 2: the engine's memory, the node's inventory, its ring, lineage; the profile's views (a standalone node
+# refuses them); a session's tracing
+probe "$WORK/ops.token" \
+	"SELECT tag, memory_usage_bytes, temporary_storage_bytes FROM duckdb_memory()" \
+	"SELECT size FROM duckdb_temporary_files()" \
+	"SELECT current_setting('memory_limit') AS memory_limit, current_setting('max_temp_directory_size') AS max_temp_directory_size" \
+	"SELECT extension_name, loaded, installed, extension_version, install_mode, installed_from FROM duckdb_extensions() WHERE loaded OR installed" \
+	"SELECT kind, name, state, node_value, profile_value, scope FROM platform.drift" \
+	"SELECT scope, kind, name, spec, class, version, depends_on, comment FROM platform.cluster_items" \
+	"SELECT status, sending, level, namespace FROM platform.lineage_status" \
+	"SELECT ts, seq, kind, level, door, session, subject, roles, statement, verdict, reason_code, rows, duration_us, correlation_id, traceparent, detail FROM platform.audit_events ORDER BY seq DESC LIMIT 200" \
+	"SET SESSION '0A1B2C3D4E5F' AUDIT LEVEL ALL" "PROFILE SESSION '0A1B2C3D4E5F' SAMPLED" \
+	>"$WORK/round2.json" || fail "the round 2 probe"
 # the analyst: no administration - the rights say so and the node refuses its reads
 probe "$WORK/analyst.token" \
 	"SELECT * FROM platform.console_info()" "SELECT * FROM platform.node_load" "DRAIN NODE" \
@@ -118,5 +133,11 @@ print("  node_load:", json.dumps(load[0], sort_keys=True))
 print("  a session:", json.dumps(sessions[0], sort_keys=True))
 print("  KILL SESSION of no session:", json.dumps(ops["KILL SESSION '0A1B2C3D4E5F'"]))
 print("  the analyst's node_load:", analyst["SELECT * FROM platform.node_load"]["error"])
+PY
+python3 - "$WORK/round2.json" <<'PY' || fail "the round 2 answers"
+import json, sys
+r = json.load(open(sys.argv[1]))
+for k, v in r.items():
+    print(" ", k[:60], "->", json.dumps(v)[:300])
 PY
 echo "PASS: the console's node calls"

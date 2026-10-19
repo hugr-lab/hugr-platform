@@ -173,7 +173,8 @@ func main() {
 		CertDir: consoleCertDir,
 		Server: &console.Server{Platform: platforms.Find, Reader: mgr.GetClient(),
 			Groups: console.ApplyWriter{Client: mgr.GetClient()}, Fleet: nodes, Nodes: pool, Web: web,
-			Log: logger.WithName("console")},
+			Kube: console.KubeClient{Clientset: clientset, Namespace: namespace},
+			Log:  logger.WithName("console")},
 		Pool:  pool,
 		Watch: watch.New(clientset, namespace, nodes, 15*time.Second).Run,
 	}
