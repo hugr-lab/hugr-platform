@@ -16,7 +16,7 @@ func bytesField(number uint64, payload []byte) []byte {
 }
 
 func anyMsg(kind string, value []byte) []byte {
-	return append(bytesField(1, []byte(typePrefix+kind)), bytesField(2, value)...)
+	return append(bytesField(1, []byte("type.googleapis.com/"+typePackage+kind)), bytesField(2, value)...)
 }
 
 func descriptor(kind, handle string) []byte {
@@ -47,6 +47,11 @@ func TestLabels(t *testing.T) {
 		{"DoGet", bytesField(1, anyMsg("TicketStatementQuery", bytesField(1, []byte("65BC150114D603160B8B3BDEF240A4F6")))), ""},
 		{"DoAction", append(bytesField(1, []byte("CancelQuery")), bytesField(2, anyMsg("ActionClosePreparedStatementRequest", bytesField(1, []byte(handle))))...), ""},
 		{"Handshake", ticket, ""},
+		// protobuf's reading: another URL host, the last of a repeated singular field
+		{"DoGet", bytesField(1, append(bytesField(1, []byte("example.com/x/"+typePackage+"TicketStatementQuery")),
+			bytesField(2, bytesField(1, []byte(handle)))...)), "node-b"},
+		{"DoGet", bytesField(1, anyMsg("TicketStatementQuery", append(bytesField(1, []byte("node-x.AA")),
+			bytesField(1, []byte(handle))...))), "node-b"},
 		// unreadable: truncated, a length past the end, garbage
 		{"DoGet", ticket[:len(ticket)-5], ""},
 		{"DoGet", []byte{0x0a, 0xff, 0xff, 0x03}, ""},

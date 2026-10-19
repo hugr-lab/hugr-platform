@@ -48,14 +48,27 @@ via_front() {
 	bounded 120 "$CHECKER" $(token_flags) -client "$(principal_id "$principal")" -secret-file "$WORK/secrets/principal-$principal" \
 		-node "127.0.0.1:$(cat "$WORK/ports/front")" -server-name hugr-front.hugr.svc -ca "$WORK/ca.crt" -sql "$sql"
 }
-front_pod() { k -n hugr get pods -l app.kubernetes.io/name=hugr-front -o jsonpath='{.items[0].metadata.name}'; }
+# front_pod: one ready front pod that is not going away - the same one for a whole check (its metrics are its own)
+front_pod() {
+	[ -s "$WORK/ports/front-pod" ] && k -n hugr get pod "$(cat "$WORK/ports/front-pod")" >/dev/null 2>&1 &&
+		{ cat "$WORK/ports/front-pod"; return; }
+	k -n hugr get pods -l app.kubernetes.io/name=hugr-front -o json | python3 -c '
+import json, sys
+for p in json.load(sys.stdin)["items"]:
+    ready = any(c["type"] == "Ready" and c["status"] == "True" for c in p["status"].get("conditions", []))
+    if ready and not p["metadata"].get("deletionTimestamp"):
+        print(p["metadata"]["name"])
+        break' | tee "$WORK/ports/front-pod"
+}
 # front_metric <series>: the value of one of the front pod's metrics (its internal port, never the Service's)
 front_metric() {
 	if [ ! -s "$WORK/ports/front-internal" ]; then
 		forward hugr "pod/$(front_pod)" 8081 >"$WORK/ports/front-internal"
 	fi
-	curl -fsS "http://127.0.0.1:$(cat "$WORK/ports/front-internal")/metrics" | awk -v s="$1" '$1 == s {print $2}'
+	curl -fsS "http://127.0.0.1:$(cat "$WORK/ports/front-internal")/metrics" |
+		awk -v s="$1" '$1 == s {v = $2} END {print v + 0}' # a series not yet counted is 0
 }
+no_pods() { [ -z "$(k -n hugr get pods -l "platform.hugr.io/group=$1" -o name)" ]; }
 
 first_pod() { pods "$1" | head -1; }
 status() { k -n hugr get hng "$1" -o jsonpath="$2"; }
@@ -131,9 +144,10 @@ PY
 			grep -q 'DEVELOPMENT identity' "$WORK/logs/$pod.log" && fail "node $pod runs a development identity (a key)"
 		done
 	done
-	# the namespace's Secrets: the operator's certificate and each group's doors', nothing else
+	# the namespace's Secrets: the operator's certificate, each group's doors' and the front's public one, nothing else
 	secrets="$(k -n hugr get secrets -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort | tr '\n' ' ')"
-	want="$(printf '%s\n' hugr-platform-tls "${GROUPS_[@]/#/hugr-node-}" | sed -e '2,$s/$/-tls/' | sort | tr '\n' ' ')"
+	want="$( (printf '%s\n' hugr-platform-tls "${GROUPS_[@]/#/hugr-node-}" | sed -e '2,$s/$/-tls/'; echo hugr-front) |
+		sort | tr '\n' ' ')"
 	[ "$secrets" = "$want" ] || fail "the namespace's Secrets are $secrets, want $want"
 	ok "a node mounts only its doors' certificate and reads no Secret; its tresor login is its projected ServiceAccount token ($IDP_NAME's federation); the namespace holds only TLS Secrets"
 }
@@ -169,7 +183,8 @@ check_placement() {
 
 check_front() {
 	step "4b. the front: one address, every principal on its group's node (spec 002)"
-	local admin a b got want reseats
+	local admin a b got want reseats routed
+	rm -f "$WORK/ports/front" "$WORK/ports/front-internal" "$WORK/ports/front-pod"
 	admin="$(first_pod a)"
 	a="$(first_pod a)"
 	b="$(first_pod b)"
@@ -177,6 +192,9 @@ check_front() {
 	as admin "$admin" "ALTER RESOURCE GROUP a SET DEFAULT" >/dev/null || fail "ALTER RESOURCE GROUP a SET DEFAULT"
 	eventually 30 "a's node reports the default group" lease_is "$a" group-default true
 	want="$(as analyst-b "$b" "SELECT count(*) FROM orders")" || fail "analyst_b's read on b"
+	# the metrics are the front pod's since its start: what the check itself did is the difference
+	reseats="$(front_metric 'hugr_front_reseats{reason="wrong_resource_group"}')"
+	routed="$(front_metric 'hugr_front_calls{outcome="routed",protocol="flight"}')"
 	for _ in 1 2 3; do
 		got="$(via_front analyst-b "SELECT count(*) FROM orders")" || fail "analyst_b through the front: $got"
 		[ "$got" = "$want" ] || fail "analyst_b through the front read $got, on b $want"
@@ -184,17 +202,21 @@ check_front() {
 			fail "analyst_a through the front: $got"
 		[ "$got" = "$(printf 'north\t40\nsouth\t20')" ] || fail "analyst_a through the front: $got"
 	done
-	reseats="$(front_metric 'hugr_front_reseats{reason="wrong_resource_group"}')"
-	[ "${reseats:-0}" -ge 3 ] || fail "the front re-seated analyst_b ${reseats:-0} times, want 3 (a node of a names b)"
-	ok "both analysts read through the front; analyst_b, seated on the default group a, was re-seated on b by a's refusal"
-	# no node of b takes a new session: refused after the wait, never seated in another group
-	as admin "$b" "DRAIN NODE" >/dev/null || fail "DRAIN NODE on b"
-	eventually 30 "b's node admits no new session" lease_is "$b" admit-new-session false
-	if got="$(via_front analyst-b "SELECT count(*) FROM orders" 2>&1)"; then fail "analyst_b was served with b drained"; fi
-	grep -q 'hugr: no node of group b can take a new session - retry' <<<"$got" || fail "analyst_b with b drained: $got"
-	as admin "$b" "RESUME NODE" >/dev/null || fail "RESUME NODE on b"
-	eventually 30 "b's node admits sessions again" lease_is "$b" admit-new-session true
-	ok "with b's node drained, analyst_b is refused after the wait, naming b - never seated on a"
+	reseats=$(($(front_metric 'hugr_front_reseats{reason="wrong_resource_group"}') - reseats))
+	routed=$(($(front_metric 'hugr_front_calls{outcome="routed",protocol="flight"}') - routed))
+	# analyst_b's statement is re-seated once from a; each DoGet goes to its ticket's node, never seated again
+	[ "$reseats" = 3 ] || fail "the front re-seated $reseats times for three statements of analyst_b, want 3"
+	[ "$routed" -ge 6 ] || fail "the front routed $routed calls by their ticket, want 6 (a DoGet per statement)"
+	ok "both analysts read through the front; analyst_b, seated on the default group a, was re-seated on b by a's refusal; every DoGet went to the node its ticket names (the checker keeps no cookie)"
+	# no node of b takes a new session: refused after the wait, never seated on another group's node
+	k -n hugr patch hng b --type=merge -p '{"spec":{"replicas":0}}' >/dev/null || fail "group b to no node"
+	eventually 120 "b has no node" no_pods b
+	if got="$(via_front analyst-b "SELECT count(*) FROM orders" 2>&1)"; then fail "analyst_b was served with no node of b"; fi
+	grep -q 'hugr: no node of group b can take a new session - retry' <<<"$got" || fail "analyst_b with no node of b: $got"
+	k -n hugr patch hng b --type=merge -p '{"spec":{"replicas":1}}' >/dev/null || fail "group b back to one node"
+	eventually 300 "group b serves again" group_ready b
+	follow_logs
+	ok "with no node of b, analyst_b is refused after the wait, naming b - never seated on a; b came back"
 }
 
 check_hot() {

@@ -324,7 +324,8 @@ func TestDoPutRefusalIsTheClients(t *testing.T) {
 	a := startNode(t, "node-a", wrongGroup("etl"))
 	b := startNode(t, "node-b", ok)
 	r := start(t, member(a, "general", true, true), member(b, "etl", false, true))
-	got := r.call(t, "DoPut", nil, "batch")
+	// a DoPut of batches is streamed on: once its node read some of it, it is not sent again
+	got := r.call(t, "DoPut", nil, "descriptor", "batch")
 	if status.Code(got.err) != codes.Unavailable || b.callCount() != 0 {
 		t.Errorf("a call that streamed is not replayed: %+v, node-b %d", got, b.callCount())
 	}
@@ -537,5 +538,82 @@ func TestCookielessByHandle(t *testing.T) {
 	}
 	if !seen["node-a"] || !seen["node-b"] {
 		t.Errorf("an ad-hoc statement is seated by two random choices: %v", seen)
+	}
+}
+
+func TestExecuteUpdateReseated(t *testing.T) {
+	// Flight SQL's ExecuteUpdate: a DoPut of its descriptor, then the end - a call the front can send again
+	a := startNode(t, "node-a", wrongGroup("etl"))
+	b := startNode(t, "node-b", ok)
+	r := start(t, member(a, "general", true, true), member(b, "etl", false, true))
+	update := string(append([]byte{0x08, 0x02}, pbField(2, pbAny("CommandStatementUpdate", pbField(1, []byte("DELETE"))))...))
+	if got := r.call(t, "DoPut", nil, string(pbField(1, []byte(update)))); got.err != nil || got.messages[0] != "node-b got "+string(pbField(1, []byte(update))) {
+		t.Errorf("a one-message DoPut refused by its node's placement is seated again: %+v", got)
+	}
+}
+
+func TestHolderAnswersAlone(t *testing.T) {
+	handle := []byte("node-b.65BC150114D603160B8B3BDEF240A4F6")
+	ticket := string(pbField(1, pbAny("TicketStatementQuery", pbField(1, handle))))
+	a := startNode(t, "node-a", ok)
+	b := startNode(t, "node-b", draining)
+	r := start(t, member(a, "general", true, true), member(b, "general", true, true))
+	got := r.call(t, "DoGet", nil, ticket)
+	if status.Code(got.err) != codes.Unavailable || !strings.Contains(status.Convert(got.err).Message(), "draining") ||
+		a.callCount() != 0 {
+		t.Errorf("the holder's refusal is the client's, no other node is asked: %v (node-a %d)", got.err, a.callCount())
+	}
+	// a holder the fleet does not have: refused by the front, no node asked
+	r2 := start(t, member(a, "general", true, true))
+	got = r2.call(t, "DoGet", nil, ticket)
+	if status.Code(got.err) != codes.Unavailable || !strings.Contains(status.Convert(got.err).Message(), "not in the fleet") ||
+		a.callCount() != 0 {
+		t.Errorf("a holder gone: %v (node-a %d)", got.err, a.callCount())
+	}
+}
+
+func TestSlowStreamKeepsItsOrder(t *testing.T) {
+	// a DoPut whose second message comes after the front stopped waiting for it: the pump takes that receive
+	echo := startNode(t, "node-a", func(n *fakeNode, _ string, got []string, s grpc.ServerStream) error {
+		if err := send(s, "got "+got[0]); err != nil {
+			return err
+		}
+		for {
+			var f frame
+			if err := s.RecvMsg(&f); err != nil {
+				return nil
+			}
+			if err := send(s, "got "+string(f.data.Materialize())); err != nil {
+				return err
+			}
+			f.free()
+		}
+	})
+	r := start(t, member(echo, "general", true, true))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	st, err := r.conn.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, service+"DoPut")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, m := range []string{"descriptor", "batch-1", "batch-2"} {
+		if i == 1 {
+			time.Sleep(SecondWait + 300*time.Millisecond)
+		}
+		if err := st.SendMsg(&frame{data: mem.BufferSlice{mem.SliceBuffer([]byte(m))}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = st.CloseSend()
+	var got []string
+	for {
+		var f frame
+		if err := st.RecvMsg(&f); err != nil {
+			break
+		}
+		got = append(got, string(f.data.Materialize()))
+	}
+	if strings.Join(got, ",") != "got descriptor,got batch-1,got batch-2" {
+		t.Errorf("a slow stream through the front: %q", got)
 	}
 }

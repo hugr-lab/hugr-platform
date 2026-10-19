@@ -22,12 +22,16 @@ import (
 // batch after it is never looked at.
 const Prefix = 64 << 10
 
-const typePrefix = "type.googleapis.com/arrow.flight.protocol.sql."
+// typePackage is the Flight SQL messages' package: an Any's type URL ends with `/<package>.<message>`, whatever comes
+// before the last slash (protobuf's own Any::Is reads it so)
+const typePackage = "arrow.flight.protocol.sql."
 
-// field reads the length-delimited field `number` of a protobuf message (the first occurrence); false when it is
-// absent or the message is not readable.
+// field reads the length-delimited field `number` of a protobuf message - its last occurrence, as protobuf reads a
+// singular field; false when it is absent or the message is not readable.
 func field(msg []byte, number uint64) ([]byte, bool) {
 	at := 0
+	var found []byte
+	ok := false
 	for at < len(msg) {
 		key, n := varint(msg[at:])
 		if n == 0 {
@@ -52,14 +56,17 @@ func field(msg []byte, number uint64) ([]byte, bool) {
 			}
 			at += n
 			if key>>3 == number {
-				return msg[at : at+int(length)], true
+				found, ok = msg[at:at+int(length)], true
 			}
 			at += int(length)
 		default: // groups: not in Flight
 			return nil, false
 		}
 	}
-	return nil, false
+	if at > len(msg) { // a fixed-width field past the end
+		return nil, false
+	}
+	return found, ok
 }
 
 func varint(b []byte) (uint64, int) {
@@ -76,11 +83,18 @@ func varint(b []byte) (uint64, int) {
 // anyOf reads an Any: its type's short name (after the Flight SQL prefix) and its value.
 func anyOf(msg []byte) (string, []byte) {
 	url, ok := field(msg, 1)
-	if !ok || !strings.HasPrefix(string(url), typePrefix) {
+	if !ok {
+		return "", nil
+	}
+	name := string(url)
+	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
+		name = name[slash+1:]
+	}
+	if !strings.HasPrefix(name, typePackage) {
 		return "", nil
 	}
 	value, _ := field(msg, 2)
-	return strings.TrimPrefix(string(url), typePrefix), value
+	return strings.TrimPrefix(name, typePackage), value
 }
 
 // commandHandle: the prepared statement's handle a FlightDescriptor's command names.
