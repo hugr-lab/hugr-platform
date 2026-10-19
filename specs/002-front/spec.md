@@ -89,8 +89,9 @@ follows by seating the connection again on a node of the group the node named.
   - Flight: the call is seated as a new connection. The node that takes it does not know the cookie and seats a session
     from the call's token and the session's state cookie (duckdb-acl spec 135): the session moves, or refuses once
     naming what could not move.
-  - quack: the front answers itself what a node would, `acl: this connection is not known on this node - connect
-    again` (spec 135's text), without a round trip; the client connects again, and the front seats the CONNECT.
+  - quack: the call goes to a placeable node of the default group, which answers `acl: this connection is not known on
+    this node - connect again` (spec 135); the client connects again, and the front seats the CONNECT. The front writes
+    no quack message of its own: the protocol's encoding stays the nodes'.
 - **The front never rewrites** a cookie, a header or a body. It adds nothing a client could have sent itself.
 
 ### The two protocols
