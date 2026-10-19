@@ -11,6 +11,7 @@
 #   HUGR_AUDIENCE, HUGR_ROLES_CLAIM         the principals' tokens for the nodes
 #   group_client_id <g>                     the group's identity.clientID
 #   principal_id <p>                        a principal's client id (p: seeder, analyst-a, analyst-b, admin)
+#   console_audience <aud>                  how the console's browser names an audience it asks a token for (spec 003)
 #   install_idp, idp_checker_up, token_flags   the install; the checker's way to the token endpoint
 KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.6.4}"
 IDP_NAME=Keycloak
@@ -32,6 +33,8 @@ KC_PORT=""
 # the assertion's sub there
 group_client_id() { echo "system:serviceaccount:hugr:hugr-node-$1"; }
 principal_id() { echo "demo-$1"; }
+# a Keycloak token carries its audiences by the client's mappers: the console's own token, named as it is
+console_audience() { echo "$1"; }
 
 idp_checker_up() { KC_PORT="$(forward idp svc/keycloak 8443)"; }
 token_flags() {

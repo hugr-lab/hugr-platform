@@ -8,6 +8,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"math/big"
 	"net"
@@ -36,7 +38,7 @@ import (
 type fakeDoor struct {
 	flightsql.BaseServer
 	mu       sync.Mutex
-	sessions map[string]string // cookie value -> token
+	sessions map[string]string // cookie value -> principal
 	seen     []string          // "<method> <token> <cookie>"
 	closed   []string
 	issued   int
@@ -49,7 +51,8 @@ func (d *fakeDoor) authorize(ctx context.Context, method string) (string, error)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.seen = append(d.seen, method+" "+token+" "+cookie)
-	if token == "refused" {
+	if token == "refused" || strings.HasSuffix(token, ".forged") {
+		// the node verifies the token first: a refused one never reaches the cookie's session
 		return "", status.Error(codes.Unauthenticated, "acl: token rejected")
 	}
 	if token == "elsewhere" {
@@ -58,16 +61,31 @@ func (d *fakeDoor) authorize(ctx context.Context, method string) (string, error)
 	}
 	for _, part := range strings.Split(cookie, ";") {
 		name, value, _ := strings.Cut(strings.TrimSpace(part), "=")
-		if name == "acl_flight_session_id" && d.sessions[value] == token {
+		if name == "acl_flight_session_id" && d.sessions[value] == principalOf(token) {
 			return value, nil
 		}
 	}
 	d.issued++
 	id := "s" + strconv.Itoa(d.issued)
-	d.sessions[id] = token
+	d.sessions[id] = principalOf(token)
 	_ = grpc.SetHeader(ctx, metadata.Pairs("set-cookie", "acl_flight_session_id="+id+"; HttpOnly; Path=/",
 		"set-cookie", "acl_node=hugr-node-etl-a; HttpOnly", "set-cookie", "other=x"))
 	return id, nil
+}
+
+// principalOf a token as the fake door judges it: a JWT's issuer and subject, another token as itself (the node's own
+// fingerprint holds more, and the same for one person's refreshed token)
+func principalOf(token string) string {
+	if iss, sub := claimsOf(token); iss != "" {
+		return iss + "|" + sub
+	}
+	return token
+}
+
+// jwt is a token of iss and sub; jti makes each one another token, signature names how the door judges it
+func jwt(iss, sub, jti, signature string) string {
+	claims, _ := json.Marshal(map[string]string{"iss": iss, "sub": sub, "jti": jti})
+	return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(claims) + "." + signature
 }
 
 func (d *fakeDoor) GetFlightInfoStatement(ctx context.Context, cmd flightsql.StatementQuery,
@@ -236,6 +254,40 @@ func TestPoolAgainstADoor(t *testing.T) {
 	}
 }
 
+// A person's refreshed token keeps the node's session: a draining node seats nobody new (duckdb-acl spec 066), and the
+// person who drained it resumes it with the token they hold by then.
+func TestPoolKeepsAPersonsSession(t *testing.T) {
+	door, n, roots := startDoor(t)
+	pool := &Pool{Namespace: "hugr", Roots: func(context.Context) (*x509.CertPool, error) { return roots, nil }}
+	ctx := context.Background()
+	issuer := "https://idp.example.org/realms/hugr"
+	for _, token := range []string{jwt(issuer, "alice", "1", "sig"), jwt(issuer, "alice", "2", "sig")} {
+		if _, err := pool.Query(ctx, n, token, "SELECT 1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a token naming alice that the node does not verify carries her cookie and is refused there, her session kept
+	if _, err := pool.Query(ctx, n, jwt(issuer, "alice", "3", "forged"), "SELECT 1"); err == nil {
+		t.Fatal("the node refuses a token it does not verify")
+	}
+	if _, err := pool.Query(ctx, n, jwt(issuer, "alice", "4", "sig"), "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+	// the same subject of another issuer is somebody else
+	if _, err := pool.Query(ctx, n, jwt("https://other.example.org", "alice", "5", "sig"), "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+	door.mu.Lock()
+	issued, seen := door.issued, append([]string{}, door.seen...)
+	door.mu.Unlock()
+	if issued != 2 {
+		t.Errorf("one session for alice's tokens, one for the other issuer's alice: %d, calls %q", issued, seen)
+	}
+	if closed := pool.SignOut(ctx, jwt(issuer, "alice", "6", "sig")); closed != 1 {
+		t.Errorf("sign-out with alice's latest token closes her session: %d", closed)
+	}
+}
+
 func TestPoolUnreachableAndUntrusted(t *testing.T) {
 	_, n, _ := startDoor(t)
 	_, other := certificate(t, "hugr-node-etl.hugr.svc")
@@ -272,9 +324,9 @@ func TestPrune(t *testing.T) {
 	pool := &Pool{}
 	now := time.Now()
 	pool.sessions = map[sessionKey]session{
-		{label: "a", token: "t"}: {cookie: "x", used: now},
-		{label: "a", token: "u"}: {cookie: "y", used: now.Add(-sessionIdle - time.Second)},
-		{label: "b", token: "t"}: {cookie: "z", used: now},
+		{label: "a", person: "t"}: {cookie: "x", used: now},
+		{label: "a", person: "u"}: {cookie: "y", used: now.Add(-sessionIdle - time.Second)},
+		{label: "b", person: "t"}: {cookie: "z", used: now},
 	}
 	pool.channels = map[string]*channel{"a": {}}
 	pool.Prune(func(label string) bool { return label == "a" }, now)

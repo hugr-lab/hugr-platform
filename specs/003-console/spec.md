@@ -118,10 +118,15 @@ Under `/api/v1/console/`, the person's nodes-audience token as the bearer on eve
   name and the platform's CA bundle (the front's dialing, spec 002).
 - **One gRPC channel per node; one session cookie per node and person**: the first call opens the person's session,
   later ones reuse it (duckdb-acl spec 050). Each call carries the person's bearer, and `traceparent`.
-  - As built: the session is kept per node and *token* (its hash), not per person: a person is known by a token the
-    node verified, and a cookie never travels with another token. A renewed token opens a new session; the old one
-    ends at the node's idle timeout (or at sign-out).
-- **Sign-out** ends the person's sessions on every node holding one; otherwise the node's idle timeout does.
+  - As built: per node and person, the person being the token's `iss` and `sub` as the token states them (hashed). The
+    first build kept it per *token*, and the demo found why that is wrong: a draining node seats nobody new
+    (duckdb-acl spec 066), so a person whose token was renewed after a drain had no session there and could not resume
+    the node. A node keeps a cookie's session for a new bearer of the same principal (its fingerprint: subject, roles,
+    claims) and verifies every call's token before the cookie counts, so a token naming somebody else's subject is
+    refused there and that person's session is untouched; a token without both claims is kept by its own hash.
+- **Sign-out** ends the person's sessions on every node holding one; otherwise the node's idle timeout does. It is
+  judged like every route (a token a node verified, the rights cached by the token's hash), never by the bearer
+  alone: the pool's sessions are found by the subject a token names.
 - Statements are fixed texts; an id from the browser (a session's ops id) is bound as a constant only after it
   matches the ops id's form - never SQL from the browser.
 
@@ -380,6 +385,23 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
     panel says so. The links out fill `{node}`, `{session}`, `{trace}` (a traceparent's trace id) URL-escaped and
     show no link when a value is missing; a cluster-wide link goes to the backend's origin.
 
+- **Stage 4, as built:**
+  - tresor-server's and kista's consoles are mounted at `/tresor` and `/kista` (their `/ui/mfe/` module and their
+    API paths only, the console origin's cookies and the client's address kept back, no redirect followed, their
+    certificates by the platform's CA bundle); the shell lists each by the service's own `whoami`.
+  - The end to end (`test/console/e2e`): Keycloak, a duckdb-acl node, the console's server over a static fleet and a
+    real browser. It found that Keycloak refuses `offline_access` to a user without that role - with no CORS header,
+    so the browser says only "failed to fetch" - and that a first call without a cookie is a session of one call
+    (duckdb-acl spec 050): the analyst's session for the operator to end is a probe's, held.
+  - The demo (spec 004, check 4c) calls the API as the demo's principals through the console's Service: the analyst
+    refused everything (403), the administrator's fleet, a node's pages, a session traced, cleared and ended (twice:
+    a 404), a node drained and resumed with each call's new token, a scale past the plan refused by the webhook (422)
+    and one within it named on the group, the mounted modules and tresor's `whoami` through the mount. The
+    administrator's roles hold the `meta` and `environment` categories there - the operator's grant, as Q7 says.
+  - What a node drained by somebody else does to the console: it seats nobody new, so a person without a session
+    there reads its page as refused ("draining") and cannot resume it; restarting the group or the pod ends that
+    drain. Whether an `operate` holder should be seated on a draining node is duckdb-acl's question (a follow-up).
+
 **Q12. An administrator and the resource groups** (taken as recommended while the owner has not said otherwise,
 2026-10-19). *Recommendation:* the policy grants an administrator's role every
 group's resource group (`GRANT RESOURCE GROUP g TO ROLE ops`); nothing to build, one judge. Alternative: a duckdb-acl
@@ -395,6 +417,8 @@ spec that does not place a session whose principal holds an administrative bundl
   Azure; acl_otel speaks OTLP, so whether it goes straight in or through a collector is that spec's question), one
   deployed with the platform (an OTel Collector and Grafana; for lineage to be decided), or none; later perhaps the
   platform's own DuckLake as the telemetry store. It also gives the console its links.
+- duckdb-acl: whether a draining node seats a new session for a principal holding `operate` (the drain's own right), so
+  that somebody other than the person who drained a node can resume it from the console (stage 4 above).
 - To check: what a session moved by duckdb-acl spec 135 keeps of an operator's tracing override (the override is on
   the old node's record).
 - Languages: tresor's and kista's `locale`, once the console has more than English.

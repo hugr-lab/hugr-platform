@@ -24,7 +24,7 @@ for p in json.load(sys.stdin)["items"]:
 
 # as <principal> <pod> <sql>: the statement's rows, or its refusal on stderr (exit 1). The principals: analyst-a,
 # analyst-b; admin (the cluster and policy bundles: the profile's and the resource groups' writes); breakglass
-# (passthrough: a node's own state read through ACL NATIVE)
+# (passthrough: a node's own state read through ACL NATIVE). A fourth argument -hold leaves the session open, as a client's own
 as() {
 	local principal="$1" pod="$2" sql="$3" group
 	group="$(k -n hugr get pod "$pod" -o jsonpath='{.metadata.labels.platform\.hugr\.io/group}')"
@@ -34,7 +34,8 @@ as() {
 	fi
 	# shellcheck disable=SC2046 # the IdP's flags are words
 	bounded 120 "$CHECKER" $(token_flags) -client "$(principal_id "$principal")" -secret-file "$WORK/secrets/principal-$principal" \
-		-node "127.0.0.1:$(cat "$WORK/ports/$pod")" -server-name "hugr-node-$group.hugr.svc" -ca "$WORK/ca.crt" -sql "$sql"
+		-node "127.0.0.1:$(cat "$WORK/ports/$pod")" -server-name "hugr-node-$group.hugr.svc" -ca "$WORK/ca.crt" -sql "$sql" \
+		${4:+"$4"}
 }
 
 # via_front <principal> <sql>: as `as`, through the front (spec 002) - one front pod, so its metrics are the calls' own
@@ -144,9 +145,11 @@ PY
 			grep -q 'DEVELOPMENT identity' "$WORK/logs/$pod.log" && fail "node $pod runs a development identity (a key)"
 		done
 	done
-	# the namespace's Secrets: the operator's certificate, each group's doors' and the front's public one, nothing else
+	# the namespace's Secrets: the operator's certificate and the console's, each group's doors' and the front's public
+	# one, nothing else
 	secrets="$(k -n hugr get secrets -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort | tr '\n' ' ')"
-	want="$( (printf '%s\n' hugr-platform-tls "${GROUPS_[@]/#/hugr-node-}" | sed -e '2,$s/$/-tls/'; echo hugr-front) |
+	want="$( (printf '%s\n' hugr-platform-tls "${GROUPS_[@]/#/hugr-node-}" | sed -e '2,$s/$/-tls/'; echo hugr-front
+		echo hugr-console) |
 		sort | tr '\n' ' ')"
 	[ "$secrets" = "$want" ] || fail "the namespace's Secrets are $secrets, want $want"
 	ok "a node mounts only its doors' certificate and reads no Secret; its tresor login is its projected ServiceAccount token ($IDP_NAME's federation); the namespace holds only TLS Secrets"
@@ -217,6 +220,149 @@ check_front() {
 	eventually 300 "group b serves again" group_ready b
 	follow_logs
 	ok "with no node of b, analyst_b is refused after the wait, naming b - never seated on a; b came back"
+}
+
+# console_port: the console's Service forwarded (spec 003) - one operator pod, so one pool of node sessions
+console_port() {
+	if [ ! -s "$WORK/ports/console" ]; then
+		forward hugr svc/hugr-platform-console 443 >"$WORK/ports/console.new" &&
+			mv "$WORK/ports/console.new" "$WORK/ports/console" || return 1
+	fi
+	cat "$WORK/ports/console"
+}
+# console_api <principal> <method> <path> [body] [scope]: the console's API as the principal, its answer's JSON - or
+# the refusal on stderr (exit 1); a path from / is one of the console's mounts, a scope the token's for that service
+console_api() {
+	local principal="$1" method="$2" path="$3" body="${4:-}" scope="${5:-}" port
+	case "$path" in /*) ;; *) path="/api/v1/console/$path" ;; esac
+	port="$(console_port)" || return 1
+	# shellcheck disable=SC2046 # the IdP's flags are words; a scope given overrides theirs (the last flag counts)
+	bounded 120 "$CHECKER" $(token_flags) $([ -z "$scope" ] || echo "-scope $scope") -client "$(principal_id "$principal")" \
+		-secret-file "$WORK/secrets/principal-$principal" -server-name hugr-platform-console.hugr.svc -ca "$WORK/ca.crt" \
+		-method "$method" -body "$body" -console "https://127.0.0.1:$port$path"
+}
+# console_get <path>: what the console serves to anyone - its config, a mounted console's module
+console_get() {
+	curl -fsS --max-time 60 --cacert "$WORK/ca.crt" \
+		--connect-to "hugr-platform-console.hugr.svc:443:127.0.0.1:$(console_port)" "https://hugr-platform-console.hugr.svc$1"
+}
+# json_true <json> <python expression over r>: the expression holds of the document
+json_true() { python3 -c 'import json, sys; r = json.loads(sys.argv[1]); sys.exit(0 if eval(sys.argv[2]) else 1)' "$1" "$2"; }
+json_get() { python3 -c 'import json, sys; r = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
+# session_of <principal's role> <pods...>: "<pod> <ops id>" of a Flight session of the role, as the console lists it
+session_of() {
+	local role="$1" pod out
+	shift
+	for pod in "$@"; do
+		out="$(console_api admin GET "nodes/$pod/sessions")" || return 1
+		out="$(json_get "$out" "next((s['id'] for s in r['sessions'] if s['door'] == 'flight' and '$role' in (s['roles'] or [])), '')")"
+		[ -z "$out" ] || { echo "$pod $out"; return 0; }
+	done
+	return 1
+}
+# tracing_is <pod> <id> <python condition over the session s>
+tracing_is() {
+	local out
+	out="$(console_api admin GET "nodes/$1/sessions")" || return 1
+	json_true "$out" "any(s['id'] == '$2' and ($3) for s in r['sessions'])"
+}
+
+check_console() {
+	step "4c. the console (spec 003): the fleet, a node's sessions and actions, a group's scale - each judged by the ACL"
+	local out me pod id held a b
+	rm -f "$WORK/ports/console"
+	a="$(first_pod a)"
+	b="$(first_pod b)"
+	# what the browser reads before a sign-in: who signs it in and where the mounts are - nothing secret
+	out="$(console_get /api/v1/console/config)" || fail "the console's config"
+	json_true "$out" "r['issuer'] == '$IDP_ISSUER' and r['clientID'] == 'hugr-console' and r['mounts']['tresor']['base'] == '/tresor'" ||
+		fail "the console's config: $out"
+
+	# analyst_a administers nothing: the console shows it nothing and does nothing for it (a node of b, asked first,
+	# refuses it and names a)
+	me="$(console_api analyst-a GET me)" || fail "analyst_a's rights in the console"
+	json_true "$me" "not any(v for k, v in r['rights'].items() if k != 'bundles')" || fail "analyst_a's rights: $me"
+	for out in "GET groups" "POST nodes/$a/drain" "GET nodes/$a/sessions" "PATCH groups/a"; do
+		# shellcheck disable=SC2086 # method and path
+		if console_api analyst-a $out '{"replicas": 1}' >/dev/null 2>"$WORK/console.err"; then fail "analyst_a: $out answered"; fi
+		grep -q 'answered 403' "$WORK/console.err" || fail "analyst_a: $out: $(cat "$WORK/console.err")"
+	done
+	ok "analyst_a, who administers nothing, has no right in the console: the fleet, a node's sessions, a drain, a scale refused (403)"
+
+	me="$(console_api admin GET me)" || fail "the admin's rights in the console"
+	json_true "$me" "all(r['rights'][k] for k in ('fleet', 'sessions', 'endSession', 'drain', 'resume', 'tracing', 'scale', 'infrastructure', 'events'))" ||
+		fail "the admin's rights: $me"
+	out="$(console_api admin GET groups)" || fail "the fleet"
+	json_true "$out" "sorted(g['name'] for g in r['groups']) == ['a', 'b'] and r['plan']['maxNodes'] == 4" || fail "the fleet: $out"
+	for pod in $(pods a) $(pods b); do
+		json_true "$out" "any(n['label'] == '$pod' and n['current'] and n['admitting'] for g in r['groups'] for n in g['nodes'])" ||
+			fail "the fleet does not show $pod admitting: $out"
+	done
+	out="$(console_api admin GET "nodes/$a")" || fail "node $a's page"
+	json_true "$out" "r['group'] == 'a' and r['load']['group'] == 'a' and not r['load']['draining'] and not r.get('loadError')" ||
+		fail "node $a's load report: $out"
+	out="$(console_api admin GET "nodes/$a/kubernetes")" || fail "node $a's pod"
+	json_true "$out" "r['phase'] == 'Running' and r['limits']['memoryBytes'] == 2 << 30" || fail "node $a's pod: $out"
+	out="$(console_api admin GET "nodes/$a/memory")" || fail "node $a's memory"
+	json_true "$out" "not r.get('error') and r['tags']['rows'] and r['limits']['rows']" || fail "node $a's memory: $out"
+	out="$(console_api admin GET "nodes/$a/inventory")" || fail "node $a's inventory"
+	json_true "$out" "any(e['extension_name'] == 'hugr_node' and e['loaded'] for e in r['extensions']['rows'])" ||
+		fail "node $a's extensions: $out"
+	out="$(console_api admin GET "nodes/$a/logs")" || fail "node $a's log"
+	json_true "$out" "'hugr_node: ' in r['text']" || fail "node $a's log reads no line of the node"
+	console_api admin GET "nodes/$a/events" >/dev/null || fail "node $a's audit ring"
+	out="$(console_api admin GET cluster)" || fail "the cluster's page"
+	json_true "$out" "len(r['lineage']) == $(($(pods a | wc -l) + $(pods b | wc -l))) and not r['profile'].get('error')" ||
+		fail "the cluster's page: $out"
+	ok "the admin's console: the fleet (a and b, every node admitting), $a's load report, pod, memory, extensions, log and audit ring, the cluster's profile and every node's lineage"
+
+	# a person's session on a node: its tracing, then its end - analyst_a's own, held as a driver holds one
+	as analyst-a "$a" "SELECT count(*) FROM orders" -hold >/dev/null || fail "analyst_a's own session on $a"
+	held="$(session_of analyst_a "$a")" || fail "the admin sees no session of analyst_a on $a"
+	pod="${held% *}"
+	id="${held#* }"
+	console_api admin POST "nodes/$pod/sessions/$id/tracing" '{"audit": "all", "profile": "sampled"}' >/dev/null ||
+		fail "the tracing of analyst_a's session"
+	tracing_is "$pod" "$id" "s['audit_level'] == 'all' and s['audit_level_source'] == 'override' and s['profile_level'] == 'sampled' and s['profile_source'] == 'override'" ||
+		fail "analyst_a's session does not trace"
+	console_api admin POST "nodes/$pod/sessions/$id/tracing" '{"audit": "", "profile": ""}' >/dev/null ||
+		fail "the tracing of analyst_a's session, cleared"
+	tracing_is "$pod" "$id" "s['audit_level_source'] != 'override' and s['profile_source'] != 'override'" ||
+		fail "analyst_a's session keeps the operator's levels"
+	console_api admin POST "nodes/$pod/sessions/$id/end" >/dev/null || fail "ending analyst_a's session"
+	tracing_is "$pod" "$id" "True" && fail "analyst_a's session lives on"
+	if console_api admin POST "nodes/$pod/sessions/$id/end" >/dev/null 2>"$WORK/console.err"; then fail "a session ended twice"; fi
+	grep -q 'answered 404' "$WORK/console.err" || fail "ending a session gone: $(cat "$WORK/console.err")"
+	ok "analyst_a's session on $pod traced (audit all, profile sampled - the operator's), cleared, ended; ending it again is a 404"
+
+	# a drain and its resume, each call with a new token of the admin: the console's session on the node goes on (a
+	# draining node seats nobody new)
+	console_api admin POST "nodes/$b/drain" >/dev/null || fail "DRAIN NODE through the console"
+	eventually 30 "$b reports draining" lease_is "$b" draining true
+	out="$(console_api admin GET "nodes/$b")" || fail "node $b's page while it drains"
+	json_true "$out" "r['load']['draining'] and not r['load']['admit_new_session']" || fail "node $b drains: $out"
+	console_api admin POST "nodes/$b/resume" >/dev/null || fail "RESUME NODE through the console, with the admin's next token"
+	eventually 30 "$b admits sessions again" lease_is "$b" draining false
+	ok "$b drained and resumed through the console, the admin's every call its own token"
+
+	# a scale is Kubernetes' write, judged by the webhook; the person who made it is on the group
+	if console_api admin PATCH groups/a '{"replicas": 4}' >/dev/null 2>"$WORK/console.err"; then
+		fail "scaling a to 4 (with b's 1, past 4) through the console was accepted"
+	fi
+	grep -q 'answered 422' "$WORK/console.err" && grep -q 'at most 4' "$WORK/console.err" ||
+		fail "the console's scale past the plan: $(cat "$WORK/console.err")"
+	console_api admin PATCH groups/b '{"replicas": 1}' >/dev/null || fail "group b's scale through the console"
+	out="$(k -n hugr get hng b -o json --show-managed-fields)"
+	json_true "$out" "r['metadata']['annotations'].get('platform.hugr.io/changed-by', 'unknown') != 'unknown' and any(m['manager'] == 'hugr-console' for m in r['metadata']['managedFields'])" ||
+		fail "group b does not name the console's write and its person"
+	ok "the console's scale past the plan refused by the webhook (422); within it written by the console's field manager, the person named on the group"
+
+	# the services' own consoles, mounted: their modules for anyone, their API with the person's token for them
+	console_get /tresor/ui/mfe/tresor.js | grep -q contract || fail "tresor's module through the console"
+	console_get /kista/ui/mfe/kista.js | grep -q contract || fail "kista's module through the console"
+	out="$(console_api seeder GET /tresor/v1/whoami "" "$TRESOR_SCOPE")" || fail "tresor's whoami through the console's mount"
+	json_true "$out" "'role:demo_seeder' in r['roles']" || fail "tresor's whoami of the seeder names no demo_seeder"
+	ok "tresor's and kista's consoles mounted: their modules served, tresor's API answered the seeder through the mount"
 }
 
 check_hot() {
@@ -394,6 +540,7 @@ run_checks() {
 	check_engine
 	check_placement
 	check_front
+	check_console
 	check_hot
 	check_restart
 	check_dropped_group

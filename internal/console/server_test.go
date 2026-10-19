@@ -287,6 +287,11 @@ func TestRefusedToken(t *testing.T) {
 	if code != http.StatusUnauthorized {
 		t.Errorf("a token the nodes refuse is the sign-in's problem: %d", code)
 	}
+	// the pool's sessions are a person's, by the subject a token names: one no node verified ends none of them
+	if code, _, _ := h.do(t, "POST", APIPrefix+"sign-out", opsToken, ""); code != http.StatusUnauthorized ||
+		len(h.nodes.signedOut) != 0 {
+		t.Errorf("sign-out with a refused token: %d, signed out %d", code, len(h.nodes.signedOut))
+	}
 }
 
 func TestNoAdministration(t *testing.T) {

@@ -71,8 +71,8 @@ type Caller interface {
 }
 
 // Pool is the console's Caller over Flight SQL (spec 003): one gRPC channel per node, one session per node and
-// token - the first call opens it and the node's cookie keeps it (duckdb-acl spec 050). Each call carries the token as
-// its bearer; the pool keeps a token's hash, never the token.
+// person - the first call opens it and the node's cookie keeps it (duckdb-acl spec 050). Each call carries the token as
+// its bearer; the pool keeps hashes, never a token.
 type Pool struct {
 	// Namespace of the nodes: a node is dialled by its pod's address with its group's TLS name
 	// (hugr-node-<group>.<ns>.svc), as the front does (spec 002).
@@ -95,8 +95,8 @@ type channel struct {
 }
 
 type sessionKey struct {
-	label string
-	token string // the token's hash
+	label  string
+	person string // personOf the token
 }
 
 type session struct {
@@ -116,6 +116,21 @@ func tokenHash(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// personOf is whom the pool keeps a node's session for: the token's issuer and subject as it states them, hashed. A
+// refreshed token is the same person's, and a node keeps a cookie's session for a new bearer of the same principal
+// (duckdb-acl spec 050) - which matters on a draining node: it seats nobody new (spec 066), so a session keyed by the
+// token would be gone at the first refresh, and the person could not resume the node they drained. The node verifies
+// every call's token before its cookie counts: a token naming somebody else's subject is refused there, and that
+// person's session is left alone. A token without both claims is kept by its own hash.
+func personOf(token string) string {
+	iss, sub := claimsOf(token)
+	if iss == "" || sub == "" {
+		return "t:" + tokenHash(token)
+	}
+	sum := sha256.Sum256([]byte(iss + "\x00" + sub))
+	return "p:" + hex.EncodeToString(sum[:])
+}
+
 func (p *Pool) timeout() time.Duration {
 	if p.Timeout > 0 {
 		return p.Timeout
@@ -132,7 +147,7 @@ func (p *Pool) Query(ctx context.Context, node fleet.Node, token, statement stri
 	if err != nil {
 		return nil, err
 	}
-	key := sessionKey{label: node.Label, token: tokenHash(token)}
+	key := sessionKey{label: node.Label, person: personOf(token)}
 	ctx, cancel := context.WithTimeout(ctx, p.timeout())
 	defer cancel()
 	var header, trailer metadata.MD
@@ -223,9 +238,9 @@ func (p *Pool) CertificateExpiry(label string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// SignOut closes the sessions the pool holds for the token, on every node.
+// SignOut closes the sessions the pool holds for the token's person, on every node.
 func (p *Pool) SignOut(ctx context.Context, token string) int {
-	hash := tokenHash(token)
+	whom := personOf(token)
 	type held struct {
 		client *flightsql.Client
 		cookie string
@@ -233,7 +248,7 @@ func (p *Pool) SignOut(ctx context.Context, token string) int {
 	var closing []held
 	p.mu.Lock()
 	for key, s := range p.sessions {
-		if key.token != hash {
+		if key.person != whom {
 			continue
 		}
 		if c := p.channels[key.label]; c != nil && s.cookie != "" {

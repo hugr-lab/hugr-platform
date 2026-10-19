@@ -27,6 +27,8 @@ entra_vars
 
 group_client_id() { entra_get "identity-$1"; }
 principal_id() { entra_get "app-$1"; }
+# Entra issues a token per resource: the console asks for api://<app>/.default (spec 003)
+console_audience() { echo "api://$1"; }
 idp_checker_up() { :; }
 token_flags() {
 	echo "-token-url https://login.microsoftonline.com/$(entra_get tenant)/oauth2/v2.0/token -scope api://$HUGR_AUDIENCE/.default"

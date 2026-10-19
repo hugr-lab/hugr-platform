@@ -169,22 +169,34 @@ func infoOf(result *Result) (Info, error) {
 // subjectOf a token the node has verified: its `sub`. The console verifies nothing itself - the node accepted this
 // very token, so its claims are the IdP's.
 func subjectOf(token string) string {
+	_, sub := claimsOf(token)
+	return sub
+}
+
+// claimsOf a JWT: its `iss` and `sub` as the token states them, each cut at 256 bytes; nothing for another shape. Read,
+// never verified - the node does that.
+func claimsOf(token string) (iss, sub string) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return ""
+		return "", ""
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	var claims struct {
+		Iss string `json:"iss"`
 		Sub string `json:"sub"`
 	}
 	if json.Unmarshal(payload, &claims) != nil {
-		return ""
+		return "", ""
 	}
-	if len(claims.Sub) > 256 {
-		return claims.Sub[:256]
+	return cut(claims.Iss, 256), cut(claims.Sub, 256)
+}
+
+func cut(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
 	}
-	return claims.Sub
+	return s
 }

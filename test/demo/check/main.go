@@ -1,7 +1,8 @@
 // The demo's checker (spec 004): SQL on a node as a principal. It takes the principal's token from the IdP by client
 // credentials (its secret read from a file, never an argument) and runs a statement through Flight SQL on a node
 // behind a port-forward, the TLS name the node's. Rows go to stdout as tab-separated text; a refusal goes to stderr
-// with exit code 1. The token is never printed.
+// with exit code 1. The token is never printed. With -hold the call keeps the node's cookie and leaves its session
+// open, as a driver's connection does; with -console it calls the console's API (spec 003) instead.
 //
 //	check -token-url https://127.0.0.1:<port>/realms/hugr/protocol/openid-connect/token -token-host keycloak.idp.svc \
 //	      -client demo-analyst-a -secret-file <file> -node 127.0.0.1:<port> -server-name hugr-node-a.hugr.svc \
@@ -19,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +29,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -44,10 +47,20 @@ func main() {
 		serverName = flag.String("server-name", "", "the node's TLS name (its group's certificate)")
 		caFile     = flag.String("ca", "", "the run's CA")
 		sql        = flag.String("sql", "", "the statement")
+		hold       = flag.Bool("hold", false, "keep the node's cookie and leave the session open: a client's own session")
+		consoleURL = flag.String("console", "", "instead of -sql: a console API URL (spec 003), reached through a port-forward")
+		method     = flag.String("method", "GET", "the console call's method")
+		body       = flag.String("body", "", "the console call's JSON body")
 	)
 	flag.Parse()
 	idp := tokenRequest{url: *tokenURL, host: *tokenHost, client: *client, secretFile: *secretFile, scope: *scope}
-	if err := run(idp, *node, *serverName, *caFile, *sql); err != nil {
+	var err error
+	if *consoleURL != "" {
+		err = console(idp, *consoleURL, *method, *body, *serverName, *caFile)
+	} else {
+		err = run(idp, *node, *serverName, *caFile, *sql, *hold)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, redact(err.Error()))
 		os.Exit(1)
 	}
@@ -63,7 +76,7 @@ type tokenRequest struct {
 	url, host, client, secretFile, scope string
 }
 
-func run(idp tokenRequest, node, serverName, caFile, sql string) error {
+func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool) error {
 	pem, err := os.ReadFile(caFile)
 	if err != nil {
 		return err
@@ -79,7 +92,13 @@ func run(idp tokenRequest, node, serverName, caFile, sql string) error {
 		return fmt.Errorf("the principal's token: %w", err)
 	}
 	creds := credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: serverName, MinVersion: tls.VersionTLS12})
-	conn, err := flightsql.NewClient(node, nil, nil, grpc.WithTransportCredentials(creds))
+	// without the cookie each call is a session of its own, closed after it (duckdb-acl spec 050); with it the DoGet
+	// seats the session the node keeps until its idle timeout - nothing here closes it
+	var middleware []flight.ClientMiddleware
+	if hold {
+		middleware = append(middleware, flight.NewClientCookieMiddleware())
+	}
+	conn, err := flightsql.NewClient(node, nil, middleware, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return err
 	}
@@ -115,6 +134,56 @@ func run(idp tokenRequest, node, serverName, caFile, sql string) error {
 		}
 		reader.Release()
 	}
+	return nil
+}
+
+// console calls the console's API as the principal (spec 003): the answer's body to stdout, a refusal's to stderr with
+// exit code 1; the token is the bearer and never printed.
+func console(idp tokenRequest, target, method, body, serverName, caFile string) error {
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return errors.New("the CA file holds no certificate")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	token, err := clientCredentials(ctx, idp, pool)
+	if err != nil {
+		return fmt.Errorf("the principal's token: %w", err)
+	}
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, reader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12,
+		RootCAs: pool, ServerName: serverName}}}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("the console answered %d: %s", resp.StatusCode, strings.TrimSpace(string(answer)))
+	}
+	if strings.Contains(string(answer), token) {
+		return errors.New("the console's answer carries the token")
+	}
+	fmt.Println(strings.TrimSpace(string(answer)))
 	return nil
 }
 

@@ -194,7 +194,7 @@ they run once per `up` (`all` does both).
 2. **The federation: a node holds no credential of its own.** On the live pods, as admitted: a Secret is mounted only
    as the doors' certificate, none reaches the environment (`env`, `envFrom`), a projected volume carries tokens,
    ConfigMaps and the downward API only, no image pull secret; no node runs a development identity (a key). The
-   platform's namespace holds the operator's and the doors' TLS Secrets and nothing else. With check 1's login to
+   platform's namespace holds the operator's, the console's and the doors' TLS Secrets and nothing else. With check 1's login to
    tresor, the node's ServiceAccount token is all it logged in with: its IdP client has no secret.
 3. **The engine against the pod.** The node's `memory_limit`, `threads` and `max_temp_directory_size` are the pod's
    80% / CPU / 90%. A plain duckdb in the same container, with an empty environment, shows what DuckDB chooses by itself
@@ -210,6 +210,16 @@ they run once per `up` (`all` does both).
    node; with `b`'s node drained, `analyst_b` is refused after the wait - `hugr: no node of group b can take a new
    session - retry` - and never seated on `a`. The checker keeps no cookie: its `DoGet` reaches the node by the label
    in its ticket. The front's logs are in check 12's scan.
+4c. **The console** (spec 003): the operator serves it with the run's certificate (Secret `hugr-console`), the platform
+   names it (`spec.console`); the checker calls its API through its Service with a principal's token (`-console`).
+   Its config answers before a sign-in; `analyst_a` is refused the fleet, a node's sessions, a drain and a scale (403);
+   `platform_admin` reads the fleet (every node admitting), a node's load report, pod, memory, extensions, log and
+   audit ring, and the cluster's page; `analyst_a`'s own session (the checker's `-hold`, a driver's cookie) is traced,
+   cleared and ended, ending it again a 404; `b`'s node is drained and resumed, every call with a new token of the
+   admin's; a scale of `a` to 4 is the webhook's refusal (422), one of `b` within the plan is the console's field
+   manager's, the admin named on the group; tresor's and kista's modules come through the mounts, and tresor's
+   `whoami` answers the seeder there. The admin holds the `meta` and `environment` function categories (the engine's
+   memory and extensions are duckdb's own functions).
 5. **A hot item.** `ACL CLUSTER ATTACH … IN GROUP a`, written by `platform_admin` through a node of `a`:
    - every node of `a` applies it on its tick and reports `applied` at the new version;
    - group `a`'s status shows the target applied by all its nodes;
@@ -321,5 +331,5 @@ From the minikube run (2026-10-18), recorded in spec 001's "Still to verify":
 
 - spec 002 (the front): the re-seat of a principal of another group joins check 4. Clients go through the front, not
   port-forwards.
-- spec 003 (the console): the demo's restart button is the console's.
+- spec 003 (the console): a group's restart through the console (check 6 sets `restartedAt` itself).
 - Packaging (the Helm chart, the Azure Managed Application): the demo is its first user.

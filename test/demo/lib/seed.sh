@@ -72,6 +72,10 @@ ACL ADMIN CREATE ROLE IF NOT EXISTS node_breakglass;
 -- prove those bundles
 ACL ADMIN GRANT ADMIN cluster TO ROLE platform_admin;
 ACL ADMIN GRANT ADMIN policy TO ROLE platform_admin;
+-- what the console reads of a node's engine - its memory, its extensions, its settings - are duckdb's own functions,
+-- in the categories an operator grants (hugr-platform spec 003 Q7)
+ACL ADMIN GRANT FUNCTION CATEGORY meta TO ROLE platform_admin;
+ACL ADMIN GRANT FUNCTION CATEGORY environment TO ROLE platform_admin;
 -- the checks read a node's own state (its settings, the profile's version, its attached databases) through ACL
 -- NATIVE, the break-glass: a principal of its own, writing nothing
 ACL ADMIN GRANT ADMIN passthrough TO ROLE node_breakglass;

@@ -101,7 +101,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST "+APIPrefix+"nodes/{label}/sessions/{id}/tracing",
 		s.person(func(r Rights) bool { return r.Tracing }, s.tracing))
 	mux.Handle("GET "+APIPrefix+"cluster", s.person(fleetRight, s.cluster))
-	mux.Handle("POST "+APIPrefix+"sign-out", s.bearer(s.signOut))
+	// the pool keeps a person's sessions by the subject a token names (personOf): only a token a node has verified
+	// may end them
+	mux.Handle("POST "+APIPrefix+"sign-out", s.person(nil, s.signOut))
 	mux.HandleFunc(APIPrefix, func(w http.ResponseWriter, _ *http.Request) {
 		problem(w, http.StatusNotFound, "not_found", "no such route")
 	})
@@ -438,7 +440,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, token string, p *pe
 	answer(w, map[string]any{"result": result.Records()})
 }
 
-func (s *Server) signOut(w http.ResponseWriter, r *http.Request, token string) {
+func (s *Server) signOut(w http.ResponseWriter, r *http.Request, token string, _ *person) {
 	s.rights.forget(tokenHash(token))
 	closed := s.Nodes.SignOut(r.Context(), token)
 	answer(w, map[string]int{"closed": closed})
