@@ -74,6 +74,37 @@ func (s *Server) view() *fleet.View {
 	return v
 }
 
+// platformView is the fleet of this platform's groups only: the watch sees every node of the namespace, and a
+// namespace may hold several platforms (--console-platform) - the rights a person has here are this platform's
+// nodes' to answer, and the console reaches no other node.
+func (s *Server) platformView(ctx context.Context) (*fleet.View, error) {
+	v := s.view()
+	if v == nil {
+		return nil, nil
+	}
+	platform, err := s.Platform(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var list v1alpha1.HugrNodeGroupList
+	if err := s.Reader.List(ctx, &list, client.InNamespace(platform.Namespace)); err != nil {
+		return nil, err
+	}
+	mine := map[string]bool{}
+	for _, g := range list.Items {
+		if g.Spec.Platform == platform.Name {
+			mine[g.Name] = true
+		}
+	}
+	var nodes []fleet.Node
+	for _, n := range v.Nodes() {
+		if mine[groupOf(n)] {
+			nodes = append(nodes, *n)
+		}
+	}
+	return fleet.NewView(nodes), nil
+}
+
 // Handler of the console: the API, then the web build.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -122,6 +153,7 @@ func secured(next http.Handler) http.Handler {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Strict-Transport-Security", "max-age=31536000") // the console is served over TLS only
 		if strings.HasPrefix(r.URL.Path, APIPrefix) {
 			h.Set("Cache-Control", "no-store")
 		}
@@ -168,6 +200,11 @@ func (s *Server) bearer(next func(w http.ResponseWriter, r *http.Request, token 
 // person resolves the token's rights (cached by its hash) and lets the request through when `allowed` says so.
 func (s *Server) person(allowed func(Rights) bool, next personHandler) http.Handler {
 	return s.bearer(func(w http.ResponseWriter, r *http.Request, token string) {
+		if !current(token, s.now()) {
+			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+			problem(w, http.StatusUnauthorized, "unauthenticated", "your sign-in has expired; sign in again")
+			return
+		}
 		p, err := s.lookup(r.Context(), token)
 		switch {
 		case errors.Is(err, errRefused):
@@ -197,11 +234,19 @@ func (s *Server) lookup(ctx context.Context, token string) (*person, error) {
 	if p, ok := s.rights.get(hash, now); ok {
 		return p, nil
 	}
-	info, err := askRights(ctx, s.Nodes, s.view(), token, now, s.random())
+	view, err := s.platformView(ctx)
 	if err != nil {
 		return nil, err
 	}
-	p := &person{rights: RightsOf(info), subject: subjectOf(token), until: now.Add(rightsTTL), used: now}
+	info, err := askRights(ctx, s.Nodes, view, token, now, s.random())
+	if err != nil {
+		return nil, err
+	}
+	until := now.Add(rightsTTL)
+	if exp := claimsOf(token).exp.Add(tokenSkew); exp.Before(until) {
+		until = exp // never past the token's own time
+	}
+	p := &person{rights: RightsOf(info), subject: subjectOf(token), until: until, used: now}
 	s.rights.put(hash, p, now)
 	return p, nil
 }
@@ -276,7 +321,12 @@ func (s *Server) groups(w http.ResponseWriter, r *http.Request, _ string, _ *per
 	if s.Kube != nil {
 		usage, _ = s.Kube.UsageAll(r.Context()) // best effort: without the metrics API the page shows none
 	}
-	answer(w, FleetOf(platform, list.Items, s.view(), s.now(), usage))
+	view, err := s.platformView(r.Context())
+	if err != nil {
+		problem(w, http.StatusServiceUnavailable, "kubernetes", "the groups could not be read")
+		return
+	}
+	answer(w, FleetOf(platform, list.Items, view, s.now(), usage))
 }
 
 // GroupPatch is `PATCH groups/{g}`: one of a count or a restart.
@@ -319,8 +369,10 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, _ string, p 
 		change.RestartedAt = s.now().UTC().Format(time.RFC3339)
 	}
 	if err := s.Groups.Change(r.Context(), change); err != nil {
-		if apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apierrors.IsBadRequest(err) {
-			// the webhook's reason (past the plan, a size not allowed) is the person's to read
+		if apierrors.IsInvalid(err) || (apierrors.IsForbidden(err) || apierrors.IsBadRequest(err)) &&
+			strings.Contains(err.Error(), "denied the request") {
+			// the webhook's reason (past the plan, a size not allowed) is the person's to read; the operator's own
+			// RBAC refusal is not (it names the ServiceAccount) - it is logged below
 			problem(w, http.StatusUnprocessableEntity, "refused", webhookMessage(err))
 			return
 		}
@@ -348,7 +400,11 @@ func webhookMessage(err error) string {
 
 // nodeOf the request's label in the fleet, or a 404.
 func (s *Server) nodeOf(w http.ResponseWriter, r *http.Request) (*fleet.Node, bool) {
-	v := s.view()
+	v, err := s.platformView(r.Context())
+	if err != nil {
+		problem(w, http.StatusServiceUnavailable, "kubernetes", "the platform's groups could not be read")
+		return nil, false
+	}
 	label := r.PathValue("label")
 	if v == nil || v.Node(label) == nil {
 		problem(w, http.StatusNotFound, "not_found", "no such node")
@@ -471,7 +527,9 @@ func nodeProblem(w http.ResponseWriter, err error) {
 		status = http.StatusForbidden
 	case codes.NotFound:
 		status = http.StatusNotFound
-	case codes.Unavailable:
+	case codes.Unavailable, codes.Unknown:
+		// draining, at capacity, a session the node did not seat ("authentication failed": the person's rights were
+		// read moments ago, so it is the node's state - its cap, its policy source - as often as the token)
 		status = http.StatusServiceUnavailable
 	}
 	problem(w, status, "node_refused", refused.Message)

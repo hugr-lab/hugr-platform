@@ -76,7 +76,7 @@ dialog::backdrop {
     @apply inline-flex min-h-[44px] cursor-pointer items-center justify-center gap-2 rounded-full px-5 text-sm font-semibold transition-colors duration-150 disabled:cursor-not-allowed;
   }
   .btn-primary {
-    @apply btn border border-brand-strong bg-brand-strong text-brand-on hover:border-navy hover:bg-navy disabled:border-line disabled:bg-line disabled:text-ink-muted;
+    @apply btn border border-brand-strong bg-brand-strong text-brand-on hover:border-navy hover:bg-navy hover:text-white disabled:border-line disabled:bg-line disabled:text-ink-muted;
   }
   .btn-outline {
     @apply btn border border-brand-strong bg-transparent text-brand-strong hover:bg-surface-soft;

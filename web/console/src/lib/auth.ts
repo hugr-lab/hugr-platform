@@ -6,6 +6,8 @@ import { InMemoryWebStorage, UserManager, WebStorageStateStore, type User } from
 import type { Config } from './types'
 
 const signedInMark = 'hugr.signed-in' // this tab signed in before: sign in again after a reload, no secret
+const signInAtMark = 'hugr.sign-in-at' // when this tab last went to the IdP: a refusal right after is not met by another
+const freshSignIn = 120_000 // ms
 const popupName = 'hugr-signin'
 
 /** an audience with a token of its own: Entra's resources (api://...) - one token per resource, by the refresh token
@@ -90,7 +92,15 @@ export class Session {
 
   async signIn(returnTo: string): Promise<void> {
     sessionStorage.setItem(signedInMark, '1')
+    sessionStorage.setItem(signInAtMark, String(Date.now()))
     await this.m.signinRedirect({ state: { returnTo: localPath(returnTo) ?? '/' } })
+  }
+
+  /** this tab came back from the IdP moments ago: a refusal now is not one another sign-in mends (the IdP's own session
+   * answers without a prompt, and the nodes refuse the same token again) */
+  get signedInJustNow(): boolean {
+    const at = Number(sessionStorage.getItem(signInAtMark))
+    return at > 0 && Date.now() - at < freshSignIn
   }
 
   /** completes a sign-in: a redirect's (the path to go back to), or a popup's (undefined: the window closes) */
@@ -162,6 +172,7 @@ export class Session {
   /** ends the session here and at the IdP, the refresh token revoked first */
   async signOut(): Promise<void> {
     sessionStorage.removeItem(signedInMark)
+    sessionStorage.removeItem(signInAtMark)
     await this.m.revokeTokens(['refresh_token']).catch(() => undefined)
     try {
       await this.m.signoutRedirect({ id_token_hint: this.user?.id_token })

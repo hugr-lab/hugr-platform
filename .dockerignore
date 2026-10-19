@@ -2,3 +2,8 @@
 specs
 design
 web/console/node_modules
+# the console's own build happens in the image; nothing of a local one goes in
+web/console/dist
+web/console/*.tsbuildinfo
+web/console/test-results
+web/console/playwright-report

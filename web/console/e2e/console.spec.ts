@@ -20,12 +20,8 @@ async function signIn(browser: Browser, user: string, password: string): Promise
   // what went wrong, without a query string (a code or a token never reaches the log)
   page.on('requestfailed', (r) => console.log(`${user}: request failed ${r.method()} ${r.url().split('?')[0]}: ${r.failure()?.errorText}`))
   page.on('console', (m) => m.type() === 'error' && console.log(`${user}: console error: ${m.text().split('?')[0]}`))
-  page.on('response', (r) => r.url().includes('/token') && console.log(`${user}: token answer ${r.status()} acao=${r.headers()['access-control-allow-origin'] ?? 'none'}`))
-  page.on('request', async (r) => {
-    if (!r.url().includes('/token')) return
-    const h = await r.allHeaders()
-    console.log(`${user}: token request ${r.method()} headers=${Object.keys(h).sort().join(',')} origin=${h.origin ?? 'none'}`)
-  })
+  // a refused token request says only its status (Keycloak's refusals carry no CORS header: the page sees "failed")
+  page.on('response', (r) => r.url().includes('/token') && !r.ok() && console.log(`${user}: token answer ${r.status()}`))
   await page.goto(consoleURL())
   await expect(page.getByRole('heading', { name: /Sign in to e2e/ })).toBeVisible()
   await shot(page, `${user}-sign-in`)

@@ -52,8 +52,12 @@ func (d *fakeDoor) authorize(ctx context.Context, method string) (string, error)
 	defer d.mu.Unlock()
 	d.seen = append(d.seen, method+" "+token+" "+cookie)
 	if token == "refused" || strings.HasSuffix(token, ".forged") {
-		// the node verifies the token first: a refused one never reaches the cookie's session
-		return "", status.Error(codes.Unauthenticated, "acl: token rejected")
+		// as duckdb-acl's door: its cookie middleware gives a cookie-less call one, refused or not, and the session
+		// refuses a token it does not verify before the cookie counts - with UNKNOWN, not UNAUTHENTICATED
+		if cookie == "" {
+			_ = grpc.SetHeader(ctx, metadata.Pairs("set-cookie", "acl_flight_session_id=refused; HttpOnly; Path=/"))
+		}
+		return "", status.Error(codes.Unknown, "acl: authentication failed")
 	}
 	if token == "elsewhere" {
 		_ = grpc.SetTrailer(ctx, metadata.Pairs("x-acl-resource-groups", "gen%20eral,etl"))
@@ -76,8 +80,8 @@ func (d *fakeDoor) authorize(ctx context.Context, method string) (string, error)
 // principalOf a token as the fake door judges it: a JWT's issuer and subject, another token as itself (the node's own
 // fingerprint holds more, and the same for one person's refreshed token)
 func principalOf(token string) string {
-	if iss, sub := claimsOf(token); iss != "" {
-		return iss + "|" + sub
+	if c := claimsOf(token); c.iss != "" {
+		return c.iss + "|" + c.sub
 	}
 	return token
 }
@@ -244,9 +248,14 @@ func TestPoolAgainstADoor(t *testing.T) {
 
 	_, err = pool.Query(ctx, n, "refused", "SELECT 1")
 	var refused *NodeError
-	if !errors.As(err, &refused) || refused.Code != codes.Unauthenticated || refused.Message != "acl: token rejected" {
+	if !errors.As(err, &refused) || !authFailed(err) || refused.Message != "acl: authentication failed" {
 		t.Errorf("a refused token is the node's own answer: %v", err)
 	}
+	pool.mu.Lock()
+	if _, kept := pool.sessions[sessionKey{label: n.Label, person: personOf("refused")}]; kept {
+		t.Error("a refused token's cookie is never kept: the pool holds nothing for a token nobody verified")
+	}
+	pool.mu.Unlock()
 	_, err = pool.Query(ctx, n, "elsewhere", "SELECT 1")
 	if !errors.As(err, &refused) || len(refused.Groups) != 2 || refused.Groups[0] != "gen eral" ||
 		refused.Groups[1] != "etl" {
@@ -317,6 +326,17 @@ func TestMergeCookies(t *testing.T) {
 	got = mergeCookies(got, []string{"acl_flight_session_id=b"})
 	if got != "acl_flight_session_id=b; acl_node=n1" {
 		t.Errorf("a newer value replaces the older: %q", got)
+	}
+}
+
+func TestPoolBoundsItsSessions(t *testing.T) {
+	pool := &Pool{}
+	for i := 0; i <= sessionsMax; i++ {
+		pool.keep(sessionKey{label: "a", person: strconv.Itoa(i)},
+			metadata.Pairs("set-cookie", "acl_flight_session_id=s"+strconv.Itoa(i)))
+	}
+	if len(pool.sessions) != sessionsMax {
+		t.Errorf("past the bound the session unused longest goes: %d kept", len(pool.sessions))
 	}
 }
 

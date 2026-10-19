@@ -3,12 +3,15 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 )
@@ -20,12 +23,21 @@ type Part struct {
 }
 
 func (s *Server) part(ctx context.Context, n fleet.Node, token, statement string) Part {
+	part, _ := s.tryPart(ctx, n, token, statement)
+	return part
+}
+
+// tryPart is part, and whether the node answered at all: a page of several reads stops asking a node that does not.
+func (s *Server) tryPart(ctx context.Context, n fleet.Node, token, statement string) (Part, bool) {
 	result, err := s.Nodes.Query(ctx, n, token, statement)
 	if err != nil {
-		return Part{Rows: []map[string]any{}, Error: personMessage(err)}
+		return Part{Rows: []map[string]any{}, Error: personMessage(err)}, !errors.Is(err, errUnreachable)
 	}
-	return Part{Rows: result.Records()}
+	return Part{Rows: result.Records()}, true
 }
+
+// unanswered is a read not made: the node did not answer an earlier one.
+var unanswered = Part{Rows: []map[string]any{}, Error: "the node does not answer"}
 
 // certificates is the pool's knowledge of a node's certificate (the Pool has it, a test's Caller may not).
 type certificates interface {
@@ -87,7 +99,9 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, _ string, p *perso
 	previous := r.URL.Query().Get("previous") == "true"
 	text, err := s.Kube.Logs(r.Context(), n.Label, previous, lines)
 	if err != nil {
-		if previous {
+		// the API server answers a container with no previous one 400 ("previous terminated container ... not
+		// found"); anything else is its failure, not the container's history
+		if previous && (apierrors.IsBadRequest(err) || apierrors.IsNotFound(err)) {
 			problem(w, http.StatusNotFound, "no_previous", errNoPrevious.Error())
 			return
 		}
@@ -111,7 +125,14 @@ func (s *Server) memory(w http.ResponseWriter, r *http.Request, token string, _ 
 	if !ok {
 		return
 	}
-	out := MemoryAnswer{Tags: s.part(r.Context(), *n, token, stmtMemory), Limits: s.part(r.Context(), *n, token, stmtLimits)}
+	tags, answered := s.tryPart(r.Context(), *n, token, stmtMemory)
+	out := MemoryAnswer{Tags: tags, Limits: unanswered}
+	if !answered {
+		out.Error = unanswered.Error
+		answer(w, out)
+		return
+	}
+	out.Limits = s.part(r.Context(), *n, token, stmtLimits)
 	if spill := s.part(r.Context(), *n, token, stmtSpill); spill.Error == "" {
 		var total int64
 		for _, row := range spill.Rows {
@@ -139,8 +160,11 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request, token string,
 	if !ok {
 		return
 	}
-	out := InventoryAnswer{Extensions: s.part(r.Context(), *n, token, stmtExtensions)}
-	if p.rights.Infrastructure {
+	extensions, answered := s.tryPart(r.Context(), *n, token, stmtExtensions)
+	out := InventoryAnswer{Extensions: extensions}
+	if !answered {
+		out.Drift, out.Effective = unanswered, unanswered
+	} else if p.rights.Infrastructure {
 		out.Drift = s.part(r.Context(), *n, token, stmtDrift)
 		out.Effective = s.part(r.Context(), *n, token, stmtEffective)
 	} else {
@@ -161,6 +185,23 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, token string, _ 
 		return
 	}
 	answer(w, map[string]any{"events": result.Records()})
+}
+
+// profile is the cluster's items as the first of a few nodes answers them: a node of another resource group refuses
+// the person, one that does not answer is passed.
+func (s *Server) profile(ctx context.Context, nodes []*fleet.Node, token string) Part {
+	var last Part
+	for i, n := range nodes {
+		if i == rightsTries {
+			break
+		}
+		part := s.part(ctx, *n, token, stmtItems)
+		if part.Error == "" {
+			return part
+		}
+		last = part
+	}
+	return last
 }
 
 // TracingChange is `POST nodes/{label}/sessions/{id}/tracing`: either level, "" inherits.
@@ -237,7 +278,12 @@ type NodeLineage struct {
 const clusterFanOut = 8
 
 func (s *Server) cluster(w http.ResponseWriter, r *http.Request, token string, p *person) {
-	nodes := answering(s.view(), s.now())
+	view, err := s.platformView(r.Context())
+	if err != nil {
+		problem(w, http.StatusServiceUnavailable, "kubernetes", "the platform's groups could not be read")
+		return
+	}
+	nodes := answering(view, s.now())
 	out := ClusterAnswer{Lineage: []NodeLineage{}, Links: []map[string]string{}}
 	if platform, err := s.Platform(r.Context()); err == nil && platform.Spec.Console != nil {
 		for _, l := range platform.Spec.Console.Links {
@@ -249,7 +295,7 @@ func (s *Server) cluster(w http.ResponseWriter, r *http.Request, token string, p
 		return
 	}
 	if p.rights.Infrastructure {
-		out.Profile = s.part(r.Context(), *nodes[0], token, stmtItems)
+		out.Profile = s.profile(r.Context(), nodes, token)
 	} else {
 		out.Profile = Part{Rows: []map[string]any{}, Error: "the cluster right reads the profile"}
 	}

@@ -246,16 +246,19 @@ console_get() {
 	curl -fsS --max-time 60 --cacert "$WORK/ca.crt" \
 		--connect-to "hugr-platform-console.hugr.svc:443:127.0.0.1:$(console_port)" "https://hugr-platform-console.hugr.svc$1"
 }
-# json_true <json> <python expression over r>: the expression holds of the document
-json_true() { python3 -c 'import json, sys; r = json.loads(sys.argv[1]); sys.exit(0 if eval(sys.argv[2]) else 1)' "$1" "$2"; }
-json_get() { python3 -c 'import json, sys; r = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
+# json_true <json> <python expression over r> [values...]: the expression holds of the document. The values are a[0],
+# a[1], ... in it - what a node or the cluster answered never becomes the expression's text
+json_true() {
+	python3 -c 'import json, sys; r, a = json.loads(sys.argv[1]), sys.argv[3:]; sys.exit(0 if eval(sys.argv[2]) else 1)' "$@"
+}
+json_get() { python3 -c 'import json, sys; r, a = json.loads(sys.argv[1]), sys.argv[3:]; print(eval(sys.argv[2]))' "$@"; }
 # session_of <principal's role> <pods...>: "<pod> <ops id>" of a Flight session of the role, as the console lists it
 session_of() {
 	local role="$1" pod out
 	shift
 	for pod in "$@"; do
 		out="$(console_api admin GET "nodes/$pod/sessions")" || return 1
-		out="$(json_get "$out" "next((s['id'] for s in r['sessions'] if s['door'] == 'flight' and '$role' in (s['roles'] or [])), '')")"
+		out="$(json_get "$out" "next((s['id'] for s in r['sessions'] if s['door'] == 'flight' and a[0] in (s['roles'] or [])), '')" "$role")"
 		[ -z "$out" ] || { echo "$pod $out"; return 0; }
 	done
 	return 1
@@ -264,7 +267,7 @@ session_of() {
 tracing_is() {
 	local out
 	out="$(console_api admin GET "nodes/$1/sessions")" || return 1
-	json_true "$out" "any(s['id'] == '$2' and ($3) for s in r['sessions'])"
+	json_true "$out" "any(s['id'] == a[0] and ($3) for s in r['sessions'])" "$2"
 }
 
 check_console() {
@@ -275,7 +278,7 @@ check_console() {
 	b="$(first_pod b)"
 	# what the browser reads before a sign-in: who signs it in and where the mounts are - nothing secret
 	out="$(console_get /api/v1/console/config)" || fail "the console's config"
-	json_true "$out" "r['issuer'] == '$IDP_ISSUER' and r['clientID'] == 'hugr-console' and r['mounts']['tresor']['base'] == '/tresor'" ||
+	json_true "$out" "r['issuer'] == a[0] and r['clientID'] == 'hugr-console' and r['mounts']['tresor']['base'] == '/tresor'" "$IDP_ISSUER" ||
 		fail "the console's config: $out"
 
 	# analyst_a administers nothing: the console shows it nothing and does nothing for it (a node of b, asked first,
@@ -295,7 +298,7 @@ check_console() {
 	out="$(console_api admin GET groups)" || fail "the fleet"
 	json_true "$out" "sorted(g['name'] for g in r['groups']) == ['a', 'b'] and r['plan']['maxNodes'] == 4" || fail "the fleet: $out"
 	for pod in $(pods a) $(pods b); do
-		json_true "$out" "any(n['label'] == '$pod' and n['current'] and n['admitting'] for g in r['groups'] for n in g['nodes'])" ||
+		json_true "$out" "any(n['label'] == a[0] and n['current'] and n['admitting'] for g in r['groups'] for n in g['nodes'])" "$pod" ||
 			fail "the fleet does not show $pod admitting: $out"
 	done
 	out="$(console_api admin GET "nodes/$a")" || fail "node $a's page"
@@ -357,12 +360,14 @@ check_console() {
 		fail "group b does not name the console's write and its person"
 	ok "the console's scale past the plan refused by the webhook (422); within it written by the console's field manager, the person named on the group"
 
-	# the services' own consoles, mounted: their modules for anyone, their API with the person's token for them
+	# the services' own consoles, mounted: their modules for anyone, their API with the person's token for them. The
+	# demo's kista signs nobody in, so the platform names no kista audience and the shell offers no Extensions page: its
+	# mount only serves the module here
 	console_get /tresor/ui/mfe/tresor.js | grep -q contract || fail "tresor's module through the console"
 	console_get /kista/ui/mfe/kista.js | grep -q contract || fail "kista's module through the console"
 	out="$(console_api seeder GET /tresor/v1/whoami "" "$TRESOR_SCOPE")" || fail "tresor's whoami through the console's mount"
 	json_true "$out" "'role:demo_seeder' in r['roles']" || fail "tresor's whoami of the seeder names no demo_seeder"
-	ok "tresor's and kista's consoles mounted: their modules served, tresor's API answered the seeder through the mount"
+	ok "tresor's console mounted (its module, its API answered the seeder through the mount); kista's module served through its mount"
 }
 
 check_hot() {

@@ -57,11 +57,12 @@ func (k KubeClient) Pod(ctx context.Context, name string) (*corev1.Pod, error) {
 	return k.Clientset.CoreV1().Pods(k.Namespace).Get(ctx, name, metav1.GetOptions{})
 }
 
-// Events of the pod, newest last.
+// Events of the pod, all of them (the API server keeps a pod's for an hour, a repeat counted on one): the page keeps
+// the newest.
 func (k KubeClient) Events(ctx context.Context, pod string) ([]corev1.Event, error) {
 	list, err := k.Clientset.CoreV1().Events(k.Namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: fields.AndSelectors(fields.OneTermEqualSelector("involvedObject.kind", "Pod"),
-			fields.OneTermEqualSelector("involvedObject.name", pod)).String(), Limit: 100})
+			fields.OneTermEqualSelector("involvedObject.name", pod)).String()})
 	if err != nil {
 		return nil, err
 	}

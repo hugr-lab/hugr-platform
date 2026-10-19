@@ -153,7 +153,17 @@ Under `/api/v1/console/`, the person's nodes-audience token as the bearer on eve
   cache and the session cookies the nodes gave (in memory, per replica), never a token.
 - **Nothing from the browser becomes SQL**: fixed statements, ids checked by form.
 - **The proxy** to tresor and kista forwards the person's bearer to the service it is meant for (the audience is the
-  service's), never another's.
+  service's), never another's - where the IdP issues a token per resource (Entra: `api://…` audiences, each by the
+  refresh token with its `.default` scope). An IdP that puts every audience in one token (Keycloak's audience mappers,
+  the demo's realm) hands each service that one token; separate tokens need separate resources at the IdP.
+- **A mounted console is trusted like the shell**: its module runs in the console's origin and can reach what the
+  page can (the person's tokens in memory, the API). tresor-server and kista are the platform's own components, built
+  and pinned with it; the proxy still keeps their answers from claiming the origin (`Set-Cookie`,
+  `Service-Worker-Allowed`, `Clear-Site-Data` dropped).
+- **A token past its `exp` is refused by the console itself** (30 s of skew), before any node is asked, and the rights
+  cached for a token end with it: a node keeps a session's cookie for a later token of the same principal and, by
+  duckdb-acl's default binding (spec 059), judges `exp` only when a session opens - so a person's session, kept for
+  their next token, must not serve an old one. A bearer that is not a JWT with an `exp` is refused the same way.
 - **CSP**: `default-src 'self'`; the IdP's origin in `connect-src` (the token endpoint) and `form-action` (the
   sign-in), nothing else; no `frame-src` (renewal by the refresh token), no inline script or style, no `data:`.
 
@@ -384,6 +394,36 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
   - The engine's memory needs the person's roles to hold the `meta` and `environment` categories; without them the
     panel says so. The links out fill `{node}`, `{session}`, `{trace}` (a traceparent's trace id) URL-escaped and
     show no link when a value is missing; a cluster-wide link goes to the backend's origin.
+
+- **The three reviews before the PR (2026-10-20)** found, and the build now does:
+  - the console's own `exp` check above (a captured, expired token rode the person's live node session indefinitely);
+  - a node's refusal of a token is UNKNOWN `acl: authentication failed` (duckdb-acl's door), not UNAUTHENTICATED - and
+    the same sentence answers a node at its session cap or with its policy source down - so the rights are asked of the
+    next node, and the token is refused (401) only when every node that answered refused it so; a node action that is
+    not seated is a 503 with the node's sentence;
+  - only the ACL's refusal of `console_info` is "no rights"; any other engine error (INVALID_ARGUMENT) is the node's
+    failure: the next node, else 502, never cached;
+  - the fleet is this platform's groups' nodes only (the watch sees the namespace's; `--console-platform` allows
+    several platforms in one): rights, a node's pages and the Cluster page reach no other platform's node;
+  - the pool keeps a node's cookie only from an answer (the door sets one on every cookie-less call, refused or not)
+    and at most 4096 sessions; a channel replaced by a new CA bundle lingers a minute for the calls on it; a bundle
+    edited without a new certificate keeps the pool, a failed read keeps the last good one, a failed first read is
+    answered from memory for 5 s;
+  - the console waits for a certificate it can serve with and is not a readiness check of the operator's: a missing or
+    mismatched Secret no longer stops the operator (its node API and webhook), and a Secret made later is served;
+  - the Cluster page's profile is read from a node that answers the person; a page of several reads stops at a node
+    that does not answer; a pod's events are all read (the newest kept); a previous log's absence is told from the API
+    server's failure; a webhook's refusal (422) from the operator's own RBAC refusal (503, logged); `changed-by` and the
+    log name `<iss>|<sub>` (duckdb-acl's author form); HSTS;
+  - the web: a refusal right after a sign-in shows "the nodes refuse your sign-in" instead of signing in again (the
+    IdP's session answered without a prompt, so it looped); a renewal that fails reaches the same decision; the IdP not
+    answering is said, on a reload and at the button; a mounted console follows the shell's own links and its theme,
+    and its "sign in again" keeps it as it was (no reload); dist/ is emptied before a build and no local build enters
+    the image;
+  - accepted as they are: a restart asked twice within one second is one (`restartedAt` has seconds); a sign-out ends
+    the person's node sessions for every tab and device (the pool keeps them per person; the next call seats anew);
+    an unauthenticated request with a JWT-shaped, unexpired bearer costs one node call (a rate limit belongs at the
+    Ingress - the packaging spec).
 
 - **Stage 4, as built:**
   - tresor-server's and kista's consoles are mounted at `/tresor` and `/kista` (their `/ui/mfe/` module and their

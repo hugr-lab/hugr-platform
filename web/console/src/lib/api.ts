@@ -51,7 +51,12 @@ export class Api {
     }
     let res = await send(false)
     if (res.status === 401) {
-      res = await send(true)
+      try {
+        res = await send(true)
+      } catch (e) {
+        this.onUnauthorized() // the renewal itself failed: the refresh token is gone or refused
+        throw e
+      }
       if (res.status === 401) this.onUnauthorized()
     }
     if (!res.ok) throw await failure(res)

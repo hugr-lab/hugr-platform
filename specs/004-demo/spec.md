@@ -1,6 +1,7 @@
 # Spec 004: the platform in one cluster - the demo, end to end (kind in CI, minikube locally, AKS by hand)
 
-- **Status**: implemented for minikube and kind (the nine checks pass on both); the AKS provider is written and waits
+- **Status**: implemented for minikube and kind (the checks pass on both; 4c, the console, on minikube since
+  2026-10-20); the AKS provider is written and waits
   for its first live run until more of the platform is in (the owner, 2026-10-18). Accepted 2026-10-18: minikube
   locally, manual runs on AKS as tresor-server's and kista's, and nothing of Azure kept between runs
 - **Date**: 2026-10-18
@@ -218,7 +219,8 @@ they run once per `up` (`all` does both).
    cleared and ended, ending it again a 404; `b`'s node is drained and resumed, every call with a new token of the
    admin's; a scale of `a` to 4 is the webhook's refusal (422), one of `b` within the plan is the console's field
    manager's, the admin named on the group; tresor's and kista's modules come through the mounts, and tresor's
-   `whoami` answers the seeder there. The admin holds the `meta` and `environment` function categories (the engine's
+   `whoami` answers the seeder there (the demo's kista signs nobody in: the platform names no kista audience, so the
+   shell offers no Extensions page). The admin holds the `meta` and `environment` function categories (the engine's
    memory and extensions are duckdb's own functions).
 5. **A hot item.** `ACL CLUSTER ATTACH … IN GROUP a`, written by `platform_admin` through a node of `a`:
    - every node of `a` applies it on its tick and reports `applied` at the new version;

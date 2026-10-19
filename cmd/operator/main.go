@@ -180,14 +180,14 @@ func main() {
 		Pool:  pool,
 		Watch: watch.New(clientset, namespace, nodes, 15*time.Second).Run,
 	}
-	if consoleDoor.Configured() {
-		if err := mgr.Add(consoleDoor); err != nil {
-			logger.Error(err, "no console")
-			os.Exit(1)
-		}
-		utilruntime.Must(mgr.AddReadyzCheck("console", consoleDoor.Ready))
-	} else {
-		logger.Info("no console: no certificate", "dir", consoleCertDir)
+	// the console waits for its certificate, and stops nothing else: not a readiness check of the operator's
+	if err := mgr.Add(consoleDoor); err != nil {
+		logger.Error(err, "no console")
+		os.Exit(1)
+	}
+	if !consoleDoor.Configured() {
+		logger.Info("the console has no certificate yet: it serves once the Secret hugr-console is mounted",
+			"dir", consoleCertDir)
 	}
 
 	utilruntime.Must(mgr.AddHealthzCheck("healthz", healthz.Ping))

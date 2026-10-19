@@ -4,7 +4,7 @@ import './styles.css'
 import { App } from './App'
 import { loadConfig } from './lib/api'
 import { Session, localPath } from './lib/auth'
-import { Broken } from './screens/Entry'
+import { Broken, unreachable } from './screens/Entry'
 
 // the theme before the first paint: the person's choice in this browser, else the system's
 try {
@@ -37,8 +37,13 @@ async function start() {
     }
   } else if (session.remembered) {
     // a reload: the IdP's own session signs the person in again, without a prompt when it has one
-    await session.signIn(window.location.pathname + window.location.search)
-    return
+    try {
+      await session.signIn(window.location.pathname + window.location.search)
+      return
+    } catch (e) {
+      root.render(<Broken message={unreachable(e)} />)
+      return
+    }
   }
   root.render(
     <StrictMode>

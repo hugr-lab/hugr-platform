@@ -108,6 +108,13 @@ type session struct {
 // idle timeout (duckdb-acl spec 044, 900 s by default) ends it there.
 const sessionIdle = 15 * time.Minute
 
+// sessionsMax bounds the sessions the pool keeps: past it, the one unused longest is forgotten (the node's idle
+// timeout ends it there).
+const sessionsMax = 4096
+
+// channelLinger is how long a channel replaced by a new address or CA bundle stays open for the calls still on it.
+const channelLinger = time.Minute
+
 // The cookies a node sets that the pool keeps: its session and its label (duckdb-acl specs 050 and 134).
 var keptCookies = map[string]bool{"acl_flight_session_id": true, "acl_node": true}
 
@@ -123,11 +130,11 @@ func tokenHash(token string) string {
 // every call's token before its cookie counts: a token naming somebody else's subject is refused there, and that
 // person's session is left alone. A token without both claims is kept by its own hash.
 func personOf(token string) string {
-	iss, sub := claimsOf(token)
-	if iss == "" || sub == "" {
+	c := claimsOf(token)
+	if c.iss == "" || c.sub == "" {
 		return "t:" + tokenHash(token)
 	}
-	sum := sha256.Sum256([]byte(iss + "\x00" + sub))
+	sum := sha256.Sum256([]byte(c.iss + "\x00" + c.sub))
 	return "p:" + hex.EncodeToString(sum[:])
 }
 
@@ -154,11 +161,13 @@ func (p *Pool) Query(ctx context.Context, node fleet.Node, token, statement stri
 	var remote peer.Peer
 	info, err := client.Execute(p.outgoing(ctx, key, token), statement, grpc.Header(&header), grpc.Trailer(&trailer),
 		grpc.Peer(&remote))
-	p.keep(key, header)
 	p.handshake(node.Label, &remote)
 	if err != nil {
+		// a node sets its cookie on every call that comes without one, refused or not: kept only from an answer, the
+		// pool holds no entry for a token nobody verified
 		return nil, withGroups(nodeError(err), trailer)
 	}
+	p.keep(key, header)
 	result := &Result{}
 	for _, endpoint := range info.Endpoint {
 		if err := p.read(ctx, client, key, token, endpoint.Ticket, result); err != nil {
@@ -314,7 +323,17 @@ func (p *Pool) keep(key sessionKey, header metadata.MD) {
 	if p.sessions == nil {
 		p.sessions = map[sessionKey]session{}
 	}
-	s := p.sessions[key]
+	s, known := p.sessions[key]
+	if !known && len(p.sessions) >= sessionsMax {
+		var oldest sessionKey
+		first := true
+		for k, e := range p.sessions {
+			if first || e.used.Before(p.sessions[oldest].used) {
+				oldest, first = k, false
+			}
+		}
+		delete(p.sessions, oldest)
+	}
 	s.cookie = mergeCookies(s.cookie, set)
 	s.used = time.Now()
 	p.sessions[key] = s
@@ -367,7 +386,9 @@ func (p *Pool) client(ctx context.Context, node fleet.Node) (*flightsql.Client, 
 		if c.address == address && c.roots == roots {
 			return c.client, nil
 		}
-		_ = c.client.Close()
+		// the calls still on it finish: closed once they are past their deadline
+		old := c.client
+		time.AfterFunc(channelLinger, func() { _ = old.Close() })
 		delete(p.channels, node.Label)
 	}
 	creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots,

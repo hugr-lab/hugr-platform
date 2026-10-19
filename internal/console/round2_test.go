@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -20,6 +21,7 @@ import (
 type fakeKube struct {
 	logs    []string // "<pod> <previous> <lines>"
 	noUsage bool
+	down    bool // the API server fails every log read
 }
 
 func (k *fakeKube) Pod(_ context.Context, name string) (*corev1.Pod, error) {
@@ -47,8 +49,12 @@ func (k *fakeKube) Events(context.Context, string) ([]corev1.Event, error) {
 func (k *fakeKube) Logs(_ context.Context, pod string, previous bool, lines int64) (string, error) {
 	k.logs = append(k.logs, pod+" "+map[bool]string{true: "previous", false: "current"}[previous]+" "+
 		strings.Repeat("x", int(lines%7)))
+	if k.down {
+		return "", errors.New("the server is currently unable to handle the request")
+	}
 	if previous {
-		return "", errors.New("previous terminated container not found")
+		// what the API server answers a container that has not restarted
+		return "", apierrors.NewBadRequest(`previous terminated container "hugr-node" in pod "` + pod + `" not found`)
 	}
 	return "bootstrap: environment read\ndoors: Flight on :32010\n", nil
 }
@@ -139,6 +145,11 @@ func TestLogsBounded(t *testing.T) {
 	code, out, _ = h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/logs?previous=true", opsToken, "")
 	if code != 404 || out["error"] != "no_previous" {
 		t.Errorf("no previous container: %d %v", code, out)
+	}
+	kube.down = true
+	code, out, _ = h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/logs?previous=true", opsToken, "")
+	if code != http.StatusServiceUnavailable || out["error"] != "kubernetes" {
+		t.Errorf("the API server's failure is no container's history: %d %v", code, out)
 	}
 }
 
@@ -244,5 +255,45 @@ func TestUsageOf(t *testing.T) {
 		{"name": "hugr-node", "usage": {"cpu": "2100m", "memory": "9663676416"}}]}`))
 	if err != nil || u.CPUMilli != 2100 || u.MemoryBytes != 9663676416 {
 		t.Errorf("the node container's usage: %+v %v", u, err)
+	}
+}
+
+// The cluster's profile is read on a node that answers the person: one of another resource group refuses it.
+func TestProfileFromANodeThatAnswers(t *testing.T) {
+	h := newHarness(t, clusterRights(), node("hugr-node-etl-a", "etl"), node("hugr-node-general-a", "general"))
+	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
+		switch {
+		case statement == stmtInfo:
+			return clusterRights(), nil
+		case n.Group() == "etl":
+			return nil, &NodeError{Code: codes.Unavailable, Message: "acl: wrong resource group", Groups: []string{"general"}}
+		case statement == stmtItems:
+			return &Result{Columns: []string{"kind", "name"}, Rows: [][]any{{"setting", "memory_limit"}}}, nil
+		}
+		return &Result{Columns: []string{"status"}, Rows: [][]any{{"off"}}}, nil
+	}
+	code, out, _ := h.do(t, "GET", APIPrefix+"cluster", opsToken, "")
+	profile := out["profile"].(map[string]any)
+	if code != 200 || profile["error"] != nil || len(profile["rows"].([]any)) != 1 {
+		t.Errorf("the profile as the person's own group's node answers it: %d %v", code, out)
+	}
+}
+
+// A node that does not answer the first read of a page is not asked the others: each would wait its deadline.
+func TestMemoryOfASilentNode(t *testing.T) {
+	h := newHarness(t, clusterRights(), node("hugr-node-etl-a", "etl"))
+	h.nodes.answer = func(_ fleet.Node, statement string) (*Result, error) {
+		if statement == stmtInfo {
+			return clusterRights(), nil
+		}
+		return nil, errUnreachable
+	}
+	h.do(t, "GET", APIPrefix+"me", opsToken, "") // the rights, read once
+	for _, path := range []string{"memory", "inventory"} {
+		before := len(h.nodes.calls)
+		code, out, _ := h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/"+path, opsToken, "")
+		if code != 200 || len(h.nodes.calls)-before != 1 {
+			t.Errorf("%s of a silent node: %d, %d reads, %v", path, code, len(h.nodes.calls)-before, out)
+		}
 	}
 }

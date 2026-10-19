@@ -2,7 +2,9 @@ package console
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +15,10 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc/codes"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
@@ -24,8 +28,16 @@ import (
 
 var testNow = time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 
-// a token whose payload says sub "ops@example.org"
-const opsToken = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcHNAZXhhbXBsZS5vcmcifQ.c2ln"
+// a token of the IdP's naming "ops@example.org", an hour from testNow
+var opsToken = tokenOf(testIssuer, "ops@example.org", testNow.Add(time.Hour))
+
+const testIssuer = "https://login.example.org"
+
+// tokenOf is a JWT's shape with these claims: the console reads them, the node (here a fake) verifies
+func tokenOf(iss, sub string, exp time.Time) string {
+	claims, _ := json.Marshal(map[string]any{"iss": iss, "sub": sub, "exp": exp.Unix()})
+	return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(claims) + ".c2ln"
+}
 
 type call struct{ label, token, statement string }
 
@@ -410,7 +422,7 @@ func TestPatchGroup(t *testing.T) {
 		t.Fatalf("restart: %d", code)
 	}
 	scale, restart := h.writer.changes[0], h.writer.changes[1]
-	if *scale.Replicas != 3 || scale.RestartedAt != "" || scale.ChangedBy != "ops@example.org" ||
+	if *scale.Replicas != 3 || scale.RestartedAt != "" || scale.ChangedBy != testIssuer+"|ops@example.org" ||
 		scale.Name != "etl" || scale.Namespace != "hugr" {
 		t.Errorf("scale: %+v", scale)
 	}
@@ -449,5 +461,142 @@ func TestSignOut(t *testing.T) {
 	}
 	if _, ok := h.server.rights.get(tokenHash(opsToken), testNow); ok {
 		t.Error("the rights of a token signed out are forgotten")
+	}
+}
+
+// A token past its exp is refused before any node is asked: a node keeps a person's session for a later token and,
+// by duckdb-acl's default binding, judges exp only when a session opens. The rights cached for a token end with it.
+func TestTokenPastItsTime(t *testing.T) {
+	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
+	for name, token := range map[string]string{
+		"expired":   tokenOf(testIssuer, "ops@example.org", testNow.Add(-time.Minute)),
+		"no exp":    "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcHNAZXhhbXBsZS5vcmcifQ.c2ln",
+		"not a JWT": "opaque-token",
+	} {
+		if code, _, _ := h.do(t, "GET", APIPrefix+"me", token, ""); code != http.StatusUnauthorized {
+			t.Errorf("%s: %d", name, code)
+		}
+	}
+	if len(h.nodes.calls) != 0 {
+		t.Errorf("no node is asked for a token the console does not take: %v", h.nodes.calls)
+	}
+	// within the clocks' skew it is taken, and its rights are kept no longer than it lives
+	soon := tokenOf(testIssuer, "ops@example.org", testNow.Add(10*time.Second))
+	if code, _, _ := h.do(t, "GET", APIPrefix+"me", soon, ""); code != 200 {
+		t.Fatalf("a token about to expire: %d", code)
+	}
+	if p, ok := h.server.rights.get(tokenHash(soon), testNow.Add(10*time.Second+tokenSkew+time.Second)); ok {
+		t.Errorf("rights cached past the token's exp: %+v", p)
+	}
+	h.server.Now = func() time.Time { return testNow.Add(time.Minute) }
+	if code, _, _ := h.do(t, "GET", APIPrefix+"me", soon, ""); code != http.StatusUnauthorized {
+		t.Errorf("the same token a minute on: %d", code)
+	}
+}
+
+// duckdb-acl's door answers a session it does not seat with UNKNOWN "acl: authentication failed" - a token it does not
+// verify, a node at its cap, a policy source down - so the console asks the next node, and refuses the token only when
+// every node that answered refused it so.
+func TestNodesRefuseLikeTheDoor(t *testing.T) {
+	failed := &NodeError{Code: codes.Unknown, Message: "acl: authentication failed"}
+	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"), node("hugr-node-etl-b", "etl"))
+	h.nodes.answer = func(fleet.Node, string) (*Result, error) { return nil, failed }
+	if code, _, _ := h.do(t, "GET", APIPrefix+"me", opsToken, ""); code != http.StatusUnauthorized {
+		t.Errorf("every node refused the token: %d", code)
+	}
+	if n := h.nodes.statements(stmtInfo); n != 2 {
+		t.Errorf("each node asked once: %d", n)
+	}
+	full := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"), node("hugr-node-etl-b", "etl"))
+	full.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
+		if n.Label == "hugr-node-etl-a" {
+			return nil, failed // at its session cap
+		}
+		return observeInfo, nil
+	}
+	for range 4 { // whichever node the shuffle asks first
+		full.server.rights = rightsCache{}
+		if code, _, _ := full.do(t, "GET", APIPrefix+"me", opsToken, ""); code != 200 {
+			t.Fatalf("another node seats the person: %d", code)
+		}
+	}
+	// a node action whose session was not seated is the node's state, not a sign-in to redo
+	full.nodes.answer = func(_ fleet.Node, statement string) (*Result, error) {
+		if statement == stmtInfo {
+			return observeInfo, nil
+		}
+		return nil, failed
+	}
+	if code, out, _ := full.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/sessions", opsToken, ""); code !=
+		http.StatusServiceUnavailable || out["message"] != "acl: authentication failed" {
+		t.Errorf("a node that seats no session for an action: %d %v", code, out)
+	}
+}
+
+// Only the ACL's refusal of console_info means "no rights": any other engine error is the node's failure, answered as
+// such and never cached.
+func TestNodeFailureIsNoVerdict(t *testing.T) {
+	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
+	h.nodes.answer = func(fleet.Node, string) (*Result, error) {
+		return nil, &NodeError{Code: codes.InvalidArgument, Message: "acl: IO Error: the policy catalog does not answer"}
+	}
+	if code, _, _ := h.do(t, "GET", APIPrefix+"me", opsToken, ""); code != http.StatusBadGateway {
+		t.Errorf("a node that fails reading the policy: %d", code)
+	}
+	h.nodes.answer = func(fleet.Node, string) (*Result, error) { return observeInfo, nil }
+	code, out, _ := h.do(t, "GET", APIPrefix+"me", opsToken, "")
+	if code != 200 || out["rights"].(map[string]any)["fleet"] != true {
+		t.Errorf("nothing of the failure was cached: %d %v", code, out)
+	}
+}
+
+// The watch sees every node of the namespace; a node of another platform's group is no node of this console's.
+func TestAnotherPlatformsNodes(t *testing.T) {
+	h := newHarness(t, clusterInfo, node("hugr-node-theirs-a", "theirs"))
+	if code, out, _ := h.do(t, "GET", APIPrefix+"me", opsToken, ""); code != http.StatusServiceUnavailable ||
+		out["error"] != "no_node" {
+		t.Errorf("only another platform's node: %d %v", code, out)
+	}
+	if len(h.nodes.calls) != 0 {
+		t.Errorf("another platform's node is never asked: %v", h.nodes.calls)
+	}
+	both := newHarness(t, clusterInfo, node("hugr-node-theirs-a", "theirs"), node("hugr-node-etl-a", "etl"))
+	for _, path := range []string{"nodes/hugr-node-theirs-a", "nodes/hugr-node-theirs-a/sessions"} {
+		if code, _, _ := both.do(t, "GET", APIPrefix+path, opsToken, ""); code != http.StatusNotFound {
+			t.Errorf("%s: %d", path, code)
+		}
+	}
+	for _, c := range both.nodes.calls {
+		if c.label == "hugr-node-theirs-a" {
+			t.Errorf("another platform's node was called: %v", c)
+		}
+	}
+}
+
+// The webhook's refusal is the person's to read; the operator's own RBAC refusal is not.
+func TestWebhookOrRBAC(t *testing.T) {
+	h := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
+	h.writer.err = apierrors.NewForbidden(schema.GroupResource{Group: "platform.hugr.io", Resource: "hugrnodegroups"},
+		"etl", errors.New(`admission webhook "vgroup.platform.hugr.io" denied the request: the plan runs at most 4 nodes`))
+	code, out, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, `{"replicas": 9}`)
+	if code != http.StatusUnprocessableEntity || !strings.HasPrefix(out["message"].(string), "the plan runs at most 4") {
+		t.Errorf("the webhook's refusal: %d %v", code, out)
+	}
+	h.writer.err = apierrors.NewForbidden(schema.GroupResource{Group: "platform.hugr.io", Resource: "hugrnodegroups"},
+		"etl", errors.New(`User "system:serviceaccount:hugr:hugr-platform" cannot patch resource`))
+	code, out, _ = h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, `{"replicas": 3}`)
+	if code != http.StatusServiceUnavailable || strings.Contains(out["message"].(string), "serviceaccount") {
+		t.Errorf("the operator's RBAC refusal: %d %v", code, out)
+	}
+}
+
+func TestHeaders(t *testing.T) {
+	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
+	r := httptest.NewRequest("GET", APIPrefix+"config", nil)
+	w := httptest.NewRecorder()
+	h.http.ServeHTTP(w, r)
+	if !strings.HasPrefix(w.Header().Get("Strict-Transport-Security"), "max-age=") ||
+		w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("the headers every answer carries: %v", w.Header())
 	}
 }

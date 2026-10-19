@@ -51,7 +51,11 @@ cert() { # <name> <subjectAltName>
 cert kc "IP:127.0.0.1"
 cert console "IP:127.0.0.1"
 cert node "DNS:hugr-node-etl.hugr.svc"
-chmod 644 "$WORK"/*.crt "$WORK"/*.key
+# Keycloak's own, readable by its container's user (uid 1000): a directory of its own, the run's (mode 0700) holding
+# the rest
+mkdir -m 755 "$WORK/kc"
+cp "$WORK/kc.crt" "$WORK/kc.key" "$WORK/kc/"
+chmod 644 "$WORK/kc/kc.crt" "$WORK/kc/kc.key"
 
 # passwords for this run only: never printed
 KC_ADMIN_PW="$(openssl rand -hex 16)"
@@ -84,11 +88,12 @@ realm = {
 }
 json.dump(realm, open(sys.argv[1], "w"))
 PY
-chmod 644 "$WORK/realm.json"
+mv "$WORK/realm.json" "$WORK/kc/realm.json" && chmod 644 "$WORK/kc/realm.json"
+# the admin's password by a file, never on a command line
+(umask 077 && printf 'KC_BOOTSTRAP_ADMIN_USERNAME=admin\nKC_BOOTSTRAP_ADMIN_PASSWORD=%s\n' "$KC_ADMIN_PW" >"$WORK/kc.env")
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker run -d --name "$NAME" -p "127.0.0.1:$KC_PORT:8443" \
-	-e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KC_ADMIN_PW" \
-	-v "$WORK/realm.json:/opt/keycloak/data/import/realm.json:ro" -v "$WORK:/certs:ro" \
+docker run -d --name "$NAME" -p "127.0.0.1:$KC_PORT:8443" --env-file "$WORK/kc.env" \
+	-v "$WORK/kc/realm.json:/opt/keycloak/data/import/realm.json:ro" -v "$WORK/kc:/certs:ro" \
 	quay.io/keycloak/keycloak:26.4 start-dev --import-realm \
 	--https-certificate-file=/certs/kc.crt --https-certificate-key-file=/certs/kc.key >/dev/null
 for _ in $(seq 90); do curl -sf --cacert "$WORK/ca.crt" "$REALM/.well-known/openid-configuration" >/dev/null && break; sleep 2; done
@@ -138,8 +143,9 @@ for _ in $(seq 50); do curl -sf --cacert "$WORK/ca.crt" "$CONSOLE/api/v1/console
 curl -sf --cacert "$WORK/ca.crt" "$CONSOLE/api/v1/console/config" >/dev/null || fail "the console does not serve"
 
 echo "e2e: the analyst's own session on the node"
+(umask 077 && printf '%s' "$ANALYST_PW" >"$WORK/analyst.pw") # by a file: never in curl's argv
 curl -sf --cacert "$WORK/ca.crt" "$REALM/protocol/openid-connect/token" -d grant_type=password -d client_id=e2e-probe \
-	-d username=analyst --data-urlencode "password=$ANALYST_PW" |
+	-d username=analyst --data-urlencode "password@$WORK/analyst.pw" |
 	python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])' >"$WORK/analyst.token" || fail "the analyst's token"
 (cd "$ROOT" && GOWORK=off go build -o "$WORK/probe" ./test/console/local) || fail "the probe does not build"
 "$WORK/probe" -keep -node "etl=127.0.0.1:$NODE_PORT" -ca "$WORK/ca.crt" -token-file "$WORK/analyst.token" \

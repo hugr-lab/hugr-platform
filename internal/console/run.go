@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,8 +35,8 @@ type Door struct {
 	Pool *Pool
 	// Watch keeps the Server's fleet current until its context ends.
 	Watch func(ctx context.Context)
-
-	listening atomic.Bool
+	// CertWait is how often the Door looks for a certificate it can serve with (10 s when zero).
+	CertWait time.Duration
 }
 
 var _ manager.LeaderElectionRunnable = &Door{}
@@ -45,25 +44,33 @@ var _ manager.LeaderElectionRunnable = &Door{}
 // NeedLeaderElection is false: every replica answers.
 func (d *Door) NeedLeaderElection() bool { return false }
 
-// Configured says whether the console's certificate is there: without it the operator serves no console.
+// Configured says whether the console's certificate is there now (the operator's start says so in its log).
 func (d *Door) Configured() bool {
 	_, err := os.Stat(filepath.Join(d.CertDir, "tls.crt"))
 	return err == nil
 }
 
-// Ready says whether the console listens (a readiness check only when Configured).
-func (d *Door) Ready(*http.Request) error {
-	if !d.listening.Load() {
-		return errors.New("the console does not listen yet")
-	}
-	return nil
-}
-
-// Start the watcher, the pruning and the listener.
+// Start waits for a certificate it can serve with - the Secret may be made after the operator, or hold a key that
+// does not match - then the watcher, the pruning and the listener. A console that cannot serve stops nothing else:
+// the operator's node API, webhook and reconciling go on, and the log says what the console waits for.
 func (d *Door) Start(ctx context.Context) error {
-	watcher, err := certwatcher.New(filepath.Join(d.CertDir, "tls.crt"), filepath.Join(d.CertDir, "tls.key"))
-	if err != nil {
-		return err
+	var watcher *certwatcher.CertWatcher
+	var said string
+	for {
+		var err error
+		watcher, err = certwatcher.New(filepath.Join(d.CertDir, "tls.crt"), filepath.Join(d.CertDir, "tls.key"))
+		if err == nil {
+			break
+		}
+		if err.Error() != said && d.Server != nil {
+			d.Server.Log.Info("the console waits for its certificate (the Secret hugr-console)", "error", err.Error())
+			said = err.Error()
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(d.certWait()):
+		}
 	}
 	go func() { _ = watcher.Start(ctx) }()
 	if d.Watch != nil {
@@ -92,12 +99,18 @@ func (d *Door) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	d.listening.Store(true)
-	defer d.listening.Store(false)
+	d.Server.Log.Info("the console serves", "address", d.Addr)
 	if err := server.ServeTLS(listener, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+func (d *Door) certWait() time.Duration {
+	if d.CertWait > 0 {
+		return d.CertWait
+	}
+	return 10 * time.Second
 }
 
 func (d *Door) prune(ctx context.Context) {
@@ -151,12 +164,19 @@ type Roots struct {
 	version string
 	pool    *x509.CertPool
 	read    time.Time
+	failed  time.Time // the last read that failed, when no bundle was read before it
+	err     error
 }
 
 // rootsFresh is how long a read bundle serves before it is read again: a rotated CA reaches new channels within it.
 const rootsFresh = 30 * time.Second
 
-// Pool of the bundle's certificates.
+// rootsRetry is how long a failed first read is answered from memory: every request would read the ConfigMap again.
+const rootsRetry = 5 * time.Second
+
+// Pool of the bundle's certificates. A read that fails after a good one keeps the good one (the API server's blip is
+// no rotation); an edit that leaves the certificates as they were keeps the same pool, so the channels built on it go
+// on.
 func (r *Roots) Pool(ctx context.Context) (*x509.CertPool, error) {
 	r.mu.Lock()
 	if r.pool != nil && time.Since(r.read) < rootsFresh {
@@ -164,30 +184,48 @@ func (r *Roots) Pool(ctx context.Context) (*x509.CertPool, error) {
 		r.mu.Unlock()
 		return pool, nil
 	}
-	r.mu.Unlock()
-	platform, err := r.Platform(ctx)
-	if err != nil {
+	if r.pool == nil && r.err != nil && time.Since(r.failed) < rootsRetry {
+		err := r.err
+		r.mu.Unlock()
 		return nil, err
 	}
+	r.mu.Unlock()
+	pool, key, err := r.readBundle(ctx)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err != nil {
+		if r.pool != nil {
+			r.read = time.Now() // the good bundle serves again, read again after rootsFresh
+			return r.pool, nil
+		}
+		r.failed, r.err = time.Now(), err
+		return nil, err
+	}
+	r.err = nil
+	if r.pool != nil && (r.version == key || r.pool.Equal(pool)) {
+		r.version, r.read = key, time.Now()
+		return r.pool, nil
+	}
+	r.version, r.pool, r.read = key, pool, time.Now()
+	return pool, nil
+}
+
+func (r *Roots) readBundle(ctx context.Context) (*x509.CertPool, string, error) {
+	platform, err := r.Platform(ctx)
+	if err != nil {
+		return nil, "", err
+	}
 	if platform.Spec.CABundle == nil {
-		return nil, errors.New("the console verifies the nodes by the platform's CA bundle: set spec.caBundle")
+		return nil, "", errors.New("the console verifies the nodes by the platform's CA bundle: set spec.caBundle")
 	}
 	ref := platform.Spec.CABundle.ConfigMapRef
 	var cm corev1.ConfigMap
 	if err := r.Direct.Get(ctx, client.ObjectKey{Namespace: platform.Namespace, Name: ref.Name}, &cm); err != nil {
-		return nil, fmt.Errorf("the CA bundle %s: %w", ref.Name, err)
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := cm.Name + "/" + ref.Key + "@" + cm.ResourceVersion
-	if r.pool != nil && r.version == key {
-		r.read = time.Now()
-		return r.pool, nil
+		return nil, "", fmt.Errorf("the CA bundle %s: %w", ref.Name, err)
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM([]byte(cm.Data[ref.Key])) {
-		return nil, fmt.Errorf("the CA bundle %s has no certificate under %s", ref.Name, ref.Key)
+		return nil, "", fmt.Errorf("the CA bundle %s has no certificate under %s", ref.Name, ref.Key)
 	}
-	r.version, r.pool, r.read = key, pool, time.Now()
-	return pool, nil
+	return pool, cm.Name + "/" + ref.Key + "@" + cm.ResourceVersion, nil
 }

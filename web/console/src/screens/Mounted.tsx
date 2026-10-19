@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate, useNavigationType } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Header } from '../components/ui'
 import { useApp } from '../lib/context'
 import { contract, mountTokens, type Handle, type Module, type Which } from '../lib/mounts'
@@ -22,6 +22,7 @@ export function Mounted({ which, basePath }: { which: Which; basePath: string })
   const [state, setState] = useState<State>({ kind: 'loading' })
   const navigate = useNavigate()
   const location = useLocation()
+  const fromMounted = useRef<string | null>(null) // the path the mounted console navigated to itself
   const t = titles[which]
 
   useEffect(() => {
@@ -42,7 +43,10 @@ export function Mounted({ which, basePath }: { which: Which; basePath: string })
           tenant: mount.tenant,
           basePath,
           theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
-          onNavigate: (path: string, how: { replace: boolean }) => navigate(path, { replace: how.replace }),
+          onNavigate: (path: string, how: { replace: boolean }) => {
+            fromMounted.current = path
+            navigate(path, { replace: how.replace })
+          },
           onTitle: (title: string) => { document.title = `${title} - hugr console` },
           onUnauthorized: () => setState({ kind: 'ended' }),
         }
@@ -66,11 +70,21 @@ export function Mounted({ which, basePath }: { which: Which; basePath: string })
     // mounted once per page: the console routes inside itself
   }, [which])
 
-  const how = useNavigationType()
   useEffect(() => {
-    // the browser's back and forward: the console's own navigation reached us through onNavigate already
-    if (how === 'POP') handle.current?.update({ path: location.pathname + location.search })
-  }, [location, how])
+    // every navigation but the mounted console's own (onNavigate): back and forward, the shell's own links into it
+    const path = location.pathname + location.search
+    if (path !== fromMounted.current) handle.current?.update({ path })
+    fromMounted.current = null
+  }, [location])
+
+  useEffect(() => {
+    // the shell's theme, as the person switches it
+    const root = document.documentElement
+    const observer = new MutationObserver(() =>
+      handle.current?.update({ theme: root.dataset.theme === 'dark' ? 'dark' : 'light' }))
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   if (!mount) return <Header title={t.title} lead="This platform names no such service." />
   return (
@@ -89,7 +103,8 @@ export function Mounted({ which, basePath }: { which: Which; basePath: string })
       {state.kind === 'ended' && (
         <div role="alert" className="flex flex-wrap items-center gap-4 rounded-md border border-line px-6 py-4 text-sm">
           Your session ended for {t.product}.
-          <button type="button" className="btn-outline" onClick={() => session.again().then(() => window.location.reload(), () => undefined)}>Sign in again</button>
+          {/* the popup's tokens are this page's: the mounted console comes back as it was, what it held kept */}
+          <button type="button" className="btn-outline" onClick={() => session.again().then(() => setState({ kind: 'mounted' }), () => undefined)}>Sign in again</button>
         </div>
       )}
       <div ref={ref} className={`min-h-[70vh] min-w-0 ${state.kind === 'mounted' ? '' : 'hidden'}`} />

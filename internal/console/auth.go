@@ -30,12 +30,20 @@ var (
 	errNoNode = errors.New("no node answers")
 	// errRefused: the nodes refused the token - the sign-in's problem.
 	errRefused = errors.New("the nodes refused the token")
+	// errNodeFailed: a node answered, but with a failure of its own (its policy source, a schema it does not read):
+	// nothing is learnt of the person, and nothing is cached.
+	errNodeFailed = errors.New("the nodes failed reading the rights")
 )
+
+// tokenSkew is how long past its `exp` the console still takes a token: the clocks of the IdP and the operator.
+const tokenSkew = 30 * time.Second
 
 // person is what the console knows of a token: what the ACL said, and who it is.
 type person struct {
-	rights  Rights
-	subject string // the token's sub, for the audit's changed-by: read once a node has verified the token
+	rights Rights
+	// subject is who the token names, `<iss>|<sub>` (duckdb-acl's author form, spec 120.5), for the audit's
+	// changed-by and the log: read once a node has verified the token
+	subject string
 	until   time.Time
 	used    time.Time
 }
@@ -103,13 +111,17 @@ func answering(view *fleet.View, now time.Time) []*fleet.Node {
 }
 
 // askRights asks `platform.console_info()` with the token on an answering node. A node of another resource group
-// refuses the person and names the groups that serve it (duckdb-acl spec 096); the next try goes to one of those.
+// refuses the person and names the groups that serve it (duckdb-acl spec 096); the next try goes to one of those. A
+// node that seats no session for the token answers "authentication failed" - for a token it does not verify, but also
+// at its session cap or with its policy source failing (duckdb-acl specs 040, 044) - so the next node is asked too, and
+// the token is refused only when every node that answered refused it so.
 func askRights(ctx context.Context, nodes Caller, view *fleet.View, token string, now time.Time,
 	rnd *rand.Rand) (Info, error) {
 	candidates := answering(view, now)
 	rnd.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
 	tried := map[string]bool{}
 	var groups []string
+	refusedToken, failed := 0, 0
 	for attempt := 0; attempt < rightsTries; attempt++ {
 		var pick *fleet.Node
 		for _, n := range candidates {
@@ -131,22 +143,44 @@ func askRights(ctx context.Context, nodes Caller, view *fleet.View, token string
 		}
 		var refused *NodeError
 		switch {
-		case errors.As(err, &refused) && refused.Code == codes.Unauthenticated:
-			return Info{}, errRefused
-		case errors.As(err, &refused) && (refused.Code == codes.InvalidArgument || refused.Code == codes.PermissionDenied):
-			// the node judged the read and refused it: a principal with no administration at all, whose rights are
-			// none (the console shows it nothing)
+		case authFailed(err):
+			refusedToken++
+		case errors.As(err, &refused) && noAdministration(refused):
+			// the node verified the token and refused the read: a principal with no administration at all, whose
+			// rights are none (the console shows it nothing)
 			return Info{}, nil
 		case errors.As(err, &refused) && len(refused.Groups) > 0:
 			groups = refused.Groups
 		case errors.As(err, &refused) && refused.Code == codes.Unavailable:
 			// draining, at capacity: another node
+		case errors.As(err, &refused):
+			// the node's own failure (duckdb-acl answers any engine error as INVALID_ARGUMENT): another node
+			failed++
 		case errors.Is(err, errUnreachable):
 		default:
 			return Info{}, err
 		}
 	}
+	switch {
+	case refusedToken > 0 && failed == 0:
+		return Info{}, errRefused
+	case failed > 0:
+		return Info{}, errNodeFailed
+	}
 	return Info{}, errNoNode
+}
+
+// authFailed: the node seated no session for the token (duckdb-acl answers UNKNOWN "acl: authentication failed").
+func authFailed(err error) bool {
+	var refused *NodeError
+	return errors.As(err, &refused) && (refused.Code == codes.Unauthenticated ||
+		refused.Code == codes.Unknown && strings.Contains(refused.Message, "authentication failed"))
+}
+
+// noAdministration is the ACL's refusal of console_info to a principal that administers nothing.
+func noAdministration(refused *NodeError) bool {
+	return refused.Code == codes.InvalidArgument && strings.Contains(refused.Message, "no access to table function") &&
+		strings.Contains(refused.Message, "console_info")
 }
 
 // infoOf the single row console_info answers.
@@ -166,32 +200,54 @@ func infoOf(result *Result) (Info, error) {
 	return info, nil
 }
 
-// subjectOf a token the node has verified: its `sub`. The console verifies nothing itself - the node accepted this
-// very token, so its claims are the IdP's.
+// subjectOf a token the node has verified: `<iss>|<sub>` (the issuer left out when the token names none). The
+// console verifies nothing itself - the node accepted this very token, so its claims are the IdP's.
 func subjectOf(token string) string {
-	_, sub := claimsOf(token)
-	return sub
+	c := claimsOf(token)
+	if c.iss == "" {
+		return c.sub
+	}
+	return c.iss + "|" + c.sub
 }
 
-// claimsOf a JWT: its `iss` and `sub` as the token states them, each cut at 256 bytes; nothing for another shape. Read,
-// never verified - the node does that.
-func claimsOf(token string) (iss, sub string) {
+// tokenClaims are what the console reads of a token, never verified - the node does that.
+type tokenClaims struct {
+	iss, sub string
+	exp      time.Time // zero when the token states none
+}
+
+// claimsOf a JWT: its `iss`, `sub` (each cut at 256 bytes) and `exp`; nothing for another shape.
+func claimsOf(token string) tokenClaims {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", ""
+		return tokenClaims{}
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", ""
+		return tokenClaims{}
 	}
 	var claims struct {
-		Iss string `json:"iss"`
-		Sub string `json:"sub"`
+		Iss string  `json:"iss"`
+		Sub string  `json:"sub"`
+		Exp float64 `json:"exp"`
 	}
 	if json.Unmarshal(payload, &claims) != nil {
-		return "", ""
+		return tokenClaims{}
 	}
-	return cut(claims.Iss, 256), cut(claims.Sub, 256)
+	out := tokenClaims{iss: cut(claims.Iss, 256), sub: cut(claims.Sub, 256)}
+	if claims.Exp > 0 && claims.Exp < 1<<40 {
+		out.exp = time.Unix(int64(claims.Exp), 0)
+	}
+	return out
+}
+
+// current says whether the console takes the token at `now`: a JWT whose `exp` has not passed. Read unverified, it can
+// only refuse: a node keeps a session's cookie for a later token of the same principal, and under duckdb-acl's default
+// binding (spec 059) judges `exp` only when a session opens - so the console's pool, which keeps a person's session
+// for the person's next token, must not hand it to a token past its time.
+func current(token string, now time.Time) bool {
+	exp := claimsOf(token).exp
+	return !exp.IsZero() && now.Before(exp.Add(tokenSkew))
 }
 
 func cut(s string, n int) string {

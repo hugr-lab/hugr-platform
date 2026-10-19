@@ -20,6 +20,8 @@ func TestMount(t *testing.T) {
 			http.Redirect(w, r, "https://elsewhere.example/", http.StatusFound)
 		default:
 			w.Header().Set("Set-Cookie", "tresor=1")
+			w.Header().Set("Service-Worker-Allowed", "/")
+			w.Header().Set("Clear-Site-Data", `"*"`)
 			_, _ = io.WriteString(w, "answered "+r.URL.Path)
 		}
 	}))
@@ -56,6 +58,9 @@ func TestMount(t *testing.T) {
 	}
 	if w.Header().Get("Set-Cookie") != "" {
 		t.Error("the service's cookies are not the console origin's")
+	}
+	if w.Header().Get("Service-Worker-Allowed") != "" || w.Header().Get("Clear-Site-Data") != "" {
+		t.Errorf("nor is the console origin's whole scope: %v", w.Header())
 	}
 	if w := do("/tresor/ui/mfe/tresor.js"); w.Code != 200 {
 		t.Errorf("the module: %d", w.Code)

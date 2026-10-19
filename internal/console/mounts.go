@@ -149,6 +149,10 @@ func (m *Mount) Handler() http.Handler {
 			Transport: transport,
 			ModifyResponse: func(res *http.Response) error {
 				res.Header.Del("Set-Cookie") // the service's cookies are not the console's origin's
+				// nor its whole origin: no service worker scoped past the service's own paths, no clearing of the
+				// console's storage
+				res.Header.Del("Service-Worker-Allowed")
+				res.Header.Del("Clear-Site-Data")
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
