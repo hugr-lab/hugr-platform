@@ -192,8 +192,11 @@ stop_forwards() {
 forward() {
 	local log port=""
 	log="$WORK/forward.$1.$(echo "$2" | tr '/' '_').log"
-	k -n "$1" port-forward "$2" ":$3" >"$log" 2>&1 &
-	# called in $(...) too: the pid goes to a file the run's exit reads, a subshell's array would lose it
+	# kubectl itself in the background, never the function k: bash 5 runs a backgrounded function in a subshell that
+	# keeps the descriptors it inherited - a caller's $(...) pipe among them - for as long as the port-forward lives,
+	# and the $(...) never ends (main's demo run 39170307122 waited in check 3 for an hour); $! is then kubectl's
+	# own pid, which stop_forwards recognises. Called in $(...) too: the pid goes to a file the run's exit reads.
+	command kubectl --context "$DEMO_CONTEXT" -n "$1" port-forward "$2" ":$3" </dev/null >"$log" 2>&1 &
 	echo "$!" >>"$WORK/forwards.pid"
 	for _ in $(seq 60); do
 		port="$(sed -n 's/^Forwarding from 127.0.0.1:\([0-9]*\) .*/\1/p' "$log" | head -1)"
