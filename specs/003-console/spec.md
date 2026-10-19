@@ -241,8 +241,11 @@ The node's page gains the tabs **Sources and extensions** and **Logs**:
 
 ### Dynamic scaling, prepared for
 
-The autoscaler is phase 2 (spec 001). The console is built for a group that is either manual or autoscaled, so its
-pages do not change when the autoscaler lands:
+The autoscaler is phase 2 (spec 001). The owner's model (2026-10-19, reserved now, to be refined with the
+autoscaler): a group may have a min and a max number of nodes; under load the count grows toward the max, without it
+it falls toward the min; a min of 0 means the last node stops when nothing loads the group, and a node starts when a
+client comes. The console is built for a group that is either manual or autoscaled, so its pages do not change when
+the autoscaler lands:
 
 - The API's group carries `scaling: {mode: manual|auto, min, max, last: {at, from, to, reason}}`; until the autoscaler
   exists every group is `manual`.
@@ -252,7 +255,9 @@ pages do not change when the autoscaler lands:
 - The fleet shows an autoscaled group's bounds, its last decision and the reason; a group at 0 (the idle stop of phase
   2) shows "stopped - starts on the first client" (the front holds that client, `noNodeWaitSeconds`).
 - The plan's check counts an autoscaled group at its max.
-- The CRD's fields and the signals are the autoscaler's spec; this spec reserves only the API's shape (Q8).
+- The CRD's fields and the signals are the autoscaler's spec; this spec reserves only the API's shape (Q8). One
+  question that spec must answer: at 0 nodes there is no Lease and no load report, so the signal that wakes the group
+  is the client the front holds - how the front tells the operator a group's client is waiting.
 
 ### The node's identity
 
