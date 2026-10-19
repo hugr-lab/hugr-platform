@@ -117,7 +117,8 @@ follow_logs() {
 		-o jsonpath='{.items[*].metadata.name}'); do
 		pid="$(cat "$WORK/logs/$pod.pid" 2>/dev/null || true)"
 		[ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q 'kubectl.*logs' && continue
-		k -n hugr logs -f "$pod" >"$WORK/logs/$pod.log" 2>&1 &
+		# kubectl itself, never the function k (forward says why)
+		command kubectl --context "$DEMO_CONTEXT" -n hugr logs -f "$pod" </dev/null >"$WORK/logs/$pod.log" 2>&1 &
 		echo "$!" >"$WORK/logs/$pod.pid"
 		echo "$!" >>"$WORK/forwards.pid"
 	done

@@ -38,6 +38,20 @@ need() {
 	done
 }
 
+# bounded <seconds> <command...>: an external command that may not hang the run - ended and failed past its time
+# where timeout(1) is at hand (Linux, CI; GNU coreutils' gtimeout on macOS), run as it is otherwise
+bounded() {
+	local secs="$1"
+	shift
+	if command -v timeout >/dev/null; then
+		timeout "$secs" "$@"
+	elif command -v gtimeout >/dev/null; then
+		gtimeout "$secs" "$@"
+	else
+		"$@"
+	fi
+}
+
 # kubectl on the demo's cluster only - never the caller's current context
 k() { command kubectl --context "$DEMO_CONTEXT" "$@"; }
 helm_() { command helm --kube-context "$DEMO_CONTEXT" "$@"; }
@@ -69,6 +83,14 @@ diagnose() {
 			echo "== $pod"
 			k -n hugr logs "$pod" --tail 60
 		done
+		local log
+		for log in "$WORK"/forward.*.log; do
+			[ -f "$log" ] || continue
+			echo "== ${log##*/}"
+			tail -20 "$log"
+		done
+		echo "== the run's processes"
+		ps -eo pid,ppid,etime,command | grep -E 'kubectl|check|duckdb|run.sh' | grep -v grep
 	} 2>&1 | redact
 }
 
@@ -170,8 +192,11 @@ stop_forwards() {
 forward() {
 	local log port=""
 	log="$WORK/forward.$1.$(echo "$2" | tr '/' '_').log"
-	k -n "$1" port-forward "$2" ":$3" >"$log" 2>&1 &
-	# called in $(...) too: the pid goes to a file the run's exit reads, a subshell's array would lose it
+	# kubectl itself in the background, never the function k: bash 5 runs a backgrounded function in a subshell that
+	# keeps the descriptors it inherited - a caller's $(...) pipe among them - for as long as the port-forward lives,
+	# and the $(...) never ends (main's demo run 39170307122 waited in check 3 for an hour); $! is then kubectl's
+	# own pid, which stop_forwards recognises. Called in $(...) too: the pid goes to a file the run's exit reads.
+	command kubectl --context "$DEMO_CONTEXT" -n "$1" port-forward "$2" ":$3" </dev/null >"$log" 2>&1 &
 	echo "$!" >>"$WORK/forwards.pid"
 	for _ in $(seq 60); do
 		port="$(sed -n 's/^Forwarding from 127.0.0.1:\([0-9]*\) .*/\1/p' "$log" | head -1)"

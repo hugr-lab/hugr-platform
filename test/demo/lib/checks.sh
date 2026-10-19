@@ -33,7 +33,7 @@ as() {
 			return 1
 	fi
 	# shellcheck disable=SC2046 # the IdP's flags are words
-	"$CHECKER" $(token_flags) -client "$(principal_id "$principal")" -secret-file "$WORK/secrets/principal-$principal" \
+	bounded 120 "$CHECKER" $(token_flags) -client "$(principal_id "$principal")" -secret-file "$WORK/secrets/principal-$principal" \
 		-node "127.0.0.1:$(cat "$WORK/ports/$pod")" -server-name "hugr-node-$group.hugr.svc" -ca "$WORK/ca.crt" -sql "$sql"
 }
 
@@ -56,7 +56,8 @@ went_drained() {
 }
 # plain_duckdb <pod> <sql>: duckdb in the node's container, with nothing of the node's environment
 plain_duckdb() {
-	k -n hugr exec "$1" -- env -i HOME=/tmp /usr/local/bin/duckdb -noheader -csv -c "$2" | tail -1
+	bounded 120 kubectl --context "$DEMO_CONTEXT" -n hugr exec "$1" -- env -i HOME=/tmp /usr/local/bin/duckdb -noheader \
+		-csv -c "$2" | tail -1
 }
 
 check_entry() {
