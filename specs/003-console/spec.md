@@ -46,13 +46,16 @@ C3); the fleet's state comes from Kubernetes (C1). The policy is not edited here
 
 - **The browser signs the person in** at the organisation's IdP (`spec.idp.issuer`): authorization code with PKCE,
   oidc-client-ts, the console's own public client (`spec.console.clientID`). The console keeps tokens in memory only;
-  a reload signs in again silently (the IdP's session).
+  a reload signs in again through the IdP's session, and the token is renewed by its refresh token, never in a frame
+  (as tresor-server's and kista's consoles do).
 - **A token per audience**, as tresor's and kista's contracts ask (`getToken(audience, {renew})`):
   - **the nodes'** (`spec.console.audiences.nodes`, the audience of the policy's client for the console, duckdb-acl
     spec 095): the console's own API and every node-side action;
   - **tresor-server's** and **kista's** for their mounts.
   - Entra: one token per resource, by the refresh token (`acquireTokenSilent` semantics: scope `<api>/.default`).
     Keycloak: audience mappers put the audiences in one token, or token exchange.
+  - As built: an audience written `api://...` is an Entra resource - its token comes by the refresh token with the
+    scope `<audience>/.default`; any other audience must already be in the sign-in's token (Keycloak's mapper).
 - **No second sign-in**, no token stored by the operator, none logged, none in a URL.
 
 ### Who may see and do what (C3)
@@ -94,7 +97,8 @@ Under `/api/v1/console/`, the person's nodes-audience token as the bearer on eve
 
 | method, path | does | right |
 | --- | --- | --- |
-| `GET me` | the person's rights (the table above), the platform's name, the mounts' bases and audiences | any signed-in |
+| `GET config` | what the sign-in needs before it: the issuer, the client, the scopes, the audiences, the mounts, the links - nothing secret | none |
+| `GET me` | the person's rights (the table above) | any signed-in |
 | `GET groups` | the groups with their status and nodes (Kubernetes: the groups, their Leases) | observe |
 | `PATCH groups/{g}` `{replicas}` / `{restart:true}` | writes the `HugrNodeGroup` as the operator (SSA, its field owner) | cluster |
 | `GET nodes/{label}` | the node's load report, read on that node with the person's token | observe |
@@ -114,6 +118,9 @@ Under `/api/v1/console/`, the person's nodes-audience token as the bearer on eve
   name and the platform's CA bundle (the front's dialing, spec 002).
 - **One gRPC channel per node; one session cookie per node and person**: the first call opens the person's session,
   later ones reuse it (duckdb-acl spec 050). Each call carries the person's bearer, and `traceparent`.
+  - As built: the session is kept per node and *token* (its hash), not per person: a person is known by a token the
+    node verified, and a cookie never travels with another token. A renewed token opens a new session; the old one
+    ends at the node's idle timeout (or at sign-out).
 - **Sign-out** ends the person's sessions on every node holding one; otherwise the node's idle timeout does.
 - Statements are fixed texts; an id from the browser (a session's ops id) is bound as a constant only after it
   matches the ops id's form - never SQL from the browser.
@@ -142,8 +149,8 @@ Under `/api/v1/console/`, the person's nodes-audience token as the bearer on eve
 - **Nothing from the browser becomes SQL**: fixed statements, ids checked by form.
 - **The proxy** to tresor and kista forwards the person's bearer to the service it is meant for (the audience is the
   service's), never another's.
-- **CSP**: `default-src 'self'`; the IdP in `connect-src` (token endpoint) and `frame-src` (silent renew), nothing
-  else.
+- **CSP**: `default-src 'self'`; the IdP's origin in `connect-src` (the token endpoint) and `form-action` (the
+  sign-in), nothing else; no `frame-src` (renewal by the refresh token), no inline script or style, no `data:`.
 
 ## Testing
 
@@ -337,6 +344,28 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
 
 **Q11. Tracing a session.** *Recommendation:* in the sessions' table, per session on its node. Alternative: also a
 "trace everything of this principal" action - that is the policy's rule (acl_otel's rules table), not a session's.
+
+## As built (stages 1 and 2, 2026-10-19)
+
+- **Stage 1** - the server in the operator (`internal/console`): the API above, the rights from `console_info()`, the
+  nodes over Flight SQL (arrow-go's client), the group writes; every replica serves it on `:8444` when the Secret
+  `hugr-console` is mounted. **Stage 2** - the web (`web/console`): Fleet, a group, a node's overview and sessions,
+  the sign-in and the fail-closed page; embedded by `//go:embed`, built in the image's Node stage. **Stage 3** is round
+  2 (metrics, logs, inventory, tracing, Cluster), **stage 4** the mounts of tresor-server and kista and the e2e.
+- **The group writes have two field owners**, `hugr-console` (the count) and `hugr-console-restart` (`restartedAt`):
+  a server-side apply removes what its owner set before and does not name now, so one owner for both made a restart
+  drop the count a scale had set (envtest caught it). Each apply names `platform.hugr.io/changed-by` (the `sub`, else
+  `unknown`) for the same reason.
+- **An autoscaled group's dialog shows its bounds and edits nothing** until the autoscaler's API exists (Q8).
+- **The person's resource group.** A node serves only the principals of its resource group, administrators included
+  (duckdb-acl spec 096). The console asks `console_info()` on a node of the person's group (a refusal names it,
+  `x-acl-resource-groups`, as the front reads it), and a node of another group refuses that person's actions with its
+  own message. For a console that administers every group the person's roles must hold every group's resource group
+  - the policy decides (Q12, the owner's).
+
+**Q12. An administrator and the resource groups.** *Recommendation:* the policy grants an administrator's role every
+group's resource group (`GRANT RESOURCE GROUP g TO ROLE ops`); nothing to build, one judge. Alternative: a duckdb-acl
+spec that does not place a session whose principal holds an administrative bundle.
 
 ## Follow-ups
 

@@ -38,6 +38,7 @@ import (
 	"github.com/hugr-lab/hugr-platform/internal/front/watch"
 	"github.com/hugr-lab/hugr-platform/internal/nodeapi"
 	groupwebhook "github.com/hugr-lab/hugr-platform/internal/webhook"
+	webconsole "github.com/hugr-lab/hugr-platform/web/console"
 )
 
 func main() {
@@ -152,11 +153,26 @@ func main() {
 	roots := &console.Roots{Platform: platforms.Find, Direct: mgr.GetAPIReader()}
 	pool := &console.Pool{Namespace: namespace, Roots: roots.Pool}
 	nodes := fleet.New()
+	web, err := webconsole.New(func() string {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if p, err := platforms.Find(ctx); err == nil {
+			return p.Spec.IdP.Issuer
+		}
+		return ""
+	}, nil)
+	if err != nil {
+		logger.Error(err, "no web console")
+		os.Exit(1)
+	}
+	if !web.Built() {
+		logger.Info("the web console is not built into this binary: its page says how to build it")
+	}
 	consoleDoor := &console.Door{
 		Addr:    consoleAddr,
 		CertDir: consoleCertDir,
 		Server: &console.Server{Platform: platforms.Find, Reader: mgr.GetClient(),
-			Groups: console.ApplyWriter{Client: mgr.GetClient()}, Fleet: nodes, Nodes: pool,
+			Groups: console.ApplyWriter{Client: mgr.GetClient()}, Fleet: nodes, Nodes: pool, Web: web,
 			Log: logger.WithName("console")},
 		Pool:  pool,
 		Watch: watch.New(clientset, namespace, nodes, 15*time.Second).Run,
