@@ -21,9 +21,11 @@ import (
 
 func main() {
 	var nodeFlag, caFile, tokenFile string
+	var keep bool
 	flag.StringVar(&nodeFlag, "node", "", "<group>=<host>:<flight port>: the node, dialled with hugr-node-<group>.hugr.svc")
 	flag.StringVar(&caFile, "ca", "", "the CA bundle the node's certificate is verified by")
 	flag.StringVar(&tokenFile, "token-file", "", "the person's token")
+	flag.BoolVar(&keep, "keep", false, "leave the session open (no sign-out): an e2e's other session")
 	flag.Parse()
 	group, address, ok := strings.Cut(nodeFlag, "=")
 	host, port, ok2 := strings.Cut(address, ":")
@@ -57,7 +59,9 @@ func main() {
 		}
 		out[statement] = result.Records()
 	}
-	out["signed_out"] = pool.SignOut(context.Background(), strings.TrimSpace(string(token)))
+	if !keep {
+		out["signed_out"] = pool.SignOut(context.Background(), strings.TrimSpace(string(token)))
+	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(out)

@@ -6,6 +6,9 @@ import (
 
 func TestRightsOf(t *testing.T) {
 	none := RightsOf(Info{})
+	if none.Bundles == nil {
+		t.Error("the bundles are a list, empty, never null: the page reads its length")
+	}
 	if none.Any() || none.Fleet || none.Scale || none.EndSession {
 		t.Errorf("an answer naming nothing grants nothing: %+v", none)
 	}

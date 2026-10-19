@@ -44,13 +44,17 @@ export function Overview() {
                   </div>
                   <div className="panel flex flex-col gap-2">
                     <div className="eyebrow">Resource group</div>
-                    <div className="mono text-lg">{String(load.group ?? 'none: serves everyone')}</div>
-                    <div className="text-sm text-ink-muted">{load.group_default ? 'the default group' : load.group_known === false ? 'not in the policy' : ''}</div>
+                    {load.group ? <div className="mono text-lg">{String(load.group)}</div> : <div className="text-lg font-semibold">none</div>}
+                    <div className="text-sm text-ink-muted">{!load.group ? 'it serves everyone' : load.group_default ? 'the default group' : load.group_known === false ? 'not in the policy' : ''}</div>
                   </div>
                   <div className="panel flex flex-col gap-2">
                     <div className="eyebrow">Profile</div>
-                    <div className="text-[32px] font-semibold leading-10">{String(load.config_target ?? '-')}</div>
-                    <div className="text-sm text-ink-muted">applied {String(load.config_applied ?? '-')}</div>
+                    {load.config_target === null || load.config_target === undefined ? (
+                      <><div className="text-lg font-semibold">none</div><div className="text-sm text-ink-muted">a standalone node has no cluster profile</div></>
+                    ) : (
+                      <><div className="text-[32px] font-semibold leading-10">{String(load.config_target)}</div>
+                        <div className="text-sm text-ink-muted">applied {String(load.config_applied ?? '-')}</div></>
+                    )}
                   </div>
                 </div>
               </section>

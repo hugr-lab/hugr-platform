@@ -15,7 +15,7 @@ const stateText: Record<string, string> = { same: 'same', differs: 'differs', no
   profile_only: 'profile only', bootstrap: 'bootstrap' }
 
 function Table({ id, title, lead, part, columns }: { id: string; title: string; lead?: string; part?: Part;
-  columns: { key: string; label: string; mono?: boolean; state?: boolean }[] }) {
+  columns: { key: string; label: string; mono?: boolean; wrap?: boolean; state?: boolean }[] }) {
   return (
     <section aria-labelledby={id} className="flex flex-col gap-4">
       <div>
@@ -33,9 +33,10 @@ function Table({ id, title, lead, part, columns }: { id: string; title: string; 
                 <tr key={i}>
                   {columns.map((c) => {
                     const v = row[c.key]
-                    const text = v === null || v === undefined ? '-' : typeof v === 'object' ? JSON.stringify(v) : String(v)
+                    const text = v === null || v === undefined || v === '' ? '-' : typeof v === 'boolean' ? (v ? 'yes' : 'no')
+                      : typeof v === 'object' ? JSON.stringify(v) : String(v)
                     return (
-                      <td key={c.key} className={`td ${c.mono ? 'mono break-all' : ''}`}>
+                      <td key={c.key} className={`td ${c.mono ? 'mono' : ''} ${c.wrap ? 'break-all' : 'whitespace-nowrap'}`}>
                         {c.state ? <Status mark={stateMark(text)}>{stateText[text] ?? text}</Status> : text}
                       </td>
                     )
@@ -65,19 +66,24 @@ export function Inventory() {
       {() => (
         <>
           {inv.error !== undefined && <Problem error={inv.error} />}
-          <Table id="src-h" title="Sources"
+          {drift?.error && (
+            <p role="note" className="rounded-md border border-line px-6 py-4 text-sm">
+              {drift.error}: the sources, the settings and the profile's items are read against the profile, a platform node's views. The extensions are below.
+            </p>
+          )}
+          {!drift?.error && <Table id="src-h" title="Sources"
             lead="The databases this node attached, against the profile. Never an ATTACH string: a source's credentials are in tresor."
             part={of('database')}
             columns={[{ key: 'name', label: 'Name', mono: true }, { key: 'scope', label: 'Scope' },
               { key: 'state', label: 'Against the profile', state: true }, { key: 'node_value', label: 'This node', mono: true },
-              { key: 'profile_value', label: 'The profile', mono: true }]} />
+              { key: 'profile_value', label: 'The profile', mono: true, wrap: true }]} />}
           <Table id="ext-h" title="Extensions" part={inv.data?.extensions}
             columns={[{ key: 'extension_name', label: 'Name', mono: true }, { key: 'extension_version', label: 'Version', mono: true },
-              { key: 'loaded', label: 'Loaded' }, { key: 'install_mode', label: 'From' }, { key: 'installed_from', label: 'Repository', mono: true }]} />
-          <Table id="drift-ext-h" title="Extensions against the profile" part={of('extension')}
+              { key: 'loaded', label: 'Loaded' }, { key: 'install_mode', label: 'From' }, { key: 'installed_from', label: 'Repository', mono: true, wrap: true }]} />
+          {!drift?.error && <><Table id="drift-ext-h" title="Extensions against the profile" part={of('extension')}
             columns={[{ key: 'name', label: 'Name', mono: true }, { key: 'scope', label: 'Scope' },
-              { key: 'state', label: 'State', state: true }, { key: 'node_value', label: 'This node', mono: true },
-              { key: 'profile_value', label: 'The profile', mono: true }]} />
+              { key: 'state', label: 'State', state: true }, { key: 'node_value', label: 'This node', mono: true, wrap: true },
+              { key: 'profile_value', label: 'The profile', mono: true, wrap: true }]} />
           <Table id="set-h" title="Settings"
             lead="The settings the profile or the bootstrap sets, this node's value beside the profile's. A value never goes above the pod."
             part={of('setting')}
@@ -85,7 +91,7 @@ export function Inventory() {
               { key: 'profile_value', label: 'The profile', mono: true }, { key: 'state', label: 'State', state: true }]} />
           <Table id="eff-h" title="The profile's items for this node" part={inv.data?.effective}
             columns={[{ key: 'scope', label: 'Scope' }, { key: 'kind', label: 'Kind' }, { key: 'name', label: 'Name', mono: true },
-              { key: 'class', label: 'Class' }, { key: 'version', label: 'Version' }]} />
+              { key: 'class', label: 'Class' }, { key: 'version', label: 'Version' }]} /></>}
         </>
       )}
     </NodeFrame>

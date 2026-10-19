@@ -179,8 +179,10 @@ export function Ring({ percent, label, dark }: { percent: number; label: string;
   return (
     <svg width="96" height="96" viewBox="0 0 64 64" role="img" aria-label={label}>
       <circle cx="32" cy="32" r="26" fill="none" stroke="var(--surface-soft)" strokeWidth="7" />
-      <circle cx="32" cy="32" r="26" fill="none" stroke={dark ? 'var(--ink)' : 'var(--brand)'} strokeWidth="7"
-        strokeLinecap="round" strokeDasharray={`${(c * percent) / 100} ${c}`} transform="rotate(-90 32 32)" />
+      {percent > 0 && (
+        <circle cx="32" cy="32" r="26" fill="none" stroke={dark ? 'var(--ink)' : 'var(--brand)'} strokeWidth="7"
+          strokeLinecap="round" strokeDasharray={`${(c * percent) / 100} ${c}`} transform="rotate(-90 32 32)" />
+      )}
       <text x="32" y="36" textAnchor="middle" fontSize="13" fontWeight="700" fill="var(--ink)">{percent}%</text>
     </svg>
   )

@@ -53,7 +53,7 @@ func RightsOf(info Info) Rights {
 		Scale:          cluster,
 		Infrastructure: cluster,
 		Events:         view("audit_events"),
-		Bundles:        slices.Clone(info.Bundles),
+		Bundles:        append([]string{}, info.Bundles...), // a list in JSON, never null
 	}
 }
 

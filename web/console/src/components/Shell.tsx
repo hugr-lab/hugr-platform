@@ -68,9 +68,9 @@ export function Shell({ children }: { children: ReactNode }) {
             <div className="text-[13px] font-semibold uppercase leading-5 tracking-[0.08em] text-navy-muted">Signed in</div>
             <div className="break-all text-sm font-medium text-white">{session.displayName ?? 'signed in'}</div>
           </div>
-          {rights.bundles.length > 0 && (
+          {(rights.bundles ?? []).length > 0 && (
             <ul className="flex flex-wrap gap-2" aria-label="Your rights on this platform">
-              {rights.bundles.map((b) => (
+              {(rights.bundles ?? []).map((b) => (
                 <li key={b} className="rounded-full border border-navy-line px-2.5 py-0.5 text-[13px] font-semibold leading-5">
                   {b}
                 </li>

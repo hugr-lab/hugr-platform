@@ -8,7 +8,7 @@ STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@2026.1
 ENVTEST_K8S_VERSION ?= 1.35.0
 IMAGE ?= ghcr.io/hugr-lab/hugr-platform:dev
 
-.PHONY: all generate manifests build test test-unit test-envtest fmt vet staticcheck lint image console console-test
+.PHONY: all generate manifests build test test-unit test-envtest fmt vet staticcheck lint image console console-test console-e2e
 
 all: generate manifests build test
 
@@ -52,6 +52,11 @@ console:
 ## console-test: its typecheck and tests
 console-test:
 	cd web/console && npm ci --no-fund --no-audit && npm run typecheck && npm test
+
+## console-e2e: the console in a real browser against Keycloak and a duckdb-acl node (DUCKDB_ACL: a built checkout)
+console-e2e:
+	cd web/console && npm ci --no-fund --no-audit && npx playwright install chromium
+	test/console/e2e/run.sh
 
 image:
 	docker build -t $(IMAGE) .
