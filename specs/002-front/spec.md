@@ -1,8 +1,8 @@
 # Spec 002: the front - one address for the clients, every call on its node
 
-- **Status**: built, the demo through it pending (the owner accepted it 2026-10-19: «спека одобрена»; Q1-Q6 as
-  recommended). Tested by unit tests, envtest and `test/front/run.sh` against real nodes; the demo's checks through
-  the front (below) wait for duckdb-acl's spec 096 addendum to reach hugr-node's image.
+- **Status**: implemented (the owner accepted it 2026-10-19: «спека одобрена»; Q1-Q6 as recommended; a cookie-less
+  client by its handle: option B). Tested by unit tests, envtest, `test/front/run.sh` against real nodes and spec
+  004's demo through the front (check 4b, kind: demo run 39297799295 on the re-pinned node, hugr-node #12).
 - **Date**: 2026-10-19
 
 ## Summary
@@ -208,12 +208,14 @@ What the code settled that the design above left open, and where it reads more n
   CA) defaults to the platform's `caBundle`.
 - **The image is the operator's**, read from the operator's own pod (`POD_NAME`; `HUGR_FRONT_IMAGE` overrides).
 - **No `spec.front`, no front**: removing it deletes the front's objects (the change that asked for it is explicit).
-- **The front reads before anyone judged the caller, so it bounds what it reads** (review, 2026-10-19): a call's
-  first message is kept by reference (no copy) and refused past 4 MiB (`RESOURCE_EXHAUSTED`); a streamed frame at most
-  256 MiB; 128 streams per connection. quack: the message's header within 30 s, an idle connection closed after 2 min,
+- **The front reads before anyone judged the caller, so it bounds what it reads** (reviews, 2026-10-19): a message at
+  most 256 MiB, as sent (the front reads no compressed message: a client's `grpc-encoding` is refused - a small gzip
+  would inflate to the limit); a call's first message within 30 s; a first message kept to send again refused past
+  4 MiB (`RESOURCE_EXHAUSTED`, after it was read) and kept by reference, never copied; a stream's first message freed
+  once sent; 128 streams per connection; at most `--max-connections` (16384) connections per door. quack: the message's header within 30 s, an idle connection closed after 2 min,
   at most 1024 connections to one node. A CONNECT the node received is never sent to another (it may have opened a
   session there): the client gets 502.
-- **Nothing a caller nobody verified could learn**: "no node" names groups only when a node named them (after a
+- **Nothing a caller nobody verified could learn** (but the node's label, below): "no node" names groups only when a node named them (after a
   re-seat), never the Leases' default; the log names a Flight method only when it is one of the service's own
   (`other` otherwise), never as the client wrote it.
 - **The group in the Lease is the operator's** (the HugrNodeGroup's `resourceGroup`), not the node's word: a node
@@ -230,16 +232,41 @@ What the code settled that the design above left open, and where it reads more n
   work, or no answer at all) goes the seating way from its node: another node of the group it was on, or of the
   groups the node named. A Handshake that sends no message (a BasicAuth one: arrow-go, pyarrow) is forwarded as such.
   A client's status when the node did not answer is UNAVAILABLE `hugr: the node did not answer`, never the dial's
-  text (it names the pod's address). The front reads a client's gzip.
+  text (it names the pod's address).
 - **quack's label is the message's own connection id first**, then `X-Quack-Connection-Id`, then the cookie: a jar
   holds one `acl_node`, and a client may hold connections on two nodes. The discovery document and a CORS preflight
   (`OPTIONS /quack`) are answered by any node that answers at all (a drain's 503: the next one), the default group's
   first - what every node answers alike.
+- **A call that names a handle goes to the node holding it, cookie or not, and nowhere else**: its refusal, whatever
+  it is (a drain, a placement), is the client's; a holder the front does not see is refused by the front
+  (UNAVAILABLE `hugr: the node that holds this call's ticket or prepared statement is not in the fleet`). Another
+  node does not have the handle and would take it for a stolen ticket (duckdb-acl spec 047's `ticket_foreign`). The
+  handle beats the cookie: a client whose ticket another connection's node minted (ADBC's ReadPartition) reaches it,
+  and that node moves the connection's session to itself (spec 135) and re-homes its jar. duckdb-acl's addendum to
+  134 makes a draining node redeem a cookie-less client's handles too.
+- **A cookie-less DoPut that names no handle and is one message and the end** (Flight SQL's ExecuteUpdate) is sent
+  again like a one-message call: the front reads the next message for up to 1 s; the end makes it replayable, a batch
+  is sent on after the first, a client that has not answered yet is streamed on (the pending receive handed to the
+  pump). A DoExchange is never read ahead: its server may speak first.
+- **A call without the cookie is routed by the handle it names** (the owner, 2026-10-19: option B, over hashing the
+  token): duckdb-acl spec 134's addendum makes a ticket and a prepared statement's handle `<label>.<random>`, and
+  `internal/front/flightwire` reads the label from a call's first message - a `DoGet`'s ticket (a statement's
+  `TicketStatementQuery`, a prepared statement's command), a `GetFlightInfo` / `GetSchema` / `PollFlightInfo` /
+  `DoPut` / `DoExchange` descriptor's `CommandPreparedStatementQuery` / `Update`, a `ClosePreparedStatement` action.
+  A DoPut / DoExchange without the cookie has its first message read (the descriptor before the batches; at most its
+  first 64 KiB is looked at) and sent first. An ad-hoc statement names no node and is seated like any new call; its
+  ticket then names the node that took it.
 - **Known limits**:
-  - **A Flight client keeps the node's cookies** - JDBC does, ADBC with `with_cookie_middleware` (duckdb-acl's client
-    docs already ask for it: a session is a connection, spec 050), pyarrow with a cookie middleware. A call without
-    the cookie is seated afresh, so a `DoGet` may reach a node that does not hold its ticket. Routing a ticket or a
-    prepared handle by a label inside it would need the node to write one - a question for the owner.
+  - **A Flight client that keeps no cookie** (ADBC's default, a plain pyarrow or arrow-go client) has no session
+    beyond one call (duckdb-acl spec 050: no transaction, no temp table, no USE). Its statements and prepared
+    statements work through the front (below).
+  - The demo through the front (spec 004's check 4b) covers scenarios 1 (a re-seat by the node's refusal), 6 (no
+    node of the group) and 7 (the front's logs in the scan), with a client that keeps no cookie. Scenario 4 (quack
+    through the front) is `test/front/run.sh`'s against real nodes; 2 (a replica deleted under a session), 3 (a node
+    deleted under a session) and 5 (a draining node keeps its own) are follow-ups.
+  - The node's label is its pod's name (`hugr-node-<group>-<revision>-<suffix>`), sent in the `acl_node` cookie to
+    any caller: it names the group, and repeated calls count the nodes. A group's name is no secret (duckdb-acl spec
+    085: do not name a group after anything secret).
   - Arrow C++ sends a status's binary details raw in `grpc-status-details-bin`, which grpc-go reads as a
     `google.rpc.Status`: such details would not pass the front. The node sends none today.
 - **Tests**: `internal/front/{quackwire,route,fleet,flightproxy,quackproxy}` (fake nodes, no proto, the quack corpus

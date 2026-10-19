@@ -204,6 +204,12 @@ they run once per `up` (`all` does both).
    - `analyst_a` reads the virtual table through Flight on a node of group `a`.
    - On a node of group `b` it is refused (`UNAVAILABLE`), the message naming `a` (the audit's reason is
      `wrong_resource_group`; the machine-readable form a client acts on comes with spec 002).
+4b. **The front** (spec 002): the platform's `front` with two replicas and the run's certificate; the checker reaches it
+   instead of a node. Group `a` is made the default: `analyst_b`, seated on a node of `a`, is re-seated on `b` by
+   `a`'s refusal (the front's `hugr_front_reseats{reason="wrong_resource_group"}`), and `analyst_a` reads as on its
+   node; with `b`'s node drained, `analyst_b` is refused after the wait - `hugr: no node of group b can take a new
+   session - retry` - and never seated on `a`. The checker keeps no cookie: its `DoGet` reaches the node by the label
+   in its ticket. The front's logs are in check 12's scan.
 5. **A hot item.** `ACL CLUSTER ATTACH … IN GROUP a`, written by `platform_admin` through a node of `a`:
    - every node of `a` applies it on its tick and reports `applied` at the new version;
    - group `a`'s status shows the target applied by all its nodes;

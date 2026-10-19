@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/net/netutil"
 	"google.golang.org/grpc/credentials"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -42,6 +43,7 @@ func main() {
 	var (
 		namespace, certDir, caFile, flightAddr, quackAddr, internalAddr string
 		heartbeat, noNodeWait                                           time.Duration
+		maxConns                                                        int
 	)
 	flag.StringVar(&namespace, "namespace", os.Getenv("POD_NAMESPACE"), "the platform's namespace")
 	flag.StringVar(&certDir, "cert-dir", "/etc/hugr-front/tls", "the public certificate (tls.crt, tls.key)")
@@ -51,16 +53,18 @@ func main() {
 	flag.StringVar(&internalAddr, "internal-address", ":8081", "where /metrics, /healthz and /readyz listen")
 	flag.DurationVar(&heartbeat, "heartbeat", 15*time.Second, "the nodes' heartbeat interval: a watch lost for 3 makes the front not ready")
 	flag.DurationVar(&noNodeWait, "no-node-wait", 5*time.Second, "how long a new connection waits for a node of its group")
+	flag.IntVar(&maxConns, "max-connections", 16384, "the most client connections each door holds at once")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if err := run(log, namespace, certDir, caFile, flightAddr, quackAddr, internalAddr, heartbeat, noNodeWait); err != nil {
+	if err := run(log, namespace, certDir, caFile, flightAddr, quackAddr, internalAddr, heartbeat, noNodeWait,
+		maxConns); err != nil {
 		log.Error("the front stopped", "error", err.Error())
 		os.Exit(1)
 	}
 }
 
 func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, internalAddr string, heartbeat,
-	noNodeWait time.Duration) error {
+	noNodeWait time.Duration, maxConns int) error {
 	if namespace == "" {
 		return errors.New("--namespace is required")
 	}
@@ -100,10 +104,17 @@ func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, in
 
 	public := &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.GetCertificate}
 	grpcServer := flight.Server(credentials.NewTLS(public))
+	// both doors read before anyone judged the caller: the connections they hold at once are bounded
 	flightListener, err := net.Listen("tcp", flightAddr)
 	if err != nil {
 		return err
 	}
+	flightListener = netutil.LimitListener(flightListener, maxConns)
+	quackListener, err := net.Listen("tcp", quackAddr)
+	if err != nil {
+		return err
+	}
+	quackListener = netutil.LimitListener(quackListener, maxConns)
 	quackServer := &http.Server{Addr: quackAddr, Handler: quack.Handler(), TLSConfig: public.Clone(),
 		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 
@@ -126,7 +137,7 @@ func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, in
 
 	failed := make(chan error, 3)
 	go func() { failed <- grpcServer.Serve(flightListener) }()
-	go func() { failed <- quackServer.ListenAndServeTLS("", "") }()
+	go func() { failed <- quackServer.ServeTLS(quackListener, "", "") }()
 	go func() { failed <- internalServer.ListenAndServe() }()
 	log.Info("serving", "flight", flightAddr, "quack", quackAddr, "internal", internalAddr)
 
