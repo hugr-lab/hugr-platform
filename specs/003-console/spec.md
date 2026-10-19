@@ -1,8 +1,8 @@
 # Spec 003: the console - one place to run the platform
 
 - **Status**: accepted (the owner, 2026-10-19: Q1-Q5 as recommended); the look is made with Claude Design on the Hugr Lab
-  design system (hugr-lab.com). **Round 2** (the owner's asks after the first design, 2026-10-19) is a draft: see
-  "Round 2" below, decisions Q6-Q11 pending
+  design system (hugr-lab.com). **Round 2** (the owner's asks after the first design) accepted the same day: Q6-Q11
+  as recommended, and the owner's direction on where telemetry and lineage go (below)
 - **Date**: 2026-10-19
 
 ## Summary
@@ -182,7 +182,7 @@ tresor's and kista's mounts. Later: the audit's history (C2), a client's workloa
 **Q5. Who may scale and restart.** *Recommendation:* the `cluster` bundle (the infrastructure's right, duckdb-acl spec
 118). Alternative: `operate`.
 
-## Round 2 (draft): what a node is made of, how it is doing, what the cluster is set to
+## Round 2: what a node is made of, how it is doing, what the cluster is set to
 
 The owner's asks after the first design (2026-10-19): a node's metrics (memory first); its profile as it came up (the
 sources attached and their state, the extensions, the logs); tracing a session; dynamic scaling, prepared for though
@@ -261,15 +261,27 @@ On the group's page (it is the group's) and the node's:
 - **what it runs**: the image's digest, the duckdb version, the hugr-node build (the heartbeat's).
 - Never a token, never the projected token's content.
 
-### Telemetry: the direction (beyond this spec)
+### Telemetry and lineage: where they go, what the console shows
 
-- The console stores no telemetry and queries no telemetry backend: that would be a second data path and a credential
-  for it.
-- What it shows itself: a node's **recent audit events** (`platform.audit_events`, the node's ring, `observe`) - the
-  "recent" half of design/082's C2. The history is the sinks'.
-- **Links out**: `HugrPlatform.spec.console.links`, URL templates for the organisation's backend (Grafana, Azure
-  Monitor) with `{node}`, `{group}`, `{session}`, `{trace}`; the console renders "Open in ..." on a node, a session, an
-  event. An https URL, checked, never a secret (Q9).
+Where they go depends on the installation (the owner, 2026-10-19):
+
+- **Telemetry**: the receiver the administrator chooses - on Azure most likely Application Insights, otherwise any
+  backend; when the administrator chooses none, the platform may deploy one of its own (an OTel Collector with Grafana;
+  later perhaps the platform's own DuckLake as the store); or none at all.
+- **Lineage**: the same three cases - an OpenMetadata or another OpenLineage receiver the organisation has, one deployed
+  with the platform, or none. Whether the platform deploys one, and which, is still to be thought through.
+- Both are the integrations' spec (a follow-up), not this one. The console needs only what it links to.
+
+What the console does:
+
+- It stores no telemetry and queries no backend: that would be a second data path and a credential for it.
+- It shows a node's **recent audit events** (`platform.audit_events`, the node's ring, `observe`) - the "recent" half
+  of design/082's C2. The history is the receiver's.
+- **A link out, nothing more** (the owner: a link is enough for now): the installation names the backend - its name
+  ("Application Insights", "Grafana", "OpenMetadata") and URL templates with `{node}`, `{group}`, `{session}`,
+  `{trace}`; for one deployed with the platform the link is known. The console renders "Open in <name>" on a node, a
+  session, an event, and on the Cluster page's integrations. An https URL, checked, never a secret. No receiver: no
+  link, and the Cluster page says the telemetry stays in the nodes' rings.
 
 ### The cluster's settings (read only)
 
@@ -295,7 +307,7 @@ A page **Cluster**:
 | `GET cluster` | the profile, the integrations, drift counted | cluster / observe |
 | `PATCH groups/{g}` `{scaling: {mode, min, max}}` | when the autoscaler exists | cluster |
 
-### Decisions for the owner (round 2)
+### Decisions (owner, 2026-10-19): Q6-Q11 as recommended below
 
 **Q6. Who reads a node's logs.** *Recommendation:* `cluster` - a log names hosts and sources, and it is the
 infrastructure's view. Alternative: `observe`, beside the events.
@@ -322,7 +334,11 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
   permissions on tresor's and kista's resources), the Managed Application's own.
 - C2 and C4 (design/082), when the audit's storage is decided.
 - Round 2's pieces in the other repositories: duckdb-acl (the engine's memory, the node's inventory), hugr-node
-  (`platform.telemetry`) - a spec each, after Q6-Q11.
+  (`platform.telemetry`) - a spec each.
+- The integrations' spec: where telemetry and lineage go - the administrator's receiver (Application Insights on
+  Azure; acl_otel speaks OTLP, so whether it goes straight in or through a collector is that spec's question), one
+  deployed with the platform (an OTel Collector and Grafana; for lineage to be decided), or none; later perhaps the
+  platform's own DuckLake as the telemetry store. It also gives the console its links.
 - To check: what a session moved by duckdb-acl spec 135 keeps of an operator's tracing override (the override is on
   the old node's record).
 - Languages: tresor's and kista's `locale`, once the console has more than English.
