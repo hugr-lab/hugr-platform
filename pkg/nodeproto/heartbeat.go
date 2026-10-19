@@ -39,9 +39,10 @@ type Pending struct {
 
 // Load is the part of acl_node_load() the fleet reads.
 type Load struct {
-	Draining   bool  `json:"draining"`
-	GroupKnown *bool `json:"group_known"`
-	Sessions   struct {
+	Draining     bool  `json:"draining"`
+	GroupKnown   *bool `json:"group_known"`
+	GroupDefault bool  `json:"group_default"` // the node's group is the policy's default (duckdb-acl spec 096 addendum)
+	Sessions     struct {
 		Live int64 `json:"live"`
 		Max  int64 `json:"max"`
 	} `json:"sessions"`
@@ -96,6 +97,7 @@ type Summary struct {
 	AdmitSession bool
 	Draining     bool
 	GroupKnown   *bool
+	GroupDefault bool // where the front seats a principal whose group it does not know yet (spec 002)
 	Sessions     int64
 	SeatsLeft    int64 // -1: the node opens no quack door
 }
@@ -116,6 +118,7 @@ func SummaryOf(report Report, load Load) Summary {
 		AdmitSession: load.Admit.NewSession,
 		Draining:     load.Draining,
 		GroupKnown:   load.GroupKnown,
+		GroupDefault: load.GroupDefault,
 		Sessions:     load.Sessions.Live,
 		SeatsLeft:    seats,
 	}
@@ -129,6 +132,7 @@ const (
 	AnnotationAdmitSession = "platform.hugr.io/admit-new-session"
 	AnnotationDraining     = "platform.hugr.io/draining"
 	AnnotationGroupKnown   = "platform.hugr.io/group-known"
+	AnnotationGroupDefault = "platform.hugr.io/group-default"
 	AnnotationSessions     = "platform.hugr.io/sessions"
 	AnnotationSeatsLeft    = "platform.hugr.io/seats-left"
 )
@@ -141,6 +145,7 @@ func (s Summary) Annotations() map[string]string {
 		AnnotationNeedsRestart: strconv.FormatBool(s.NeedsRestart),
 		AnnotationAdmitSession: strconv.FormatBool(s.AdmitSession),
 		AnnotationDraining:     strconv.FormatBool(s.Draining),
+		AnnotationGroupDefault: strconv.FormatBool(s.GroupDefault),
 		AnnotationSessions:     strconv.FormatInt(s.Sessions, 10),
 		AnnotationSeatsLeft:    strconv.FormatInt(s.SeatsLeft, 10),
 	}
@@ -167,6 +172,7 @@ func ParseSummary(annotations map[string]string) Summary {
 		NeedsRestart: flag(AnnotationNeedsRestart),
 		AdmitSession: flag(AnnotationAdmitSession),
 		Draining:     flag(AnnotationDraining),
+		GroupDefault: flag(AnnotationGroupDefault),
 		Sessions:     num(AnnotationSessions),
 		SeatsLeft:    -1,
 	}
