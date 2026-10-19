@@ -8,4 +8,4 @@ rewrite history.
 | --- | --- | --- |
 | [001](001-control-plane/spec.md) | the operator: node groups, a node's entry, the fleet's state | accepted |
 | [002](002-front/spec.md) | the front: one address for the clients, every call on its node | implemented |
-| [003](003-console/spec.md) | the console: one place to run the platform | draft |
+| [003](003-console/spec.md) | the console: one place to run the platform | accepted |

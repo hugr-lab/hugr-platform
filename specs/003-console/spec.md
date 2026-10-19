@@ -1,6 +1,7 @@
 # Spec 003: the console - one place to run the platform
 
-- **Status**: draft
+- **Status**: accepted (the owner, 2026-10-19: Q1-Q5 as recommended); the look is made with Claude Design on the Hugr Lab
+  design system (hugr-lab.com)
 - **Date**: 2026-10-19
 
 ## Summary
@@ -160,7 +161,7 @@ Under `/api/v1/console/`, the person's nodes-audience token as the bearer on eve
 - **A backend session (the operator holding the person's tokens)**: tresor's and kista's contracts expect
   `getToken` in the browser; a server-side token store is a credential at rest.
 
-## Open questions
+## Decisions (owner, 2026-10-19): Q1-Q5 as recommended below
 
 **Q1. How the console is reached.** *Recommendation:* its own listener, Service and public certificate on the operator;
 the installation's Ingress or load balancer in front (packaging). Alternative: through the front, as a third door.
