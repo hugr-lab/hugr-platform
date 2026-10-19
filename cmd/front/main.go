@@ -105,7 +105,7 @@ func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, in
 		return err
 	}
 	quackServer := &http.Server{Addr: quackAddr, Handler: quack.Handler(), TLSConfig: public.Clone(),
-		ReadHeaderTimeout: 10 * time.Second}
+		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 
 	var stopping atomic.Bool
 	internal := http.NewServeMux()

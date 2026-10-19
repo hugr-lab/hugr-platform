@@ -166,6 +166,10 @@ type FrontSpec struct {
 
 // FrontCertificateSpec names the public certificate's Secret.
 type FrontCertificateSpec struct {
+	// SecretName is hugr-front or starts with hugr-front-: the front mounts no other Secret of the namespace (the
+	// operator's own, a group's door key), as a group mounts only hugr-node-... ones.
+	// +kubebuilder:validation:Pattern=`^hugr-front(-[a-z0-9]([-a-z0-9]*[a-z0-9])?)?$`
+	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 }

@@ -35,9 +35,16 @@ func TestFrontObjects(t *testing.T) {
 	ctx := context.Background()
 	var p v1alpha1.HugrPlatform
 	must(t, c.client.Get(ctx, key("hugr"), &p))
+	// the front mounts no Secret but its own: another's name is refused by the API server
+	p.Spec.Front = &v1alpha1.FrontSpec{Certificate: v1alpha1.FrontCertificateSpec{SecretName: "hugr-platform-tls"}}
+	if err := c.client.Update(ctx, &p); err == nil || !apierrors.IsInvalid(err) {
+		t.Fatalf("a front naming another Secret: %v", err)
+	}
+	must(t, c.client.Get(ctx, key("hugr"), &p))
 	replicas := int32(3)
 	p.Spec.Front = &v1alpha1.FrontSpec{Replicas: &replicas, ServiceType: corev1.ServiceTypeLoadBalancer,
-		CABundle: &v1alpha1.CABundleSpec{ConfigMapRef: v1alpha1.ConfigMapKeyRef{Name: "hugr-ca", Key: "bundle.pem"}}}
+		Certificate: v1alpha1.FrontCertificateSpec{SecretName: "hugr-front-public"},
+		CABundle:    &v1alpha1.CABundleSpec{ConfigMapRef: v1alpha1.ConfigMapKeyRef{Name: "hugr-ca", Key: "bundle.pem"}}}
 	must(t, c.client.Update(ctx, &p))
 
 	var deployment appsv1.Deployment

@@ -37,6 +37,18 @@ import (
 // The Flight service's methods (arrow.flight.protocol.FlightService).
 const service = "/arrow.flight.protocol.FlightService/"
 
+// The limits a call meets at the front, which reads before any node or token has judged the caller. A first message
+// is kept to send again (a ticket, a command, a handshake: kilobytes); a frame streamed through is a batch of rows.
+const (
+	MaxFirstMessage   = 4 << 20
+	MaxMessage        = 256 << 20
+	MaxStreamsPerConn = 128
+)
+
+// methods of the Flight service: anything else is logged as "other", never as the client wrote it
+var methods = map[string]bool{"Handshake": true, "ListFlights": true, "GetFlightInfo": true, "PollFlightInfo": true,
+	"GetSchema": true, "DoGet": true, "DoPut": true, "DoExchange": true, "DoAction": true, "ListActions": true}
+
 // oneRequest are the methods whose client sends one message and half-closes: replayable, and the front closes its
 // side after it. Handshake is replayable too, but its client may go on sending.
 var oneRequest = map[string]bool{
@@ -72,8 +84,7 @@ func (p *Proxy) Server(creds credentials.TransportCredentials) *grpc.Server {
 	opts := []grpc.ServerOption{
 		grpc.UnknownServiceHandler(p.handle),
 		grpc.ForceServerCodecV2(codec{direction: "in"}),
-		// the node decides what a message may weigh, not the front
-		grpc.MaxRecvMsgSize(math.MaxInt32), grpc.MaxSendMsgSize(math.MaxInt32),
+		grpc.MaxRecvMsgSize(MaxMessage), grpc.MaxSendMsgSize(math.MaxInt32), grpc.MaxConcurrentStreams(MaxStreamsPerConn),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 10 * time.Second, PermitWithoutStream: true}),
 	}
 	if creds != nil {
@@ -142,7 +153,7 @@ func (p *Proxy) handle(_ any, client grpc.ServerStream) error {
 	md, _ := metadata.FromIncomingContext(client.Context())
 	view, _ := p.Fleet.View()
 	if n := view.Routable(route.CookieLabel(md.Get("cookie")), fleet.Flight); n != nil {
-		err := p.forward(client, n, name, md, nil, false)
+		err := p.forward(client, n, name, md, false, nil, false)
 		p.done(name, n, "routed", err)
 		return err
 	}
@@ -153,14 +164,18 @@ func (p *Proxy) handle(_ any, client grpc.ServerStream) error {
 // it moves the session by its state cookie, duckdb-acl spec 135).
 func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD) error {
 	replay := oneRequest[name] || name == "Handshake"
-	var first []byte
+	var first mem.BufferSlice // kept, never copied: each send takes a reference of its own
 	if replay {
 		var f frame
 		if err := client.RecvMsg(&f); err != nil {
 			return err
 		}
-		first = f.data.Materialize()
-		f.free()
+		first, f.data = f.data, nil
+		defer first.Free()
+		if first.Len() > MaxFirstMessage {
+			return status.Errorf(codes.ResourceExhausted, "hugr: a call's first message is larger than %d bytes",
+				MaxFirstMessage)
+		}
 	}
 	view, _ := p.Fleet.View()
 	seat := route.NewSeat(view.DefaultGroups(time.Now()))
@@ -176,14 +191,14 @@ func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD) erro
 		}
 		if n == nil {
 			metrics.Calls.WithLabelValues("flight", "no_node").Inc()
-			return status.Error(codes.Unavailable, NoNodeText(seat.Groups))
+			return status.Error(codes.Unavailable, NoNodeText(seat.NamedGroups()))
 		}
 		if !replay {
-			err := p.forward(client, n, name, md, nil, false)
+			err := p.forward(client, n, name, md, false, nil, false)
 			p.done(name, n, outcome, err)
 			return err
 		}
-		err := p.forward(client, n, name, md, first, true)
+		err := p.forward(client, n, name, md, true, first, true)
 		var refused *refusal
 		silent = nil
 		if errors.As(err, &refused) {
@@ -215,6 +230,9 @@ func (p *Proxy) done(name string, n *fleet.Node, outcome string, err error) {
 		outcome = "upstream_error"
 	}
 	metrics.Calls.WithLabelValues("flight", outcome).Inc()
+	if !methods[name] {
+		name = "other"
+	}
 	if p.Log != nil {
 		p.Log.Info("call", "protocol", "flight", "method", name, "node", n.Label, "outcome", outcome,
 			"code", status.Code(err).String())
@@ -257,11 +275,11 @@ func (e upstreamError) GRPCStatus() *status.Status {
 	return status.New(codes.Unavailable, "hugr: the node did not answer")
 }
 
-// forward the call to the node. With `first`, that message is sent first (replayed), and the rest of the client's
-// messages only after the node's first answer; `seating` makes a refusal of the node's that came before anything
+// forward the call to the node. With `replay`, `first` (the client's first message, already read) is sent first, and
+// the rest of the client's messages only after the node's first answer; `seating` makes a refusal of the node's that came before anything
 // else a *refusal.
-func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md metadata.MD, first []byte,
-	seating bool) error {
+func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md metadata.MD, replay bool,
+	first mem.BufferSlice, seating bool) error {
 	conn, err := p.conn(n)
 	if err != nil {
 		return &refusal{kind: route.Unreachable, err: upstreamError{err}}
@@ -274,10 +292,11 @@ func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md
 		// nothing reached the node: another node may take the call, whatever it is
 		return &refusal{kind: route.Unreachable, err: upstreamError{err}}
 	}
-	if first == nil {
+	if !replay {
 		go pump(client, up, cancel)
 	} else {
-		if err := up.SendMsg(&frame{data: mem.BufferSlice{mem.SliceBuffer(first)}}); err != nil && err != io.EOF {
+		first.Ref() // this send's own: gRPC frees it once sent
+		if err := up.SendMsg(&frame{data: first}); err != nil && err != io.EOF {
 			return upstreamError{err}
 		}
 		if oneRequest[name] {
@@ -312,7 +331,7 @@ func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md
 		f.free()
 		return sendErr
 	}
-	if first != nil && !oneRequest[name] {
+	if replay && !oneRequest[name] {
 		go pump(client, up, cancel) // a Handshake: the client's next messages
 	}
 	// the node's messages to the client until its status

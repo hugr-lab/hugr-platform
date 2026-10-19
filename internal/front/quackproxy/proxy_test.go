@@ -207,7 +207,7 @@ func TestUnknownLabelAndNoNode(t *testing.T) {
 	started := time.Now()
 	resp, answer := post(t, front2, corpus(t, "request_connect"))
 	if resp.StatusCode != http.StatusServiceUnavailable ||
-		!strings.Contains(answer, "hugr: no node of group general can take a new session - retry") {
+		!strings.Contains(answer, "hugr: no node can take a new session - retry") {
 		t.Errorf("no placeable node: %d %q", resp.StatusCode, answer)
 	}
 	if time.Since(started) < 200*time.Millisecond || busy.count() != 0 {
@@ -254,5 +254,33 @@ func TestEveryNodeSilent(t *testing.T) {
 	resp, answer := post(t, front, corpus(t, "request_connect"))
 	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(answer, "hugr: the node did not answer") {
 		t.Errorf("nodes that do not answer are not 'no node': %d %q", resp.StatusCode, answer)
+	}
+}
+
+func TestConnectNotResentOnceReceived(t *testing.T) {
+	// a node that takes the CONNECT and drops the connection before answering may have opened a session: the front
+	// answers 502 and does not send the CONNECT to a second node
+	hang := startNode(t, "node-a", func(w http.ResponseWriter, _ []byte) {
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		_ = conn.Close()
+	})
+	b := startNode(t, "node-b", ok("node-b"))
+	_, front := start(t, member(hang, "general", true, true), member(b, "general", true, true))
+	hung := 0
+	for i := 0; i < 20; i++ {
+		ha, bb := hang.count(), b.count()
+		resp, answer := post(t, front, corpus(t, "request_connect"))
+		switch {
+		case hang.count() > ha:
+			hung++
+			if b.count() != bb || resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("a CONNECT node-a received went on: %d %q, node-b %d -> %d", resp.StatusCode, answer, bb, b.count())
+			}
+		case answer != "answer of node-b":
+			t.Fatalf("node-b's answer: %d %q", resp.StatusCode, answer)
+		}
+	}
+	if hung == 0 {
+		t.Fatal("node-a was never chosen: the case is not tested")
 	}
 }

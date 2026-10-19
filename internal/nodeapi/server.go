@@ -114,7 +114,8 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	// the pod's own interval, the one its document gave it
 	interval := time.Duration(build.HeartbeatSeconds(node.Platform, node.Pod.Annotations)) * time.Second
-	err = s.renew(r.Context(), node, nodeproto.SummaryOf(report, load), 3*interval)
+	summary := nodeproto.SummaryOf(report, load).Placed(node.Group.EffectiveResourceGroup())
+	err = s.renew(r.Context(), node, summary, 3*interval)
 	if errors.Is(err, errForeignLease) {
 		s.Log.Info("a Lease named like the pod is not its own", "pod", node.Pod.Name)
 		http.Error(w, "a Lease of this name is not the node's", http.StatusConflict)

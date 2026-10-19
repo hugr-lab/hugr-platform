@@ -120,13 +120,24 @@ func QuackRefusal(groupsHeader string, errorText string) (Refusal, []string) {
 	return None, nil
 }
 
+// NamedGroups of the seat for a refusal's text: the groups a node named, never the Leases' defaults.
+func (s *Seat) NamedGroups() []string {
+	if s.Named {
+		return s.Groups
+	}
+	return nil
+}
+
 // MaxReseats of each kind: at most two re-seats in another group, and two on another node of the same group.
 const MaxReseats = 2
 
 // Seat is one connection's seating: the groups it is seated in, and what was tried.
 type Seat struct {
-	Groups             []string        // nil: every group's nodes
-	Tried              map[string]bool // labels
+	Groups []string        // nil: every group's nodes
+	Tried  map[string]bool // labels
+	// Named: Groups came from a node's refusal, which it sends only to a principal whose token verified. The default
+	// groups from the Leases are never named to a caller: nobody verified it yet.
+	Named              bool
 	byGroup, sameGroup int
 }
 
@@ -145,7 +156,7 @@ func (s *Seat) Next(label string, refusal Refusal, groups []string) bool {
 			return false
 		}
 		s.byGroup++
-		s.Groups = groups
+		s.Groups, s.Named = groups, true
 		return true
 	case Busy, Unreachable:
 		if s.sameGroup >= MaxReseats {

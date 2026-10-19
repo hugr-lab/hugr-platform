@@ -127,6 +127,17 @@ func SummaryOf(report Report, load Load) Summary {
 	}
 }
 
+// Placed is the summary as the operator writes it for a node it gave the resource group `group`: the group is the
+// operator's, never the node's word, and a node that reports serving another (reconfigured, or lying) takes no new
+// session and is no default - the front seats by these, and would otherwise send it other groups' principals.
+func (s Summary) Placed(group string) Summary {
+	if s.Group != group {
+		s.AdmitSession, s.GroupDefault = false, false
+	}
+	s.Group = group
+	return s
+}
+
 // The Lease's annotation keys.
 const (
 	AnnotationTarget       = "platform.hugr.io/profile-target"

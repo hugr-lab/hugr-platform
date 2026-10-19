@@ -103,6 +103,11 @@ spec:
                       or the secretName of a cert-manager Certificate. Default hugr-front.
                     properties:
                       secretName:
+                        description: |-
+                          SecretName is hugr-front or starts with hugr-front-: the front mounts no other Secret of the namespace (the
+                          operator's own, a group's door key), as a group mounts only hugr-node-... ones.
+                        maxLength: 253
+                        pattern: ^hugr-front(-[a-z0-9]([-a-z0-9]*[a-z0-9])?)?$
                         type: string
                     type: object
                   flightPort:

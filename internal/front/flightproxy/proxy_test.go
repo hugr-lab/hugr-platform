@@ -3,6 +3,7 @@ package flightproxy
 import (
 	"context"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -60,7 +61,8 @@ func startNode(t *testing.T, label string, answer func(*fakeNode, string, []stri
 		t.Fatal(err)
 	}
 	n := &fakeNode{label: label, port: int32(l.Addr().(*net.TCPAddr).Port), answer: answer}
-	n.srv = grpc.NewServer(grpc.UnknownServiceHandler(n.handle), grpc.ForceServerCodecV2(codec{direction: "out"}))
+	n.srv = grpc.NewServer(grpc.UnknownServiceHandler(n.handle), grpc.ForceServerCodecV2(codec{direction: "out"}),
+		grpc.MaxRecvMsgSize(math.MaxInt32))
 	go func() { _ = n.srv.Serve(l) }()
 	t.Cleanup(n.srv.Stop)
 	return n
@@ -115,7 +117,7 @@ func start(t *testing.T, nodes ...fleet.Node) *rig {
 	go func() { _ = srv.Serve(l) }()
 	t.Cleanup(srv.Stop)
 	conn, err := grpc.NewClient(l.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.ForceCodecV2(codec{direction: "in"})))
+		grpc.WithDefaultCallOptions(grpc.ForceCodecV2(codec{direction: "in"}), grpc.MaxCallRecvMsgSize(math.MaxInt32)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,8 +250,7 @@ func TestNoNode(t *testing.T) {
 	r := start(t, member(a, "general", true, false), member(startNode(t, "node-e", ok), "etl", false, true))
 	started := time.Now()
 	got := r.call(t, "GetFlightInfo", nil, "q")
-	if status.Code(got.err) != codes.Unavailable ||
-		status.Convert(got.err).Message() != "hugr: no node of group general can take a new session - retry" {
+	if status.Code(got.err) != codes.Unavailable || status.Convert(got.err).Message() != NoNodeText(nil) {
 		t.Fatalf("no placeable node in the group: %+v", got)
 	}
 	if time.Since(started) < 200*time.Millisecond {
@@ -341,5 +342,31 @@ func TestEveryNodeSilent(t *testing.T) {
 	got := r.call(t, "GetFlightInfo", nil, "q")
 	if status.Code(got.err) != codes.Unavailable || status.Convert(got.err).Message() != "hugr: the node did not answer" {
 		t.Errorf("nodes that do not answer are not 'no node': %v", got.err)
+	}
+}
+
+func TestEmptyFirstMessageIsSent(t *testing.T) {
+	// ListActions' request is Empty: zero bytes, still the one message the node waits for
+	a := startNode(t, "node-a", ok)
+	r := start(t, member(a, "general", true, true))
+	if got := r.call(t, "ListActions", nil, ""); got.err != nil || len(got.messages) != 1 || got.messages[0] != "node-a got " {
+		t.Errorf("an empty first message: %+v", got)
+	}
+}
+
+func TestLimits(t *testing.T) {
+	a := startNode(t, "node-a", ok)
+	r := start(t, member(a, "general", true, true))
+	got := r.call(t, "GetFlightInfo", nil, strings.Repeat("x", MaxFirstMessage+1))
+	if status.Code(got.err) != codes.ResourceExhausted || a.callCount() != 0 {
+		t.Errorf("a first message past the limit is refused before a node is asked: %v (node calls %d)", got.err, a.callCount())
+	}
+	if got := r.call(t, "GetFlightInfo", nil, strings.Repeat("x", MaxFirstMessage)); got.err != nil {
+		t.Errorf("a first message at the limit: %v", got.err)
+	}
+	// no node: the caller, whose token nobody verified, is not told the default group's name
+	r2 := start(t, member(a, "general", true, false))
+	if got := r2.call(t, "GetFlightInfo", nil, "q"); status.Convert(got.err).Message() != NoNodeText(nil) {
+		t.Errorf("the default group is named to a caller nobody verified: %v", got.err)
 	}
 }

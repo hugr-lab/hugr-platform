@@ -208,6 +208,22 @@ What the code settled that the design above left open, and where it reads more n
   CA) defaults to the platform's `caBundle`.
 - **The image is the operator's**, read from the operator's own pod (`POD_NAME`; `HUGR_FRONT_IMAGE` overrides).
 - **No `spec.front`, no front**: removing it deletes the front's objects (the change that asked for it is explicit).
+- **The front reads before anyone judged the caller, so it bounds what it reads** (review, 2026-10-19): a call's
+  first message is kept by reference (no copy) and refused past 4 MiB (`RESOURCE_EXHAUSTED`); a streamed frame at most
+  256 MiB; 128 streams per connection. quack: the message's header within 30 s, an idle connection closed after 2 min,
+  at most 1024 connections to one node. A CONNECT the node received is never sent to another (it may have opened a
+  session there): the client gets 502.
+- **Nothing a caller nobody verified could learn**: "no node" names groups only when a node named them (after a
+  re-seat), never the Leases' default; the log names a Flight method only when it is one of the service's own
+  (`other` otherwise), never as the client wrote it.
+- **The group in the Lease is the operator's** (the HugrNodeGroup's `resourceGroup`), not the node's word: a node
+  reporting another group (reconfigured, or lying) takes no new session and is no default, so it draws no other
+  group's principals.
+- **The certificate's Secret is `hugr-front` or `hugr-front-…`** (the CRD's pattern), as a group mounts only
+  `hugr-node-…` ones: an editor of the HugrPlatform cannot put the operator's key or a group's door key on the public
+  Service.
+- **A forged label still routes** to a node the front sees, placeable or not: the route is a hint, the node decides
+  (above).
 - **Tests**: `internal/front/{quackwire,route,fleet,flightproxy,quackproxy}` (fake nodes, no proto, the quack corpus
   of `quackwire/testdata`, made by `capture/capture.sh` from duckdb's own client and a duckdb-acl node);
   `test/envtest/front_test.go` (the objects; the watcher on a real API server: an EndpointSlice and a Lease appear,

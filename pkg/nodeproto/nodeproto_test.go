@@ -94,3 +94,13 @@ func TestSummaryAnnotations(t *testing.T) {
 		t.Errorf("a node without a quack door has seats: %d", noQuack.SeatsLeft)
 	}
 }
+
+func TestPlaced(t *testing.T) {
+	s := Summary{Group: "etl", AdmitSession: true, GroupDefault: true}
+	if p := s.Placed("etl"); !p.AdmitSession || !p.GroupDefault || p.Group != "etl" {
+		t.Errorf("a node serving its own group: %+v", p)
+	}
+	if p := s.Placed("interactive"); p.AdmitSession || p.GroupDefault || p.Group != "interactive" {
+		t.Errorf("a node reporting another group than the operator gave it: %+v", p)
+	}
+}

@@ -196,7 +196,8 @@ func TestPodNotOfTheGroupsDeployment(t *testing.T) {
 }
 
 const beat = `{"node_id": "hugr-node-etl-7f9c-x2k8p", "config": {"target": 4, "applied": 4, "needs_restart": false},
- "load": {"draining": false, "group_known": true, "sessions": {"live": 3}, "admit": {"new_session": true}}}`
+ "load": {"draining": false, "group": "etl", "group_known": true, "group_default": true, "sessions": {"live": 3},
+          "admit": {"new_session": true}}}`
 
 func TestHeartbeatKeepsTheLease(t *testing.T) {
 	w := newWorld(t)
@@ -218,7 +219,7 @@ func TestHeartbeatKeepsTheLease(t *testing.T) {
 		t.Errorf("the Lease is not labelled with its group: %v", lease.Labels)
 	}
 	s := nodeproto.ParseSummary(lease.Annotations)
-	if s.Target != 4 || s.Applied != 4 || s.Sessions != 3 || !s.AdmitSession {
+	if s.Target != 4 || s.Applied != 4 || s.Sessions != 3 || !s.AdmitSession || s.Group != "etl" || !s.GroupDefault {
 		t.Errorf("the summary: %+v", s)
 	}
 	first := lease.Spec.RenewTime.Time
@@ -229,6 +230,16 @@ func TestHeartbeatKeepsTheLease(t *testing.T) {
 	_ = w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-7f9c-x2k8p"}, &lease)
 	if !lease.Spec.RenewTime.Time.After(first) || nodeproto.ParseSummary(lease.Annotations).Sessions != 9 {
 		t.Errorf("the second beat did not renew the Lease: %v %v", lease.Spec.RenewTime, lease.Annotations)
+	}
+	// a node that reports serving another group than the operator gave it: the operator's group in the Lease, and no
+	// new session and no default for the front to seat by
+	w.now = w.now.Add(10 * time.Second)
+	if rec := w.call(http.MethodPost, "/v1/heartbeat", etlToken, strings.Replace(beat, `"group": "etl"`, `"group": "interactive"`, 1)); rec.Code != http.StatusNoContent {
+		t.Fatalf("a beat naming another group: status %d", rec.Code)
+	}
+	_ = w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-7f9c-x2k8p"}, &lease)
+	if s := nodeproto.ParseSummary(lease.Annotations); s.Group != "etl" || s.AdmitSession || s.GroupDefault {
+		t.Errorf("a node claiming another group: %+v", s)
 	}
 }
 

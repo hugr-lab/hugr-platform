@@ -16,10 +16,12 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
@@ -34,6 +36,13 @@ const ConnectionIDHeader = "X-Quack-Connection-Id"
 
 // MaxConnect is the largest CONNECT the front keeps to send again (it carries a token).
 const MaxConnect = 1 << 20
+
+// HeaderWait is how long a request's body may take to bring the message's header: the front reads it before any node
+// or token has judged the caller.
+const HeaderWait = 30 * time.Second
+
+// MaxConnsPerNode bounds the front's connections to one node (a node's quack server holds 1024 by default).
+const MaxConnsPerNode = 1024
 
 // Proxy is the door.
 type Proxy struct {
@@ -76,6 +85,7 @@ func (p *Proxy) transport(service string) *http.Transport {
 		TLSHandshakeTimeout: 5 * time.Second,
 		// a quack client keeps 64 requests in flight; the body is the protocol's, never re-encoded
 		MaxIdleConnsPerHost: 256,
+		MaxConnsPerHost:     MaxConnsPerNode,
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  true,
 	}
@@ -104,7 +114,10 @@ func (p *Proxy) quack(w http.ResponseWriter, r *http.Request) {
 	metrics.StreamsOpen.WithLabelValues("quack").Inc()
 	defer metrics.StreamsOpen.WithLabelValues("quack").Dec()
 	body := bufio.NewReaderSize(r.Body, quackwire.HeaderLimit)
+	control := http.NewResponseController(w)
+	_ = control.SetReadDeadline(time.Now().Add(HeaderWait))
 	header, err := quackwire.PeekHeader(body)
+	_ = control.SetReadDeadline(time.Time{}) // the body itself is the node's to wait for
 	if err != nil {
 		http.Error(w, "hugr: not a quack message", http.StatusBadRequest)
 		return
@@ -132,7 +145,7 @@ func (p *Proxy) quack(w http.ResponseWriter, r *http.Request) {
 		// connects again - the front writes no quack message of its own
 		outcome = "unknown_label"
 		if n = p.choose(r, view.DefaultGroups(time.Now()), nil); n == nil {
-			p.refuseNoNode(w, view.DefaultGroups(time.Now()))
+			p.refuseNoNode(w, nil)
 			return
 		}
 	}
@@ -200,13 +213,14 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if n == nil {
-			p.refuseNoNode(w, seat.Groups)
+			p.refuseNoNode(w, seat.NamedGroups())
 			return
 		}
-		resp, answer, err := p.send(r, n, body)
+		resp, answer, wrote, err := p.send(r, n, body)
 		if err != nil {
+			// only a CONNECT that never reached the node is sent again: one it received may have opened a session
 			silent = true
-			if seat.Next(n.Label, route.Unreachable, nil) {
+			if !wrote && seat.Next(n.Label, route.Unreachable, nil) {
 				metrics.Reseats.WithLabelValues("unreachable").Inc()
 				outcome = "re-seated"
 				continue
@@ -233,9 +247,13 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 }
 
 // send the CONNECT to the node and read its whole answer (a connection's first answer is small). A redirect is never
-// followed: the answer is the node's.
-func (p *Proxy) send(r *http.Request, n *fleet.Node, body []byte) (*http.Response, []byte, error) {
-	out := r.Clone(r.Context())
+// followed: the answer is the node's. `wrote`: the request reached the node whole, whatever happened after.
+func (p *Proxy) send(r *http.Request, n *fleet.Node, body []byte) (*http.Response, []byte, bool, error) {
+	var wrote atomic.Bool
+	ctx := httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) { wrote.Store(info.Err == nil) },
+	})
+	out := r.Clone(ctx)
 	out.URL = p.target(n)
 	out.URL.Path, out.URL.RawQuery = r.URL.Path, r.URL.RawQuery
 	out.RequestURI = ""
@@ -248,14 +266,14 @@ func (p *Proxy) send(r *http.Request, n *fleet.Node, body []byte) (*http.Respons
 	}
 	resp, err := p.transport(n.Service).RoundTrip(out)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, wrote.Load(), err
 	}
 	defer resp.Body.Close()
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, true, err
 	}
-	return resp, answer, nil
+	return resp, answer, true, nil
 }
 
 // discovery: the policy's document, the same on every node - any placeable node of the default group answers it,
@@ -271,10 +289,10 @@ func (p *Proxy) discovery(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if n == nil {
-			p.refuseNoNode(w, seat.Groups)
+			p.refuseNoNode(w, nil)
 			return
 		}
-		resp, answer, err := p.send(r, n, nil)
+		resp, answer, _, err := p.send(r, n, nil)
 		if err != nil {
 			silent = true
 			if seat.Next(n.Label, route.Unreachable, nil) {
