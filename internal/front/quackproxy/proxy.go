@@ -59,7 +59,6 @@ type Proxy struct {
 
 	mu         sync.Mutex
 	transports map[string]*http.Transport // by Service
-	rnd        *rand.Rand
 }
 
 // Handler of the door.
@@ -94,13 +93,9 @@ func (p *Proxy) transport(service string) *http.Transport {
 	return t
 }
 
+// random is a generator of one choice's own: the handlers of both doors choose at once, and a shared one would race.
 func (p *Proxy) random() *rand.Rand {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.rnd == nil {
-		p.rnd = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
-	}
-	return p.rnd
+	return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 }
 
 func (p *Proxy) target(n *fleet.Node) *url.URL {
@@ -211,6 +206,9 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	silent := false // the last node tried did not answer
 	for {
 		n := p.choose(r, seat.Groups, seat.Tried)
+		if r.Context().Err() != nil {
+			return // the client went: no node is tried for it
+		}
 		if n == nil && silent {
 			p.unanswered(w)
 			return
@@ -292,6 +290,9 @@ func (p *Proxy) discovery(w http.ResponseWriter, r *http.Request) {
 			}
 			return v.ChooseAnswering(fleet.Quack, nil, seat.Tried, time.Now(), p.random())
 		})
+		if r.Context().Err() != nil {
+			return
+		}
 		if n == nil && silent {
 			p.unanswered(w)
 			return

@@ -72,7 +72,6 @@ type Proxy struct {
 
 	mu    sync.Mutex
 	conns map[string]*upstream // by label
-	rnd   *rand.Rand
 }
 
 type upstream struct {
@@ -94,12 +93,13 @@ func (p *Proxy) Server(creds credentials.TransportCredentials) *grpc.Server {
 	return grpc.NewServer(opts...)
 }
 
-// Forget the connections to nodes the fleet no longer has; run at each change of the fleet.
+// Forget the connections to nodes the fleet no longer has; run at each change of the fleet. A node that is only not
+// ready for a while keeps its connection, and the streams on it: closing it would cut them.
 func (p *Proxy) Forget(view *fleet.View) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for label, u := range p.conns {
-		n := view.Routable(label, fleet.Flight)
+		n := view.Node(label)
 		if n == nil || n.Address != u.address || n.Service != u.service {
 			_ = u.conn.Close()
 			delete(p.conns, label)
@@ -134,13 +134,9 @@ func (p *Proxy) conn(n *fleet.Node) (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
+// random is a generator of one choice's own: the handlers of both doors choose at once, and a shared one would race.
 func (p *Proxy) random() *rand.Rand {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.rnd == nil {
-		p.rnd = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
-	}
-	return p.rnd
+	return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 }
 
 func (p *Proxy) handle(_ any, client grpc.ServerStream) error {
@@ -199,6 +195,9 @@ func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD, rout
 			n = p.Fleet.Wait(client.Context(), p.NoNodeWait, func(v *fleet.View) *fleet.Node {
 				return v.Choose(fleet.Flight, seat.Groups, seat.Tried, time.Now(), p.random())
 			})
+		}
+		if err := client.Context().Err(); err != nil {
+			return status.FromContextError(err).Err() // the client went: no node is tried for it
 		}
 		if n == nil && silent != nil {
 			metrics.Calls.WithLabelValues("flight", "upstream_error").Inc()
@@ -352,8 +351,8 @@ func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md
 	}
 	// the node's messages to the client until its status
 	for err == nil {
-		if err = client.SendMsg(&f); err != nil {
-			break // the client went: cancel() ends the node's side with it
+		if sendErr := client.SendMsg(&f); sendErr != nil {
+			return sendErr // the client went: cancel() ends the node's side, whose trailer is not read while it is open
 		}
 		f = frame{}
 		err = up.RecvMsg(&f)

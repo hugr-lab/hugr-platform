@@ -6,6 +6,7 @@ package watch
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -124,12 +125,23 @@ func View(slices, leases []any) *fleet.View {
 			byName[l.Name] = l
 		}
 	}
-	var nodes []fleet.Node
+	// one reading whatever order the store lists them in: IPv4 slices before IPv6 (a dual-stack pod is reached by its
+	// IPv4 address), then by name - a pod in two slices keeps its first, and its connections are not flipped
+	var ordered []*discoveryv1.EndpointSlice
 	for _, o := range slices {
-		s, ok := o.(*discoveryv1.EndpointSlice)
-		if !ok || s.AddressType == discoveryv1.AddressTypeFQDN {
-			continue
+		if s, ok := o.(*discoveryv1.EndpointSlice); ok && s.AddressType != discoveryv1.AddressTypeFQDN {
+			ordered = append(ordered, s)
 		}
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if (a.AddressType == discoveryv1.AddressTypeIPv4) != (b.AddressType == discoveryv1.AddressTypeIPv4) {
+			return a.AddressType == discoveryv1.AddressTypeIPv4
+		}
+		return a.Name < b.Name
+	})
+	var nodes []fleet.Node
+	for _, s := range ordered {
 		service := s.Labels[discoveryv1.LabelServiceName]
 		if !strings.HasPrefix(service, ServicePrefix) {
 			continue

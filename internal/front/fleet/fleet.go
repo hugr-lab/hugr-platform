@@ -102,6 +102,9 @@ func (v *View) Routable(label string, p Protocol) *Node {
 	return n
 }
 
+// Node of a label, whatever its state; nil when the view has none.
+func (v *View) Node(label string) *Node { return v.byLabel[label] }
+
 // Nodes of the view, by label.
 func (v *View) Nodes() []*Node { return v.nodes }
 
@@ -211,6 +214,9 @@ func (f *Fleet) Wait(ctx context.Context, wait time.Duration, pick func(*View) *
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
 		view, changed := f.View()
 		if n := pick(view); n != nil {
 			return n

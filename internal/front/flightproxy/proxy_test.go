@@ -425,3 +425,39 @@ func TestRoutedDeadNode(t *testing.T) {
 		t.Errorf("a DoPut to the one dead node: %v", got.err)
 	}
 }
+
+func TestConcurrentSeats(t *testing.T) {
+	a := startNode(t, "node-a", ok)
+	b := startNode(t, "node-b", ok)
+	r := start(t, member(a, "general", true, true), member(b, "general", true, true))
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got := r.call(t, "GetFlightInfo", nil, "q"); got.err != nil {
+				t.Errorf("a concurrent seat: %v", got.err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestForgetKeepsANodeThatIsOnlyNotReady(t *testing.T) {
+	a := startNode(t, "node-a", ok)
+	p := &Proxy{Insecure: true}
+	n := member(a, "general", true, true)
+	if _, err := p.conn(&n); err != nil {
+		t.Fatal(err)
+	}
+	notReady := n
+	notReady.Ready, notReady.Serving = false, false
+	p.Forget(fleet.NewView([]fleet.Node{notReady}))
+	if p.conns["node-a"] == nil {
+		t.Error("a node that failed its readiness probe lost its connection, and the streams on it")
+	}
+	p.Forget(fleet.NewView(nil))
+	if p.conns["node-a"] != nil {
+		t.Error("a node the fleet no longer has keeps its connection")
+	}
+}
