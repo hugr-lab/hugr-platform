@@ -9,6 +9,7 @@ import { Broken, NoNode, SignIn } from './screens/Entry'
 import { Fleet } from './screens/Fleet'
 import { Group } from './screens/Group'
 import { Cluster } from './screens/Cluster'
+import { Mounted } from './screens/Mounted'
 import { Events } from './screens/node/Events'
 import { Inventory } from './screens/node/Inventory'
 import { Logs } from './screens/node/Logs'
@@ -59,6 +60,8 @@ export function App({ config, session }: { config: Config; session: Session }) {
             {rights.fleet && <Route path="/nodes/:label/inventory" element={<Inventory />} />}
             {rights.fleet && <Route path="/nodes/:label/logs" element={<Logs />} />}
             {rights.events && <Route path="/nodes/:label/events" element={<Events />} />}
+            {config.mounts.tresor && <Route path="/secrets/*" element={<Mounted which="tresor" basePath="/secrets" />} />}
+            {config.mounts.kista && <Route path="/extensions/*" element={<Mounted which="kista" basePath="/extensions" />} />}
             <Route path="*" element={rights.fleet ? <Navigate to="/" replace /> : <NothingHere />} />
           </Routes>
         </Shell>

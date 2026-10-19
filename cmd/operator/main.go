@@ -174,7 +174,9 @@ func main() {
 		Server: &console.Server{Platform: platforms.Find, Reader: mgr.GetClient(),
 			Groups: console.ApplyWriter{Client: mgr.GetClient()}, Fleet: nodes, Nodes: pool, Web: web,
 			Kube: console.KubeClient{Clientset: clientset, Namespace: namespace},
-			Log:  logger.WithName("console")},
+			Mounts: []*console.Mount{console.TresorMount(platforms.Find, roots.Pool),
+				console.KistaMount(platforms.Find, roots.Pool)},
+			Log: logger.WithName("console")},
 		Pool:  pool,
 		Watch: watch.New(clientset, namespace, nodes, 15*time.Second).Run,
 	}

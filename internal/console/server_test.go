@@ -118,7 +118,7 @@ func newHarness(t *testing.T, info *Result, nodes ...fleet.Node) *harness {
 	}
 	platform := &v1alpha1.HugrPlatform{ObjectMeta: metav1.ObjectMeta{Name: "hugr", Namespace: "hugr"},
 		Spec: v1alpha1.HugrPlatformSpec{IdP: v1alpha1.IdPSpec{Issuer: "https://login.example.org"},
-			Repository: v1alpha1.RepositorySpec{Prefix: "https://kista.example.org/corp/"},
+			Repository: v1alpha1.RepositorySpec{Prefix: "https://kista.example.org/ext/corp/prod"},
 			Plan:       v1alpha1.PlanSpec{MaxNodes: 12, Sizes: []string{"small"}},
 			Console: &v1alpha1.ConsoleSpec{ClientID: "console", Audiences: v1alpha1.ConsoleAudiences{
 				Nodes: "hugr-nodes", Tresor: "duckdb-secrets", Kista: "kista"}}}}

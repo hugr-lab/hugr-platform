@@ -7,7 +7,6 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +39,9 @@ type Server struct {
 	Kube Kube
 	// Web serves the web build; nil serves nothing but the API.
 	Web http.Handler
-	Log logr.Logger
+	// Mounts are the services the mounted consoles talk to, under the console's origin (/tresor, /kista).
+	Mounts []*Mount
+	Log    logr.Logger
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 
@@ -104,6 +105,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(APIPrefix, func(w http.ResponseWriter, _ *http.Request) {
 		problem(w, http.StatusNotFound, "not_found", "no such route")
 	})
+	for _, m := range s.Mounts {
+		mux.Handle(m.Prefix+"/", m.Handler())
+	}
 	if s.Web != nil {
 		mux.Handle("/", s.Web)
 	}
@@ -237,14 +241,13 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	answer(w, out)
 }
 
-// kistaTenant the repository's prefix names: https://<host>/<tenant>/... (kista's channel URLs), empty when none.
+// kistaTenant the repository's prefix names (<kista>/<tenant>/<channel>), empty when it names none.
 func kistaTenant(platform *v1alpha1.HugrPlatform) string {
-	u, err := url.Parse(platform.Spec.Repository.Prefix)
+	_, tenant, err := kistaPrefix(platform.Spec.Repository.Prefix)
 	if err != nil {
 		return ""
 	}
-	first, _, _ := strings.Cut(strings.Trim(u.Path, "/"), "/")
-	return first
+	return tenant
 }
 
 // MeAnswer is the person's rights.

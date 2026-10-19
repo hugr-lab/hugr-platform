@@ -1,13 +1,20 @@
-import type { ReactNode } from 'react'
-import { Layers, LogOut, Moon, SlidersHorizontal, Sun } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { KeyRound, Layers, LogOut, Moon, Package, SlidersHorizontal, Sun } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import logo from '../assets/hugr-logo-on-dark.svg'
 import { useApp, useTheme } from '../lib/context'
+import { mayUse } from '../lib/mounts'
 
 /** the console's frame: the navy menu (what the person's rights open), the person, the content */
 export function Shell({ children }: { children: ReactNode }) {
   const { config, session, rights, api } = useApp()
   const [theme, toggle] = useTheme()
+  const [mounts, setMounts] = useState({ tresor: false, kista: false })
+  useEffect(() => {
+    // each service answers for itself who may use its console (spec 003's rights table)
+    void Promise.all([mayUse('tresor', config, session), mayUse('kista', config, session)])
+      .then(([tresor, kista]) => setMounts({ tresor, kista }))
+  }, [config, session])
   const signOut = async () => {
     await api.signOut().catch(() => undefined) // the nodes' sessions end; the IdP's next
     await session.signOut()
@@ -36,6 +43,22 @@ export function Shell({ children }: { children: ReactNode }) {
               <NavLink to="/cluster" className={({ isActive }) => `${nav} ${isActive ? 'bg-navy-line text-white' : ''}`}>
                 <SlidersHorizontal size={20} aria-hidden="true" />
                 Cluster
+              </NavLink>
+            </li>
+          )}
+          {mounts.tresor && (
+            <li>
+              <NavLink to="/secrets" className={({ isActive }) => `${nav} ${isActive ? 'bg-navy-line text-white' : ''}`}>
+                <KeyRound size={20} aria-hidden="true" />
+                Secrets
+              </NavLink>
+            </li>
+          )}
+          {mounts.kista && (
+            <li>
+              <NavLink to="/extensions" className={({ isActive }) => `${nav} ${isActive ? 'bg-navy-line text-white' : ''}`}>
+                <Package size={20} aria-hidden="true" />
+                Extensions
               </NavLink>
             </li>
           )}
