@@ -54,3 +54,18 @@ for c in range(12):
         tz = cur.fetchone()[0]
         check(f"connection {c}: the session keeps its setting", tz == "Asia/Tokyo", tz)
 check("connections were seated on both nodes", seen == {"node-1", "node-2"}, seen)
+
+# a client that keeps no cookie (ADBC's default): every call is seated afresh, and the DoGet of a statement or the
+# calls of a prepared one reach the node that minted the ticket / handle by the label in it (duckdb-acl spec 134's
+# addendum)
+served = set()
+# (autocommit from the start: without a cookie there is no connection-long session to hold a transaction, spec 050)
+with dbapi.connect(uri, db_kwargs={DatabaseOptions.AUTHORIZATION_HEADER.value: f"Bearer {token}"},
+                   autocommit=True) as conn, conn.cursor() as cur:
+    for i in range(16):
+        cur.execute("SELECT v FROM t")
+        served.add(cur.fetchone()[0])
+        cur.execute("SELECT v, ? AS p FROM t", (i,))
+        row = cur.fetchone()
+        check(f"without cookies, statement {i}: its ticket and its prepared handle reach their node", row[1] == i, row)
+check("without cookies, the statements were seated on both nodes", served == {"node-1", "node-2"}, served)

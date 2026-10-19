@@ -5,6 +5,8 @@
 # table `t` holds its label, so every read says which node answered.
 #
 #   DUCKDB_ACL=<a duckdb-acl checkout built with ACL_QUACK=1> test/front/run.sh
+#
+# The cookie-less client's checks need a duckdb-acl with spec 134's addendum (the label in a ticket, #245).
 set -euo pipefail
 unset AI_AGENT CLAUDECODE # duckdb's CLI answers an agent in another format
 HERE="$(cd "$(dirname "$0")" && pwd)"

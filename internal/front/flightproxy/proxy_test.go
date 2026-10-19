@@ -461,3 +461,81 @@ func TestForgetKeepsANodeThatIsOnlyNotReady(t *testing.T) {
 		t.Error("a node the fleet no longer has keeps its connection")
 	}
 }
+
+// protobuf by hand, as a client sends it: Any-wrapped Flight SQL messages carrying a handle
+func pbField(number uint64, payload []byte) []byte {
+	head := []byte{}
+	for v := number<<3 | 2; ; v >>= 7 {
+		if v < 0x80 {
+			head = append(head, byte(v))
+			break
+		}
+		head = append(head, byte(v)|0x80)
+	}
+	for v := uint64(len(payload)); ; v >>= 7 {
+		if v < 0x80 {
+			head = append(head, byte(v))
+			break
+		}
+		head = append(head, byte(v)|0x80)
+	}
+	return append(head, payload...)
+}
+
+func pbAny(kind string, value []byte) []byte {
+	return append(pbField(1, []byte("type.googleapis.com/arrow.flight.protocol.sql."+kind)), pbField(2, value)...)
+}
+
+func TestCookielessByHandle(t *testing.T) {
+	// a client that keeps no cookie (ADBC's default): the node named itself in the ticket and the prepared handle
+	echo := func(n *fakeNode, name string, got []string, s grpc.ServerStream) error {
+		if err := send(s, n.label+" "+name); err != nil {
+			return err
+		}
+		for {
+			var f frame
+			if err := s.RecvMsg(&f); err != nil {
+				return nil
+			}
+			f.free()
+			if err := send(s, n.label+" more"); err != nil {
+				return err
+			}
+		}
+	}
+	a := startNode(t, "node-a", echo)
+	b := startNode(t, "node-b", echo)
+	r := start(t, member(a, "general", true, true), member(b, "general", true, true))
+	handle := []byte("node-b.65BC150114D603160B8B3BDEF240A4F6")
+	ticket := string(pbField(1, pbAny("TicketStatementQuery", pbField(1, handle))))
+	prepared := string(append([]byte{0x08, 0x02}, pbField(2, pbAny("CommandPreparedStatementQuery", pbField(1, handle)))...))
+	for i := 0; i < 8; i++ { // two random choices would put some on node-a
+		if got := r.call(t, "DoGet", nil, ticket); got.err != nil || got.messages[0] != "node-b DoGet" {
+			t.Fatalf("a ticket node-b minted: %+v", got)
+		}
+		if got := r.call(t, "GetFlightInfo", nil, prepared); got.err != nil || got.messages[0] != "node-b GetFlightInfo" {
+			t.Fatalf("a prepared statement node-b holds: %+v", got)
+		}
+		// a prepared statement's ticket is its command
+		preparedTicket := string(pbField(1, pbAny("CommandPreparedStatementQuery", pbField(1, handle))))
+		if got := r.call(t, "DoGet", nil, preparedTicket); got.err != nil || got.messages[0] != "node-b DoGet" {
+			t.Fatalf("a prepared statement's ticket: %+v", got)
+		}
+		// a DoPut binding the prepared statement's parameters: its descriptor first, its batches after
+		put := string(pbField(1, []byte(prepared)))
+		got := r.call(t, "DoPut", nil, put, "batch-1", "batch-2")
+		if got.err != nil || strings.Join(got.messages, ",") != "node-b DoPut,node-b more,node-b more" {
+			t.Fatalf("a DoPut on node-b's prepared statement: %+v", got)
+		}
+	}
+	// an ad-hoc statement names no node: seated as any new call
+	adhoc := string(append([]byte{0x08, 0x02}, pbField(2, pbAny("CommandStatementQuery", pbField(1, []byte("SELECT 1"))))...))
+	seen := map[string]bool{}
+	for i := 0; i < 40; i++ {
+		got := r.call(t, "GetFlightInfo", nil, adhoc)
+		seen[strings.Fields(got.messages[0])[0]] = true
+	}
+	if !seen["node-a"] || !seen["node-b"] {
+		t.Errorf("an ad-hoc statement is seated by two random choices: %v", seen)
+	}
+}

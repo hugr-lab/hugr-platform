@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
+	"github.com/hugr-lab/hugr-platform/internal/front/flightwire"
 	"github.com/hugr-lab/hugr-platform/internal/front/metrics"
 	"github.com/hugr-lab/hugr-platform/internal/front/route"
 )
@@ -160,9 +161,12 @@ func (p *Proxy) handle(_ any, client grpc.ServerStream) error {
 // node's cookie before any session is seated, so the node's placement is first judged on a routed call.
 func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD, routed *fleet.Node) error {
 	replay := oneRequest[name] || name == "Handshake"
+	// a call without the cookie may name its node in its first message - a ticket, a prepared statement's handle
+	// (duckdb-acl spec 134's addendum) - which a DoPut / DoExchange sends before its batches: read it, send it first
+	peek := replay || (routed == nil && (name == "DoPut" || name == "DoExchange"))
 	var first mem.BufferSlice // kept, never copied: each send takes a reference of its own
 	sent := false             // the client sent a first message (a BasicAuth Handshake sends none)
-	if replay {
+	if peek {
 		var f frame
 		switch err := client.RecvMsg(&f); {
 		case err == io.EOF:
@@ -171,13 +175,16 @@ func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD, rout
 		default:
 			first, f.data, sent = f.data, nil, true
 			defer first.Free()
-			if first.Len() > MaxFirstMessage {
+			if replay && first.Len() > MaxFirstMessage {
 				return status.Errorf(codes.ResourceExhausted, "hugr: a call's first message is larger than %d bytes",
 					MaxFirstMessage)
 			}
 		}
 	}
 	view, _ := p.Fleet.View()
+	if routed == nil && sent {
+		routed = view.Routable(flightwire.Label(name, prefix(first, flightwire.Prefix)), fleet.Flight)
+	}
 	seat := route.NewSeat(view.DefaultGroups(time.Now()))
 	outcome := "seated"
 	next := routed
@@ -305,18 +312,16 @@ func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md
 		// nothing reached the node: another node may take the call, whatever it is
 		return &refusal{kind: route.Unreachable, err: upstreamError{err}}
 	}
+	if sent {
+		first.Ref() // this send's own: gRPC frees it once sent
+		if err := up.SendMsg(&frame{data: first}); err != nil && err != io.EOF {
+			return upstreamError{err}
+		}
+	}
 	if !replay {
-		go pump(client, up, cancel)
-	} else {
-		if sent {
-			first.Ref() // this send's own: gRPC frees it once sent
-			if err := up.SendMsg(&frame{data: first}); err != nil && err != io.EOF {
-				return upstreamError{err}
-			}
-		}
-		if oneRequest[name] || !sent {
-			_ = up.CloseSend() // the client sent all it will
-		}
+		go pump(client, up, cancel) // the rest of a stream (after its first message, when it was read)
+	} else if oneRequest[name] || !sent {
+		_ = up.CloseSend() // the client sent all it will
 	}
 	// the node's first answer: its header, then its first message or its status
 	header, err := up.Header()
@@ -362,6 +367,21 @@ func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md
 		return nil
 	}
 	return err
+}
+
+// prefix of a message, at most n bytes, copied (the message is not).
+func prefix(b mem.BufferSlice, n int) []byte {
+	out := make([]byte, 0, min(n, b.Len()))
+	for _, buf := range b {
+		data := buf.ReadOnlyData()
+		if len(out)+len(data) > n {
+			data = data[:n-len(out)]
+		}
+		if out = append(out, data...); len(out) >= n {
+			break
+		}
+	}
+	return out
 }
 
 // pump the client's messages to the node until the client half-closes; a client that fails ends the call.

@@ -235,11 +235,18 @@ What the code settled that the design above left open, and where it reads more n
   holds one `acl_node`, and a client may hold connections on two nodes. The discovery document and a CORS preflight
   (`OPTIONS /quack`) are answered by any node that answers at all (a drain's 503: the next one), the default group's
   first - what every node answers alike.
+- **A call without the cookie is routed by the handle it names** (the owner, 2026-10-19: option B, over hashing the
+  token): duckdb-acl spec 134's addendum makes a ticket and a prepared statement's handle `<label>.<random>`, and
+  `internal/front/flightwire` reads the label from a call's first message - a `DoGet`'s ticket (a statement's
+  `TicketStatementQuery`, a prepared statement's command), a `GetFlightInfo` / `GetSchema` / `PollFlightInfo` /
+  `DoPut` / `DoExchange` descriptor's `CommandPreparedStatementQuery` / `Update`, a `ClosePreparedStatement` action.
+  A DoPut / DoExchange without the cookie has its first message read (the descriptor before the batches; at most its
+  first 64 KiB is looked at) and sent first. An ad-hoc statement names no node and is seated like any new call; its
+  ticket then names the node that took it.
 - **Known limits**:
-  - **A Flight client keeps the node's cookies** - JDBC does, ADBC with `with_cookie_middleware` (duckdb-acl's client
-    docs already ask for it: a session is a connection, spec 050), pyarrow with a cookie middleware. A call without
-    the cookie is seated afresh, so a `DoGet` may reach a node that does not hold its ticket. Routing a ticket or a
-    prepared handle by a label inside it would need the node to write one - a question for the owner.
+  - **A Flight client that keeps no cookie** (ADBC's default, a plain pyarrow or arrow-go client) has no session
+    beyond one call (duckdb-acl spec 050: no transaction, no temp table, no USE). Its statements and prepared
+    statements work through the front (below).
   - Arrow C++ sends a status's binary details raw in `grpc-status-details-bin`, which grpc-go reads as a
     `google.rpc.Status`: such details would not pass the front. The node sends none today.
 - **Tests**: `internal/front/{quackwire,route,fleet,flightproxy,quackproxy}` (fake nodes, no proto, the quack corpus
