@@ -7,6 +7,12 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
   - events
   verbs:
   - create
@@ -87,10 +93,10 @@ rules:
   - platform.hugr.io
   resources:
   - hugrnodegroups
-  - hugrplatforms
   verbs:
   - get
   - list
+  - patch
   - watch
 - apiGroups:
   - platform.hugr.io
@@ -107,6 +113,14 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - platform.hugr.io
+  resources:
+  - hugrplatforms
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - policy
   resources:
