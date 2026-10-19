@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	_ "google.golang.org/grpc/encoding/gzip" // a client may compress what it sends: the front must read it
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/mem"
 	"google.golang.org/grpc/metadata"
@@ -152,39 +153,53 @@ func (p *Proxy) handle(_ any, client grpc.ServerStream) error {
 	name := strings.TrimPrefix(method, service)
 	md, _ := metadata.FromIncomingContext(client.Context())
 	view, _ := p.Fleet.View()
-	if n := view.Routable(route.CookieLabel(md.Get("cookie")), fleet.Flight); n != nil {
-		err := p.forward(client, n, name, md, false, nil, false)
-		p.done(name, n, "routed", err)
-		return err
-	}
-	return p.seat(client, name, md)
+	return p.seat(client, name, md, view.Routable(route.CookieLabel(md.Get("cookie")), fleet.Flight))
 }
 
-// seat a call that names no node the front sees: a new connection, or one whose node is gone (the node that takes
-// it moves the session by its state cookie, duckdb-acl spec 135).
-func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD) error {
+// seat a call on a node: the one its cookie names, else one that may take a new connection (the cookie names no node
+// the front sees: a new connection, or one whose node is gone - the node that takes it moves the session by its
+// state cookie, duckdb-acl spec 135). A call whose client sent one message before the node answered is seated again
+// when the node refuses it before doing any work: another resource group, a drain, no answer at all. That holds for
+// a call the cookie routed too - a driver's first call (JDBC's Handshake, ADBC's GetSqlInfo) is answered with the
+// node's cookie before any session is seated, so the node's placement is first judged on a routed call.
+func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD, routed *fleet.Node) error {
 	replay := oneRequest[name] || name == "Handshake"
 	var first mem.BufferSlice // kept, never copied: each send takes a reference of its own
+	sent := false             // the client sent a first message (a BasicAuth Handshake sends none)
 	if replay {
 		var f frame
-		if err := client.RecvMsg(&f); err != nil {
+		switch err := client.RecvMsg(&f); {
+		case err == io.EOF:
+		case err != nil:
 			return err
-		}
-		first, f.data = f.data, nil
-		defer first.Free()
-		if first.Len() > MaxFirstMessage {
-			return status.Errorf(codes.ResourceExhausted, "hugr: a call's first message is larger than %d bytes",
-				MaxFirstMessage)
+		default:
+			first, f.data, sent = f.data, nil, true
+			defer first.Free()
+			if first.Len() > MaxFirstMessage {
+				return status.Errorf(codes.ResourceExhausted, "hugr: a call's first message is larger than %d bytes",
+					MaxFirstMessage)
+			}
 		}
 	}
 	view, _ := p.Fleet.View()
 	seat := route.NewSeat(view.DefaultGroups(time.Now()))
 	outcome := "seated"
+	next := routed
+	if routed != nil {
+		outcome = "routed"
+		if g := routed.Group(); g != "" {
+			seat.Groups = []string{g} // another node of the group the connection was on
+		}
+	}
 	var silent error // the last node tried did not answer
 	for {
-		n := p.Fleet.Wait(client.Context(), p.NoNodeWait, func(v *fleet.View) *fleet.Node {
-			return v.Choose(fleet.Flight, seat.Groups, seat.Tried, time.Now(), p.random())
-		})
+		n := next
+		next = nil
+		if n == nil {
+			n = p.Fleet.Wait(client.Context(), p.NoNodeWait, func(v *fleet.View) *fleet.Node {
+				return v.Choose(fleet.Flight, seat.Groups, seat.Tried, time.Now(), p.random())
+			})
+		}
 		if n == nil && silent != nil {
 			metrics.Calls.WithLabelValues("flight", "upstream_error").Inc()
 			return silent
@@ -193,12 +208,7 @@ func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD) erro
 			metrics.Calls.WithLabelValues("flight", "no_node").Inc()
 			return status.Error(codes.Unavailable, NoNodeText(seat.NamedGroups()))
 		}
-		if !replay {
-			err := p.forward(client, n, name, md, false, nil, false)
-			p.done(name, n, outcome, err)
-			return err
-		}
-		err := p.forward(client, n, name, md, true, first, true)
+		err := p.forward(client, n, name, md, replay, first, sent)
 		var refused *refusal
 		silent = nil
 		if errors.As(err, &refused) {
@@ -250,6 +260,9 @@ type refusal struct {
 
 func (r *refusal) Error() string { return r.err.Error() }
 
+// GRPCStatus is the node's status, or the front's own when the node did not answer.
+func (r *refusal) GRPCStatus() *status.Status { return status.Convert(r.err) }
+
 func (r *refusal) reason() string {
 	switch r.kind {
 	case route.WrongGroup:
@@ -269,17 +282,18 @@ func (r *refusal) answer(client grpc.ServerStream) error {
 	return r.err
 }
 
-type upstreamError struct{ error }
+// upstreamError: the node did not answer. Its cause (a dial's text names the pod's address) never reaches a client.
+type upstreamError struct{ cause error }
 
-func (e upstreamError) GRPCStatus() *status.Status {
-	return status.New(codes.Unavailable, "hugr: the node did not answer")
-}
+func (e upstreamError) Error() string { return "hugr: the node did not answer" }
+
+func (e upstreamError) GRPCStatus() *status.Status { return status.New(codes.Unavailable, e.Error()) }
 
 // forward the call to the node. With `replay`, `first` (the client's first message, already read) is sent first, and
 // the rest of the client's messages only after the node's first answer; `seating` makes a refusal of the node's that came before anything
 // else a *refusal.
 func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md metadata.MD, replay bool,
-	first mem.BufferSlice, seating bool) error {
+	first mem.BufferSlice, sent bool) error {
 	conn, err := p.conn(n)
 	if err != nil {
 		return &refusal{kind: route.Unreachable, err: upstreamError{err}}
@@ -295,12 +309,14 @@ func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md
 	if !replay {
 		go pump(client, up, cancel)
 	} else {
-		first.Ref() // this send's own: gRPC frees it once sent
-		if err := up.SendMsg(&frame{data: first}); err != nil && err != io.EOF {
-			return upstreamError{err}
+		if sent {
+			first.Ref() // this send's own: gRPC frees it once sent
+			if err := up.SendMsg(&frame{data: first}); err != nil && err != io.EOF {
+				return upstreamError{err}
+			}
 		}
-		if oneRequest[name] {
-			_ = up.CloseSend()
+		if oneRequest[name] || !sent {
+			_ = up.CloseSend() // the client sent all it will
 		}
 	}
 	// the node's first answer: its header, then its first message or its status
@@ -312,7 +328,7 @@ func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md
 	err = up.RecvMsg(&f)
 	if err != nil && err != io.EOF {
 		trailer := up.Trailer()
-		if seating {
+		if replay {
 			st := status.Convert(err)
 			kind, groups := route.FlightRefusal(st.Code() == codes.Unavailable, st.Message(),
 				trailer.Get(route.GroupsHeader))
@@ -331,7 +347,7 @@ func (p *Proxy) forward(client grpc.ServerStream, n *fleet.Node, name string, md
 		f.free()
 		return sendErr
 	}
-	if replay && !oneRequest[name] {
+	if replay && sent && !oneRequest[name] {
 		go pump(client, up, cancel) // a Handshake: the client's next messages
 	}
 	// the node's messages to the client until its status

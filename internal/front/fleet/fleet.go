@@ -122,10 +122,20 @@ func (v *View) DefaultGroups(now time.Time) []string {
 // with more seats left, then fewer sessions - replicas that never coordinate do not all pile onto one node. No
 // groups means every group's nodes. Nil when no group has a placeable node.
 func (v *View) Choose(p Protocol, groups []string, tried map[string]bool, now time.Time, rnd *rand.Rand) *Node {
+	return v.choose(groups, tried, rnd, func(n *Node) bool { return n.Placeable(p, now) })
+}
+
+// ChooseAnswering is Choose over the nodes that answer at all - ready, the door open, the Lease current - whether or
+// not they take a new session: for what any node answers alike (quack's discovery document, a CORS preflight).
+func (v *View) ChooseAnswering(p Protocol, groups []string, tried map[string]bool, now time.Time, rnd *rand.Rand) *Node {
+	return v.choose(groups, tried, rnd, func(n *Node) bool { return n.Ready && n.Port(p) != 0 && n.Current(now) })
+}
+
+func (v *View) choose(groups []string, tried map[string]bool, rnd *rand.Rand, ok func(*Node) bool) *Node {
 	pick := func(match func(*Node) bool) *Node {
 		var candidates []*Node
 		for _, n := range v.nodes {
-			if !tried[n.Label] && n.Placeable(p, now) && match(n) {
+			if !tried[n.Label] && ok(n) && match(n) {
 				candidates = append(candidates, n)
 			}
 		}

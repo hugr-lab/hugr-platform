@@ -67,6 +67,7 @@ func (p *Proxy) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /quack", p.quack)
 	mux.HandleFunc("GET /.well-known/quack-auth", p.discovery)
+	mux.HandleFunc("OPTIONS /quack", p.discovery) // a browser client's preflight: any node answers it alike
 	return mux
 }
 
@@ -130,12 +131,14 @@ func (p *Proxy) quack(w http.ResponseWriter, r *http.Request) {
 		p.connect(w, r)
 		return
 	}
-	label := route.CookieLabel(r.Header.Values("Cookie"))
+	// the message's own connection id first: a cookie is one per jar, and a client holding connections on two nodes
+	// sends one of them in every request
+	label := route.ConnectionLabel(header.ConnectionID)
 	if label == "" {
 		label = route.ConnectionLabel(r.Header.Get(ConnectionIDHeader))
 	}
 	if label == "" {
-		label = route.ConnectionLabel(header.ConnectionID)
+		label = route.CookieLabel(r.Header.Values("Cookie"))
 	}
 	view, _ := p.Fleet.View()
 	outcome := "routed"
@@ -276,14 +279,19 @@ func (p *Proxy) send(r *http.Request, n *fleet.Node, body []byte) (*http.Respons
 	return resp, answer, true, nil
 }
 
-// discovery: the policy's document, the same on every node - any placeable node of the default group answers it,
-// another when one does not answer.
+// discovery: what every node answers alike - the policy's discovery document, a CORS preflight. Any node that answers
+// at all (of the default group first), another when one does not answer or says it is draining (503).
 func (p *Proxy) discovery(w http.ResponseWriter, r *http.Request) {
 	view, _ := p.Fleet.View()
 	seat := route.NewSeat(view.DefaultGroups(time.Now()))
 	silent := false
 	for {
-		n := p.choose(r, seat.Groups, seat.Tried)
+		n := p.Fleet.Wait(r.Context(), p.NoNodeWait, func(v *fleet.View) *fleet.Node {
+			if n := v.ChooseAnswering(fleet.Quack, seat.Groups, seat.Tried, time.Now(), p.random()); n != nil {
+				return n
+			}
+			return v.ChooseAnswering(fleet.Quack, nil, seat.Tried, time.Now(), p.random())
+		})
 		if n == nil && silent {
 			p.unanswered(w)
 			return
@@ -300,6 +308,9 @@ func (p *Proxy) discovery(w http.ResponseWriter, r *http.Request) {
 			}
 			p.unanswered(w)
 			return
+		}
+		if resp.StatusCode == http.StatusServiceUnavailable && seat.Next(n.Label, route.Busy, nil) {
+			continue // a node draining before its Lease says so
 		}
 		p.reply(w, resp, answer)
 		if p.Log != nil {

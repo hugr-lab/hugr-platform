@@ -157,11 +157,17 @@ func TestConnectSeatedThenRouted(t *testing.T) {
 			t.Errorf("the front added %s", k)
 		}
 	}
-	// the header beats the body, the cookie beats the header
-	if _, answer := post(t, front, prepare, ConnectionIDHeader, "node-b.ABC"); answer != "answer of node-b" {
+	// the message's own connection id beats the header and the cookie: a jar holds one acl_node, a client may hold
+	// connections on two nodes
+	if _, answer := post(t, front, prepare, "Cookie", "acl_node=node-b", ConnectionIDHeader, "node-b.ABC"); answer != "answer of node-a" {
+		t.Errorf("the message's connection id: %q", answer)
+	}
+	// a message that carries none (none does, today): the header, then the cookie
+	bare := []byte{0x01, 0x00, 0x03, 0x03, 0x00, 0x04, 0xff, 0xff}
+	if _, answer := post(t, front, bare, ConnectionIDHeader, "node-b.ABC", "Cookie", "acl_node=node-a"); answer != "answer of node-b" {
 		t.Errorf("X-Quack-Connection-Id: %q", answer)
 	}
-	if _, answer := post(t, front, prepare, "Cookie", "acl_node=node-a", ConnectionIDHeader, "node-b.ABC"); answer != "answer of node-a" {
+	if _, answer := post(t, front, bare, "Cookie", "acl_node=node-b"); answer != "answer of node-b" {
 		t.Errorf("the cookie: %q", answer)
 	}
 }
@@ -282,5 +288,36 @@ func TestConnectNotResentOnceReceived(t *testing.T) {
 	}
 	if hung == 0 {
 		t.Fatal("node-a was never chosen: the case is not tested")
+	}
+}
+
+func TestDiscoveryAndPreflightFromAnyNode(t *testing.T) {
+	// the default group's one node admits nobody new and another drains before its Lease says so: the document is
+	// the policy's, the same on every node, and the one that answers gives it
+	full := startNode(t, "node-a", ok("node-a"))
+	draining := startNode(t, "node-d", ok("node-d"))
+	draining.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "draining", http.StatusServiceUnavailable)
+	})
+	_, front := start(t, member(full, "general", true, false), member(draining, "etl", false, true))
+	for i := 0; i < 5; i++ {
+		resp, err := http.Get(front + "/.well-known/quack-auth")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if string(doc) != `{"issuer": "node-a"}` {
+			t.Fatalf("the document from a node that answers: %d %q", resp.StatusCode, doc)
+		}
+	}
+	req, _ := http.NewRequest(http.MethodOptions, front+"/quack", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotFound {
+		t.Errorf("a CORS preflight reaches a node: %d", resp.StatusCode)
 	}
 }

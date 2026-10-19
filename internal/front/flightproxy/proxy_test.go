@@ -370,3 +370,58 @@ func TestLimits(t *testing.T) {
 		t.Errorf("the default group is named to a caller nobody verified: %v", got.err)
 	}
 }
+
+func TestRoutedCallReseated(t *testing.T) {
+	// JDBC opens with a Handshake, which the node answers with its cookie before any session is seated: the next
+	// call carries node-a's cookie, and only then does node-a judge the principal's group
+	a := startNode(t, "node-a", func(n *fakeNode, name string, got []string, s grpc.ServerStream) error {
+		if name == "Handshake" {
+			return ok(n, name, got, s)
+		}
+		return wrongGroup("etl")(n, name, got, s)
+	})
+	b := startNode(t, "node-b", ok)
+	r := start(t, member(a, "general", true, true), member(b, "etl", false, true))
+	hs := r.call(t, "Handshake", nil, "")
+	if hs.err != nil || !strings.HasPrefix(hs.header.Get("set-cookie")[0], "acl_node=node-a") {
+		t.Fatalf("the handshake: %+v", hs)
+	}
+	got := r.call(t, "GetFlightInfo", metadata.Pairs("cookie", "acl_node=node-a"), "q")
+	if got.err != nil || got.messages[0] != "node-b got q" || !strings.Contains(got.header.Get("set-cookie")[0], "node-b") {
+		t.Errorf("a routed call refused by its node's placement is seated in the group the node named: %+v", got)
+	}
+}
+
+func TestHandshakeWithoutMessage(t *testing.T) {
+	// a BasicAuth handshake (arrow-go, pyarrow): headers, then the end of the stream, no message
+	a := startNode(t, "node-a", ok)
+	r := start(t, member(a, "general", true, true))
+	if got := r.call(t, "Handshake", metadata.Pairs("authorization", "Basic dTpw")); got.err != nil ||
+		len(got.messages) != 1 || got.messages[0] != "node-a got " {
+		t.Errorf("a handshake that sends no message: %+v", got)
+	}
+}
+
+func TestRoutedDeadNode(t *testing.T) {
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	dead := &fakeNode{label: "node-dead", port: int32(l.Addr().(*net.TCPAddr).Port)}
+	_ = l.Close()
+	b := startNode(t, "node-b", ok)
+	r := start(t, member(dead, "etl", false, true), member(b, "etl", false, true))
+	// a call routed to a node that is gone: another node of its group, the call never reached the dead one
+	if got := r.call(t, "GetFlightInfo", metadata.Pairs("cookie", "acl_node=node-dead"), "q"); got.err != nil ||
+		got.messages[0] != "node-b got q" {
+		t.Errorf("routed to a dead node: %+v", got)
+	}
+	// a DoPut whose stream to the node never opened: nothing of it was read yet, so another node takes it
+	if got := r.call(t, "DoPut", metadata.Pairs("cookie", "acl_node=node-dead"), "batch"); got.err != nil ||
+		got.messages[0] != "node-b got batch" {
+		t.Errorf("a DoPut routed to a dead node: %+v", got)
+	}
+	// no other node: UNAVAILABLE, naming no address
+	only := start(t, member(dead, "etl", false, true))
+	got := only.call(t, "DoPut", metadata.Pairs("cookie", "acl_node=node-dead"), "batch")
+	if status.Code(got.err) != codes.Unavailable || strings.Contains(status.Convert(got.err).Message(), "127.0.0.1") {
+		t.Errorf("a DoPut to the one dead node: %v", got.err)
+	}
+}

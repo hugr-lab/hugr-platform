@@ -224,6 +224,24 @@ What the code settled that the design above left open, and where it reads more n
   Service.
 - **A forged label still routes** to a node the front sees, placeable or not: the route is a hint, the node decides
   (above).
+- **A routed call is seated again too** (review, 2026-10-19): a driver's first call - JDBC's Handshake, ADBC's
+  GetSqlInfo - is answered with the node's `acl_node` cookie before any session is seated there, so the node's
+  placement is first judged on a call the cookie routed. Such a call (one message, the node's refusal before any
+  work, or no answer at all) goes the seating way from its node: another node of the group it was on, or of the
+  groups the node named. A Handshake that sends no message (a BasicAuth one: arrow-go, pyarrow) is forwarded as such.
+  A client's status when the node did not answer is UNAVAILABLE `hugr: the node did not answer`, never the dial's
+  text (it names the pod's address). The front reads a client's gzip.
+- **quack's label is the message's own connection id first**, then `X-Quack-Connection-Id`, then the cookie: a jar
+  holds one `acl_node`, and a client may hold connections on two nodes. The discovery document and a CORS preflight
+  (`OPTIONS /quack`) are answered by any node that answers at all (a drain's 503: the next one), the default group's
+  first - what every node answers alike.
+- **Known limits**:
+  - **A Flight client keeps the node's cookies** - JDBC does, ADBC with `with_cookie_middleware` (duckdb-acl's client
+    docs already ask for it: a session is a connection, spec 050), pyarrow with a cookie middleware. A call without
+    the cookie is seated afresh, so a `DoGet` may reach a node that does not hold its ticket. Routing a ticket or a
+    prepared handle by a label inside it would need the node to write one - a question for the owner.
+  - Arrow C++ sends a status's binary details raw in `grpc-status-details-bin`, which grpc-go reads as a
+    `google.rpc.Status`: such details would not pass the front. The node sends none today.
 - **Tests**: `internal/front/{quackwire,route,fleet,flightproxy,quackproxy}` (fake nodes, no proto, the quack corpus
   of `quackwire/testdata`, made by `capture/capture.sh` from duckdb's own client and a duckdb-acl node);
   `test/envtest/front_test.go` (the objects; the watcher on a real API server: an EndpointSlice and a Lease appear,
