@@ -19,7 +19,8 @@ const none: Rights = { fleet: true, sessions: true, endSession: false, drain: fa
 const fleet: FleetAnswer = {
   plan: { maxNodes: 12, sizes: ['small'] },
   groups: [{ name: 'etl', size: 'large', replicas: 3, readyReplicas: 2, resourceGroup: 'etl', resourceGroupKnown: true,
-    profile: { target: 14, applied: 2, needsRestart: [] }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [] }],
+    profile: { target: 14, applied: 2, needsRestart: [] }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
+    identity: { serviceAccount: 'hugr-node-etl', subject: '', clientID: '', tresor: '', tlsName: '' }, memoryLimitBytes: 0 }],
 }
 
 function show(rights: Rights) {

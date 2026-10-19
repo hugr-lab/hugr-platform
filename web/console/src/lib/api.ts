@@ -1,6 +1,6 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
-import type { Config, Fleet, NodePage, Rights, SessionRow } from './types'
+import type { AuditEvent, ClusterPage, Config, Fleet, InventoryPage, MemoryPage, NodePage, PodPage, Rights, SessionRow } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -70,6 +70,16 @@ export class Api {
   drain = (label: string) => this.request<unknown>('POST', `nodes/${part(label)}/drain`)
   resume = (label: string) => this.request<unknown>('POST', `nodes/${part(label)}/resume`)
   signOut = () => this.request<{ closed: number }>('POST', 'sign-out')
+  // round 2
+  pod = (label: string) => this.request<PodPage>('GET', `nodes/${part(label)}/kubernetes`)
+  memory = (label: string) => this.request<MemoryPage>('GET', `nodes/${part(label)}/memory`)
+  inventory = (label: string) => this.request<InventoryPage>('GET', `nodes/${part(label)}/inventory`)
+  logs = (label: string, previous: boolean, lines: number) =>
+    this.request<{ text: string }>('GET', `nodes/${part(label)}/logs?previous=${previous}&lines=${lines}`)
+  events = (label: string) => this.request<{ events: AuditEvent[] }>('GET', `nodes/${part(label)}/events`)
+  tracing = (label: string, id: string, change: { audit?: string; profile?: string }) =>
+    this.request<void>('POST', `nodes/${part(label)}/sessions/${part(id)}/tracing`, change)
+  cluster = () => this.request<ClusterPage>('GET', 'cluster')
 }
 
 /** the config the sign-in needs, unauthenticated */

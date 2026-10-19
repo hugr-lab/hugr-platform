@@ -8,7 +8,12 @@ import type { Config, Rights } from './lib/types'
 import { Broken, NoNode, SignIn } from './screens/Entry'
 import { Fleet } from './screens/Fleet'
 import { Group } from './screens/Group'
-import { Node, NodeSessions } from './screens/Node'
+import { Cluster } from './screens/Cluster'
+import { Events } from './screens/node/Events'
+import { Inventory } from './screens/node/Inventory'
+import { Logs } from './screens/node/Logs'
+import { Overview } from './screens/node/Overview'
+import { Sessions } from './screens/node/Sessions'
 
 type State = { kind: 'loading' } | { kind: 'ready'; rights: Rights } | { kind: 'no_node' } | { kind: 'broken'; message: string }
 
@@ -48,8 +53,12 @@ export function App({ config, session }: { config: Config; session: Session }) {
           <Routes>
             {rights.fleet && <Route path="/" element={<Fleet />} />}
             {rights.fleet && <Route path="/groups/:name" element={<Group />} />}
-            {rights.fleet && <Route path="/nodes/:label" element={<Node />} />}
-            {rights.sessions && <Route path="/nodes/:label/sessions" element={<NodeSessions />} />}
+            {rights.fleet && <Route path="/cluster" element={<Cluster />} />}
+            {rights.fleet && <Route path="/nodes/:label" element={<Overview />} />}
+            {rights.sessions && <Route path="/nodes/:label/sessions" element={<Sessions />} />}
+            {rights.fleet && <Route path="/nodes/:label/inventory" element={<Inventory />} />}
+            {rights.fleet && <Route path="/nodes/:label/logs" element={<Logs />} />}
+            {rights.events && <Route path="/nodes/:label/events" element={<Events />} />}
             <Route path="*" element={rights.fleet ? <Navigate to="/" replace /> : <NothingHere />} />
           </Routes>
         </Shell>

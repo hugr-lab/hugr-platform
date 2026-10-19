@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Layers, LogOut, Moon, Sun } from 'lucide-react'
+import { Layers, LogOut, Moon, SlidersHorizontal, Sun } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import logo from '../assets/hugr-logo-on-dark.svg'
 import { useApp, useTheme } from '../lib/context'
@@ -25,9 +25,17 @@ export function Shell({ children }: { children: ReactNode }) {
         <ul className="flex flex-col gap-1">
           {rights.fleet && (
             <li>
-              <NavLink to="/" end={false} className={({ isActive }) => `${nav} ${isActive ? 'bg-navy-line text-white' : ''}`}>
+              <NavLink to="/" className={({ isActive }) => `${nav} ${isActive || /^\/(groups|nodes)\//.test(window.location.pathname) ? 'bg-navy-line text-white' : ''}`} end>
                 <Layers size={20} aria-hidden="true" className="text-[#5cbdb6]" />
                 Fleet
+              </NavLink>
+            </li>
+          )}
+          {rights.fleet && (
+            <li>
+              <NavLink to="/cluster" className={({ isActive }) => `${nav} ${isActive ? 'bg-navy-line text-white' : ''}`}>
+                <SlidersHorizontal size={20} aria-hidden="true" />
+                Cluster
               </NavLink>
             </li>
           )}

@@ -48,6 +48,20 @@ export interface NodeInfo {
   target: number
   applied: number
   needsRestart: boolean
+  usage: Usage | null
+}
+
+export interface Usage {
+  cpuMilli: number
+  memoryBytes: number
+}
+
+export interface Identity {
+  serviceAccount: string
+  subject: string
+  clientID: string
+  tresor: string
+  tlsName: string
 }
 
 export interface Condition {
@@ -69,6 +83,8 @@ export interface Group {
   restartedAt?: string
   conditions: Condition[]
   scaling: { mode: 'manual' | 'auto'; min?: number; max?: number }
+  identity: Identity
+  memoryLimitBytes: number
   nodes: NodeInfo[]
 }
 
@@ -97,4 +113,65 @@ export interface SessionRow {
   profile_source: string | null
   groups: string[] | null
   charged_group: string | null
+}
+
+/** one read of a page made of several: its rows, or what the node said instead */
+export interface Part {
+  rows: Record<string, unknown>[]
+  error?: string
+}
+
+export interface PodPage {
+  phase: string
+  startedAt: string | null
+  nodeName: string
+  podIP: string
+  image: string
+  imageID: string
+  restarts: number
+  lastTermination: { reason: string; exitCode: number; finishedAt: string } | null
+  requests: Usage
+  limits: Usage
+  usage: Usage | null
+  usageError?: string
+  certificateExpiry: string | null
+  events: { type: string; reason: string; message: string; count: number; last: string }[]
+}
+
+export interface MemoryPage {
+  tags: Part
+  spillBytes: number | null
+  limits: Part
+  error?: string
+}
+
+export interface InventoryPage {
+  extensions: Part
+  drift: Part
+  effective: Part
+}
+
+export interface AuditEvent {
+  ts: string
+  seq: number
+  kind: string
+  level: string | null
+  door: string | null
+  session: string | null
+  subject: string | null
+  roles: string[] | null
+  statement: string | null
+  verdict: string | null
+  reason_code: string | null
+  rows: number | null
+  duration_us: number | null
+  correlation_id: string | null
+  traceparent: string | null
+  detail: string | null
+}
+
+export interface ClusterPage {
+  profile: Part
+  lineage: { node: string; row?: Record<string, unknown>; error?: string }[]
+  links: Link[]
 }

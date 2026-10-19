@@ -73,6 +73,7 @@ describe('the sign-in', () => {
 const group = (over: Partial<Group>): Group => ({
   name: 'g', size: 'small', replicas: 2, readyReplicas: 2, resourceGroup: 'g', resourceGroupKnown: true,
   profile: { target: 1, applied: 2, needsRestart: [] }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
+  identity: { serviceAccount: 'hugr-node-g', subject: '', clientID: '', tresor: '', tlsName: '' }, memoryLimitBytes: 0,
   ...over,
 })
 

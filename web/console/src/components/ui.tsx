@@ -143,3 +143,56 @@ export function age(seconds: number | null | undefined): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)} min`
   return `${Math.floor(seconds / 3600)} h`
 }
+
+/** a choice of a few: pill radios in a row (the design's segmented control), keyboard as radios are */
+export function Segmented<T extends string>({ legend, name, options, value, onChange }: { legend: string; name: string;
+  options: { value: T; label: string }[]; value: T; onChange: (v: T) => void }) {
+  return (
+    <fieldset className="flex flex-col gap-2">
+      <legend className="mb-2 text-sm font-semibold">{legend}</legend>
+      <div className="inline-flex flex-wrap gap-1 rounded-[24px] border border-line p-1">
+        {options.map((o) => (
+          <label key={o.value}
+            className={`relative inline-flex min-h-9 cursor-pointer items-center rounded-full px-3.5 text-sm font-semibold has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus ${value === o.value ? 'bg-navy text-white' : ''}`}>
+            <input type="radio" name={name} value={o.value} checked={value === o.value} onChange={() => onChange(o.value)}
+              className="absolute h-px w-px opacity-0" />
+            {o.label}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  )
+}
+
+/** a thin bar for a share (0..100) */
+export function Bar({ percent, dark }: { percent: number; dark?: boolean }) {
+  return (
+    <span aria-hidden="true" className="block h-1.5 overflow-hidden rounded-full bg-surface-soft">
+      <span className={`block h-1.5 rounded-full ${dark ? 'bg-ink' : 'bg-brand'}`} style={{ width: `${percent}%` }} />
+    </span>
+  )
+}
+
+/** a ring gauge (the brand's circles): a share of a limit */
+export function Ring({ percent, label, dark }: { percent: number; label: string; dark?: boolean }) {
+  const c = 2 * Math.PI * 26
+  return (
+    <svg width="96" height="96" viewBox="0 0 64 64" role="img" aria-label={label}>
+      <circle cx="32" cy="32" r="26" fill="none" stroke="var(--surface-soft)" strokeWidth="7" />
+      <circle cx="32" cy="32" r="26" fill="none" stroke={dark ? 'var(--ink)' : 'var(--brand)'} strokeWidth="7"
+        strokeLinecap="round" strokeDasharray={`${(c * percent) / 100} ${c}`} transform="rotate(-90 32 32)" />
+      <text x="32" y="36" textAnchor="middle" fontSize="13" fontWeight="700" fill="var(--ink)">{percent}%</text>
+    </svg>
+  )
+}
+
+/** a link out to the installation's backend (spec 003 round 2): a new tab, no referrer */
+export function Out({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a className="btn-outline" href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"
+        strokeLinejoin="round" aria-hidden="true"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>
+    </a>
+  )
+}

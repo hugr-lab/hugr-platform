@@ -363,7 +363,25 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
   own message. For a console that administers every group the person's roles must hold every group's resource group
   - the policy decides (Q12, the owner's).
 
-**Q12. An administrator and the resource groups.** *Recommendation:* the policy grants an administrator's role every
+- **Stage 3 (round 2), as built:**
+  - the node's page has the tabs Overview (the load, the pod's and the engine's memory, the pod), Sessions (with
+    tracing), Sources and extensions, Logs (with the pod's events) and Audit events; the group's page the pods'
+    memory (one read of the metrics API for the namespace) and the group's identity; a Cluster page.
+  - **A node's sources are drift's database rows**, not `duckdb_databases()`: under a principal that function is the
+    ACL's metadata surface and answers the virtual catalogs (the real-node check showed only `platform`). So the
+    sources, like drift and the profile's items, are the cluster bundle's and a platform node's (hugr-node); a
+    standalone node shows its extensions only.
+  - **The doors' certificate expiry** comes from the console's own TLS handshake with the node (the pool keeps the
+    peer certificate's `notAfter`); the operator reads no Secret.
+  - **Tracing** writes `SET SESSION '<id>' AUDIT LEVEL OFF|DENIED|DECISIONS|ALL|DEFAULT` and `PROFILE SESSION '<id>'
+    SAMPLED|ALL|OFF`; Inherit is `DEFAULT` and `OFF` (duckdb-acl clears the override with them), so a profile cannot
+    be forced off over a policy rule - the rule is the policy's.
+  - The engine's memory needs the person's roles to hold the `meta` and `environment` categories; without them the
+    panel says so. The links out fill `{node}`, `{session}`, `{trace}` (a traceparent's trace id) URL-escaped and
+    show no link when a value is missing; a cluster-wide link goes to the backend's origin.
+
+**Q12. An administrator and the resource groups** (taken as recommended while the owner has not said otherwise,
+2026-10-19). *Recommendation:* the policy grants an administrator's role every
 group's resource group (`GRANT RESOURCE GROUP g TO ROLE ops`); nothing to build, one judge. Alternative: a duckdb-acl
 spec that does not place a session whose principal holds an administrative bundle.
 

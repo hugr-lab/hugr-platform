@@ -1,7 +1,8 @@
 import { CircleAlert } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
-import { Chip, Crumbs, Header, Problem, Refresh, Stat, Status, age } from '../components/ui'
+import { Bar, Chip, Crumbs, Header, Problem, Refresh, Stat, Status, age } from '../components/ui'
 import { useApp, useLoad } from '../lib/context'
+import { bytes, share } from '../lib/format'
 import type { NodeInfo } from '../lib/types'
 import { groupState } from './Fleet'
 
@@ -55,6 +56,7 @@ export function Group() {
                     <th className="th">State</th>
                     <th className="th">Lease</th>
                     <th className="th">Sessions</th>
+                    <th className="th">Pod memory</th>
                     <th className="th">Seats left</th>
                     <th className="th">Admitting</th>
                   </tr>
@@ -75,18 +77,39 @@ export function Group() {
                         <td className="td"><Status mark={state.mark}>{state.text}</Status></td>
                         <td className="td text-ink-muted">{n.leaseAge === null ? 'none yet' : `${age(n.leaseAge)} ago`}</td>
                         <td className="td tabular-nums">{n.leaseAge === null ? '-' : n.sessions}</td>
+                        <td className="td">
+                          {n.usage ? (
+                            <div className="flex flex-col gap-1">
+                              <span className="tabular-nums">{bytes(n.usage.memoryBytes)}{group.memoryLimitBytes ? ` of ${bytes(group.memoryLimitBytes)}` : ''}</span>
+                              {group.memoryLimitBytes > 0 && <Bar percent={share(n.usage.memoryBytes, group.memoryLimitBytes)} />}
+                            </div>
+                          ) : <span className="text-ink-muted">-</span>}
+                        </td>
                         <td className="td tabular-nums">{n.seatsLeft < 0 ? '-' : n.seatsLeft}</td>
                         <td className="td">{n.leaseAge === null ? '-' : n.admitting ? 'yes' : 'no'}</td>
                       </tr>
                     )
                   })}
                   {group.nodes.length === 0 && (
-                    <tr><td className="td text-ink-muted" colSpan={6}>No node runs: the group is stopped or starting.</td></tr>
+                    <tr><td className="td text-ink-muted" colSpan={7}>No node runs: the group is stopped or starting.</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
-            <p className="text-sm text-ink-muted">Seats left counts quack clients a node can still take; Flight sessions are bounded by sessions alone.</p>
+            <p className="text-sm text-ink-muted">Pod memory is the pod's, by the metrics API, against its size's limit; the engine's own share is on each node's page. Seats left counts quack clients a node can still take.</p>
+          </section>
+          <section aria-labelledby="identity-h" className="flex flex-col gap-4">
+            <div>
+              <h2 id="identity-h" className="text-[22px] font-semibold leading-[30px]">Identity</h2>
+              <p className="text-sm text-ink-muted">Every node of the group is the same workload: it logs in to tresor as it, and answers its clients under the group's name.</p>
+            </div>
+            <dl className="panel grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-x-8 gap-y-6 p-8 text-sm">
+              <div><dt className="eyebrow">ServiceAccount</dt><dd className="mono break-all">{group.identity.serviceAccount}</dd></div>
+              <div><dt className="eyebrow">Subject at the identity provider</dt><dd className="mono break-all">{group.identity.subject}</dd></div>
+              <div><dt className="eyebrow">Client id</dt><dd className="mono break-all">{group.identity.clientID || '-'}</dd></div>
+              <div><dt className="eyebrow">Logs in to</dt><dd className="mono break-all">{group.identity.tresor || '-'}</dd></div>
+              <div><dt className="eyebrow">Answers as</dt><dd className="mono break-all">{group.identity.tlsName}</dd></div>
+            </dl>
           </section>
         </>
       )}
