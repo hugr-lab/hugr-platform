@@ -4,8 +4,8 @@ The hugr platform "{{ .Values.platform.name }}" is installed in the namespace {{
 {{- if .Values.console.enabled }}, and the console behind
   the Service hugr-platform-console (point the installation's Ingress or load balancer at it)
 {{- end }}.
-- The platform's internal CA: the ClusterIssuer {{ include "hugr.issuerName" . }}; the CA bundle the nodes and the
-  front trust: the ConfigMap {{ include "hugr.bundleName" . }} (trust-manager).
+- The platform's internal CA: the Issuer {{ include "hugr.issuerName" . }} of this namespace; the CA bundle the nodes
+  and the front trust: the ConfigMap {{ include "hugr.bundleName" . }}, which the operator writes.
 - The nodes start once tresor holds the policy catalog's login (the secret hugr_policy_catalog, granted to the
   groups' identities) - until then they exit and Kubernetes restarts them, and the console shows why.
 - Node groups: kubectl -n {{ .Release.Namespace }} get hng

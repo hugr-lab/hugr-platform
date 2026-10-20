@@ -31,6 +31,11 @@ spec:
         imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
         args:
         - --orchestrator-url=https://hugr-platform.{{ .Release.Namespace }}.svc:8443
+        # spec 005: the platform's CA bundle - the image's public roots, the internal CA, the organisation's CAs
+        - --ca-bundle={{ include "hugr.bundleName" . }}
+        {{- with .Values.caBundle.extra }}
+        - --ca-bundle-extra={{ range $i, $s := . }}{{ if $i }},{{ end }}{{ $s.name }}/{{ $s.key }}{{ end }}
+        {{- end }}
         env:
         - name: POD_NAMESPACE
           valueFrom:

@@ -1,6 +1,6 @@
 # The hugr platform's chart (spec 005). One release per namespace: the namespace is the platform's alone (spec 001),
-# and the cluster-scoped objects are named after it. Prerequisites in the cluster: cert-manager, its csi-driver and
-# trust-manager. No credential belongs in these values - a database login lives in tresor, a key in its key source.
+# and the cluster-scoped objects are named after it. Prerequisites in the cluster: cert-manager and its csi-driver. No
+# credential belongs in these values - a database login lives in tresor, a key in its key source.
 
 # The CRDs (HugrPlatform, HugrNodeGroup) are in crds/: Helm installs them before anything else, skips them when the
 # cluster has them (another platform's release), and never upgrades or deletes them. A chart whose CRDs changed is
@@ -16,20 +16,20 @@ operator:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 512Mi}
 
-# cert-manager's side: the platform's internal CA and its ClusterIssuer live in cert-manager's namespace, named after
-# this one (hugr-<namespace>-internal-ca, hugr-<namespace>-internal) - a ClusterIssuer reads its CA there, and
-# trust-manager its sources (the owner's decision, 2026-10-20). The CA issues the operator's certificate and the
-# doors' (the csi-driver, per pod); trust-manager writes the platform's CA bundle - the CA beside the public roots.
-certManager:
-  namespace: cert-manager
-  internalCA:
-    # a Secret in that namespace with the CA's tls.crt and tls.key, when the organisation brings its own internal CA;
-    # empty: the chart makes one (a self-signed root)
-    existingSecret: ""
-    duration: 87600h # the made root's life
-  # more trust-manager sources for the bundle, in its namespace (an IdP's or a database's private CA), as Bundle
-  # sources: [{configMap: {name: corp-ca, key: ca.crt}}]
-  extraTrustSources: []
+# The platform's internal CA and its Issuer (hugr-internal) are this namespace's own, so only a pod or a Certificate of
+# this namespace is issued from them (spec 001's boundary). The CA issues the operator's certificate and the doors'
+# (the csi-driver, per pod).
+internalCA:
+  # a TLS Secret of this namespace with the CA's tls.crt and tls.key, when the organisation brings its own internal
+  # CA; empty: the chart makes one (a self-signed root)
+  existingSecret: ""
+  duration: 87600h # the made root's life
+
+# The CA bundle the nodes trust (HUGR_CA_FILE replaces their system roots for httpfs) and the front and the console
+# verify the nodes by: the operator writes it - the public roots of its image, the internal CA, and these ConfigMaps of
+# the namespace (an IdP's or a database's private CA) - into the ConfigMap hugr-ca-bundle.
+caBundle:
+  extra: [] # [{name: corp-ca, key: ca.crt}]
 
 # The console's public certificate (spec 003), for the names people reach it by. issuerRef: the organisation's
 # issuer for them; empty: the internal CA. Or secretName: a TLS Secret the installer brings (then nothing is issued).
@@ -52,8 +52,8 @@ front:
 admissionPolicies:
   enabled: false
 
-# The HugrPlatform, its spec as written (api/v1alpha1). The chart fills caBundle with trust-manager's bundle and the
-# front's and console's certificates when they are left unset.
+# The HugrPlatform, its spec as written (api/v1alpha1). The chart fills caBundle with the operator's bundle and the
+# front's certificate when they are left unset.
 platform:
   name: hugr
   spec:

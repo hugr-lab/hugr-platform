@@ -8,7 +8,7 @@ stay when the release goes. tls defaults to a certificate the csi-driver issues 
 {{- $_ := set $spec "platform" $.Values.platform.name }}
 {{- end }}
 {{- if not $spec.tls }}
-{{- $issuer := dict "name" (include "hugr.issuerName" $) "kind" "ClusterIssuer" "group" "cert-manager.io" }}
+{{- $issuer := dict "name" (include "hugr.issuerName" $) "kind" "Issuer" "group" "cert-manager.io" }}
 {{- $_ := set $spec "tls" (dict "csi" (dict "issuerRef" $issuer "duration" $.Values.groupCertificateDuration)) }}
 {{- end }}
 ---

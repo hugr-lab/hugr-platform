@@ -33,9 +33,10 @@ platform's design and status are in the phase 1 document, and the work here goes
 ## Install
 
 The chart `charts/hugr-platform` (spec 005) installs one platform per namespace: the operator, its rights and webhook,
-the platform's internal CA (a ClusterIssuer) with trust-manager's CA bundle, the `HugrPlatform` and its first node
-groups, each door's certificate issued into its pod by cert-manager's csi-driver. The cluster needs cert-manager, its
-csi-driver and trust-manager first.
+the platform's internal CA (an Issuer of the namespace: only its pods are issued from it), the `HugrPlatform` and its
+first node groups, each door's certificate issued into its pod by cert-manager's csi-driver. The operator writes the CA
+bundle (`hugr-ca-bundle`: its image's public roots, the internal CA, the organisation's CAs). The cluster needs
+cert-manager and its csi-driver first.
 
 ```sh
 helm upgrade --install hugr charts/hugr-platform -n hugr --create-namespace -f my-values.yaml --wait

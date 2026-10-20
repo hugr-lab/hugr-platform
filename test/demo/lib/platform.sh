@@ -2,16 +2,14 @@
 # The operator and the platform (spec 004): the operator from this checkout (its certificate the run's), the
 # HugrPlatform pointing at the demo's services, the groups a and b.
 
-# cert-manager, its csi-driver and trust-manager: the platform chart's prerequisites (spec 005), at pinned versions
+# cert-manager and its csi-driver: the platform chart's prerequisites (spec 005), at pinned versions
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.21.2}"
 CSI_DRIVER_VERSION="${CSI_DRIVER_VERSION:-v0.16.0}"
-TRUST_MANAGER_VERSION="${TRUST_MANAGER_VERSION:-v0.25.0}"
 
 install_cert_manager() {
-	step "cert-manager, its csi-driver and trust-manager: the platform's certificates (spec 005)"
-	local chart version args
-	for chart in "cert-manager $CERT_MANAGER_VERSION --set crds.enabled=true" \
-		"cert-manager-csi-driver $CSI_DRIVER_VERSION" "trust-manager $TRUST_MANAGER_VERSION"; do
+	step "cert-manager and its csi-driver: the platform's certificates (spec 005)"
+	local chart args
+	for chart in "cert-manager $CERT_MANAGER_VERSION --set crds.enabled=true" "cert-manager-csi-driver $CSI_DRIVER_VERSION"; do
 		# shellcheck disable=SC2086 # the chart, its version and its flags are words
 		set -- $chart
 		args=("${@:3}")
@@ -21,12 +19,7 @@ install_cert_manager() {
 			fail "$1 did not install"
 		fi
 	done
-	# the run's CA is the platform's internal CA: what the platform's issuer signs - the operator's certificate, the
-	# console's and the front's, every door's - chains to the CA the checks trust
-	k -n cert-manager delete secret hugr-demo-internal-ca --ignore-not-found >/dev/null
-	k -n cert-manager create secret tls hugr-demo-internal-ca --cert "$WORK/ca.crt" --key "$WORK/ca.key" >/dev/null ||
-		fail "the internal CA's Secret"
-	ok "cert-manager $CERT_MANAGER_VERSION, csi-driver $CSI_DRIVER_VERSION, trust-manager $TRUST_MANAGER_VERSION; the run's CA is the platform's"
+	ok "cert-manager $CERT_MANAGER_VERSION, csi-driver $CSI_DRIVER_VERSION"
 }
 
 # platform_values: the chart's values for this run - no credential (spec 005): images, the IdP, tresor, kista, the sizes
@@ -41,8 +34,7 @@ platform_values() {
 operator:
   image: {repository: "${operator%:*}", tag: "${operator##*:}", pullPolicy: $PULL}
   replicas: 1
-certManager:
-  internalCA: {existingSecret: hugr-demo-internal-ca}
+internalCA: {existingSecret: hugr-internal-ca}
 # the checks and the console stand reach the console through a port-forward, at 127.0.0.1
 console: {dnsNames: [localhost], ipAddresses: [127.0.0.1]}
 front: {dnsNames: [localhost], ipAddresses: [127.0.0.1]}
@@ -95,6 +87,11 @@ install_operator() {
 	step "the platform's chart: the operator, its rights, the webhook, the certificates, the HugrPlatform and its groups"
 	namespace hugr
 	from_kustomize
+	# the run's CA is the platform's internal CA: what the platform's Issuer signs - the operator's certificate, the
+	# console's and the front's, every door's - chains to the CA the checks trust
+	k -n hugr delete secret hugr-internal-ca --ignore-not-found >/dev/null
+	k -n hugr create secret tls hugr-internal-ca --cert "$WORK/ca.crt" --key "$WORK/ca.key" >/dev/null ||
+		fail "the internal CA's Secret"
 	platform_values >"$WORK/platform-values.yaml"
 	local again=""
 	k -n hugr get deploy hugr-node-a >/dev/null 2>&1 && again=1
@@ -113,7 +110,7 @@ install_operator() {
 apiVersion: platform.hugr.io/v1alpha1
 kind: HugrNodeGroup
 metadata: {name: probe, namespace: hugr}
-spec: {platform: hugr, replicas: 0, size: small, identity: {}, tls: {csi: {issuerRef: {name: hugr-hugr-internal, kind: ClusterIssuer}}}}
+spec: {platform: hugr, replicas: 0, size: small, identity: {}, tls: {csi: {issuerRef: {name: hugr-internal}}}}
 YAML
 		! grep -q 'failed calling webhook' "$WORK/webhook.err"
 	}
@@ -179,8 +176,7 @@ template_restarted() {
 }
 
 # down_cluster_scoped: what the namespaces' deletion leaves in a kept cluster - the chart's cluster-scoped objects (its
-# release went with the namespace's Secrets), its CRDs (crds/ is never deleted by Helm), the internal CA's Secret, the
-# demo's own bindings
+# release went with the namespace's Secrets), its CRDs (crds/ is never deleted by Helm), the demo's own bindings
 down_cluster_scoped() {
 	k delete clusterrole hugr-hugr-platform-operator --ignore-not-found >/dev/null 2>&1 || true
 	k delete clusterrolebinding hugr-hugr-platform-auth-delegator --ignore-not-found >/dev/null 2>&1 || true
@@ -189,9 +185,6 @@ down_cluster_scoped() {
 		hugr-hugr-platform-group-deployments --ignore-not-found >/dev/null 2>&1 || true
 	k delete validatingadmissionpolicy hugr-hugr-platform-group-pods hugr-hugr-platform-group-replicasets \
 		hugr-hugr-platform-group-deployments --ignore-not-found >/dev/null 2>&1 || true
-	k delete clusterissuer hugr-hugr-internal --ignore-not-found >/dev/null 2>&1 || true
-	k delete bundle hugr-hugr-ca --ignore-not-found >/dev/null 2>&1 || true
-	k -n cert-manager delete secret hugr-demo-internal-ca --ignore-not-found >/dev/null 2>&1 || true
 	# waited for: an up right after installs the CRDs again
 	k delete -f "$ROOT/charts/hugr-platform/crds" --ignore-not-found --timeout=300s >/dev/null 2>&1 || true
 	# before the chart: the kustomize install's own names

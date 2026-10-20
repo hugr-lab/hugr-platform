@@ -148,13 +148,14 @@ PY
 			grep -q 'DEVELOPMENT identity' "$WORK/logs/$pod.log" && fail "node $pod runs a development identity (a key)"
 		done
 	done
-	# the namespace's Secrets: cert-manager's - the operator's certificate, the console's and the front's public ones -
-	# and Helm's record of the release (its manifests and values, which hold no credential: spec 005); no door's
+	# the namespace's Secrets: the platform's internal CA (no node mounts it), cert-manager's - the operator's
+	# certificate, the console's and the front's public ones - and Helm's record of the release (its manifests and
+	# values, which hold no credential: spec 005); no door's
 	secrets="$(k -n hugr get secrets -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' |
 		grep -v '^sh\.helm\.release\.v1\.hugr\.v[0-9]*$' | sort | tr '\n' ' ')"
-	want="hugr-console hugr-front hugr-platform-tls "
+	want="hugr-console hugr-front hugr-internal-ca hugr-platform-tls "
 	[ "$secrets" = "$want" ] || fail "the namespace's Secrets are $secrets, want $want"
-	ok "a node mounts no Secret: its doors' key is made in its pod (the csi-driver) and its tresor login is its projected ServiceAccount token ($IDP_NAME's federation); the namespace holds only cert-manager's TLS Secrets and Helm's record"
+	ok "a node mounts no Secret: its doors' key is made in its pod (the csi-driver) and its tresor login is its projected ServiceAccount token ($IDP_NAME's federation); the namespace holds the internal CA, cert-manager's TLS Secrets and Helm's record"
 }
 
 check_engine() {

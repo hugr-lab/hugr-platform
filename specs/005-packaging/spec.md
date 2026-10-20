@@ -46,7 +46,7 @@ It builds on two decisions of 2026-10-20 (the phase-1 doc):
 | the operator | the CRDs in `crds/` (Helm installs them first and never upgrades or deletes them: as templates, a `HugrPlatform` in the same release would not map; a changed CRD is `kubectl apply`'d before an upgrade), RBAC as spec 001 states it, the Deployment, its Service, the webhook with cert-manager's CA injection, the NetworkPolicy; the ValidatingAdmissionPolicies of `config/policy` optional | on |
 | `HugrPlatform` | rendered from `platform.*` values: node image, IdP, tresor, repository, CA bundle, front, console, sizes, plan | on |
 | the first groups | `groups[]` values as post-install hooks: made once, after the operator - whose webhook judges a group - is ready (`--wait`). A hook is no part of the release: `helm upgrade` never resets a scale made in the console or with kubectl, and the groups stay when the release goes | none |
-| certificates | cert-manager is required. The platform's internal CA is a self-signed root, an Issuer the chart makes. It issues the operator's serving and webhook certificate and the doors' (csi-driver, below). trust-manager's `Bundle` writes the `caBundle` ConfigMap: the internal CA beside the default public roots, since `HUGR_CA_FILE` replaces a node's system roots for httpfs. The front reads the same ConfigMap to verify the nodes. The front's and the console's public certificates come from the organisation's Issuer for their names, or from Secrets the installer brings | on |
+| certificates | cert-manager is required. The platform's internal CA and its Issuer (`hugr-internal`) are the namespace's own, so only a pod or a Certificate of this namespace is issued from them: a self-signed root the chart makes, or the organisation's CA as a Secret of the namespace. It issues the operator's serving and webhook certificate and the doors' (csi-driver, below). The operator writes the CA bundle (`hugr-ca-bundle`): its image's public roots, the internal CA (its own certificate's `ca.crt`), the organisation's CAs. The front's and the console's public certificates come from the organisation's issuer for their names, or from Secrets the installer brings | on |
 | kista | a subchart: kista's own chart, `oci://ghcr.io/hugr-lab/charts/kista`. It is the nodes' only repository, and `repository.prefix` defaults to it. Its store (PostgreSQL) and its key source come from values. Its upstreams: DuckDB's core and community repositories, plus our channel or the organisation's hosted tenant, the latter as a private upstream by kista's ServiceAccount token (kista spec 0009, phase 3) | on |
 | tresor-server | a subchart: `oci://ghcr.io/hugr-lab/charts/tresor-server` (v0.6.0 is out), its store from values; `tresor.enabled: false` + `platform.tresor.host` for one the organisation already runs | on |
 
@@ -54,7 +54,7 @@ The chart leaves out:
 
 - the IdP;
 - PostgreSQL (the catalog's, kista's and tresor's databases: the organisation's own, or the cloud's managed one);
-- cert-manager, its csi-driver and trust-manager, which are prerequisites of the cluster;
+- cert-manager and its csi-driver, which are prerequisites of the cluster;
 - an OpenTelemetry collector. Telemetry stays an endpoint value (`platform.telemetry`) until the integrations spec.
 
 **Values** hold no credential: a database login lives in tresor (decision 4 of 2026-10-15), and a key lives in its
@@ -143,7 +143,7 @@ The design:
 
 The order is one `helm install` plus one action of the installer in tresor:
 
-1. **Prerequisites**: cert-manager with its csi-driver, trust-manager, the databases, and the IdP's registrations (Keycloak by hand;
+1. **Prerequisites**: cert-manager with its csi-driver, the databases, and the IdP's registrations (Keycloak by hand;
    Entra in stage B).
 2. **`helm install hugr`**: tresor, kista, the operator, the platform, the first groups. The nodes start, find no
    catalog login in tresor and exit. Kubernetes restarts them with backoff, and the console shows them `failing` with
@@ -174,8 +174,8 @@ The order is one `helm install` plus one action of the installer in tresor:
 
 - **Install**: `install_operator` and `install_platform` become one `helm upgrade --install` with
   `test/demo/values/<provider>.yaml`.
-- **Certificates**: the run's own door certificates go. The demo installs cert-manager, its csi-driver and
-  trust-manager at pinned versions.
+- **Certificates**: the run's own door certificates go. The demo installs cert-manager and its csi-driver at pinned
+  versions, and gives the chart its CA as the platform's internal CA.
 - **tresor and kista**: subcharts packaged from their source at the dependency's version into the chart's `charts/`.
   The demo runs their main, as it does today.
 - **Keycloak, PostgreSQL and OpenBao** stay the demo's own.
@@ -234,19 +234,20 @@ The order is one `helm install` plus one action of the installer in tresor:
    release's other resources, a group meets the operator's webhook before it serves (`failurePolicy: Fail`), and a
    `lookup` renders nothing under `helm template`. After that, the console and kubectl own them.
 4. **duckdb-acl's certificate reload is part of stage A**, as a precondition of decision 6.
-5. **The CA bundle** comes from trust-manager, the second prerequisite after cert-manager. A node appending its
-   image's roots itself was the alternative: it would change what `HUGR_CA_FILE` means, and the front would still need
-   the CA.
+5. **The CA bundle is the operator's** (the owner, 2026-10-20; it replaces trust-manager, decided the same day). The
+   operator writes `hugr-ca-bundle` from three sources: its image's public roots, its own serving certificate's
+   `ca.crt` (the internal CA, so the operator needs no right to the CA's Secret), and the ConfigMaps
+   `caBundle.extra` names. Only CERTIFICATE blocks enter, each once. It never writes over a ConfigMap of that name
+   that is not its own. One prerequisite fewer; the public roots follow the operator's image.
 6. **Several platforms in one cluster** are isolated by namespace: one platform per namespace (spec 001's boundary).
    The cluster-scoped objects (ClusterRole, ClusterRoleBinding, the webhook's configuration) are named after the
    namespace. The CRDs are the one thing they share, at one version: one release installs them (`crds.install`, on
    by default), and the others set it off.
-7. **The internal CA lives in cert-manager's namespace.** trust-manager reads its sources only from its trust
-   namespace (cert-manager's by default), and a ClusterIssuer reads its CA Secret from there too. So the chart writes
-   a platform's CA there, named after the platform's namespace: `hugr-<ns>-internal-ca`, plus the ClusterIssuer
-   `hugr-<ns>-internal`. Two platforms in one cluster never meet, and the chart writes these few objects outside its
-   own namespace. The alternative, trust-manager bound to one platform's namespace, would serve one platform per
-   cluster.
+7. **The internal CA is the namespace's own** (the owner, 2026-10-20). It replaces a ClusterIssuer in cert-manager's
+   namespace, decided the same day: a ClusterIssuer issues to every namespace, so any team that may create a
+   Certificate, or mount the csi-driver into its pods, would get a certificate for a node's or the operator's name
+   from the CA the platform trusts. Found in review before the chart's first PR. A namespaced Issuer keeps spec 001's
+   boundary: only the platform's namespace is issued from it.
 8. **hugr_node** stays in the image until `v2.0.0`. Its path after that is the proposal in "hugr_node on the node",
    to be confirmed.
 
