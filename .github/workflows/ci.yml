@@ -1,5 +1,5 @@
 # spec 001: go vet, staticcheck, the unit tests, envtest (the API server pinned in the Makefile), the image built;
-# spec 003: the web console's typecheck, tests, licence gate and build
+# spec 003: the web console's typecheck, tests, licence gate and build; spec 005: the chart
 name: CI
 on:
   pull_request:
@@ -18,7 +18,7 @@ jobs:
     - name: Generated code is current
       run: |
         make generate manifests
-        git diff --exit-code -- api config
+        git diff --exit-code -- api config charts
     - name: Vet and staticcheck
       run: make lint
     - name: Unit tests
@@ -27,6 +27,16 @@ jobs:
       run: make test-envtest
     - name: Image
       run: docker build -t ghcr.io/hugr-lab/hugr-platform:ci .
+  # spec 005: the chart linted and rendered with its example values
+  chart:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - uses: azure/setup-helm@v4
+      with:
+        version: v4.1.1
+    - name: helm lint and template
+      run: make chart
   console:
     runs-on: ubuntu-24.04
     steps:

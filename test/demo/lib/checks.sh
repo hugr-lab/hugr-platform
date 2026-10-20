@@ -117,19 +117,22 @@ check_federation() {
 	local g problems secrets want
 	for g in "${GROUPS_[@]}"; do
 		k -n hugr get pods -l "platform.hugr.io/group=$g" -o json >"$WORK/pods.json"
-		# the live pods, as admitted: a Secret is mounted only as the doors' certificate, none reaches the environment,
-		# a projected volume carries tokens, ConfigMaps and the downward API only
-		problems="$(python3 - "$WORK/pods.json" "hugr-node-$g-tls" <<'PY'
+		# the live pods, as admitted: no Secret is mounted - the doors' certificate is the csi-driver's, issued into the
+		# pod with its key made there (spec 005) - none reaches the environment, a projected volume carries tokens,
+		# ConfigMaps and the downward API only
+		problems="$(python3 - "$WORK/pods.json" <<'PY'
 import json, sys
-pods, tls = json.load(open(sys.argv[1]))["items"], sys.argv[2]
+pods = json.load(open(sys.argv[1]))["items"]
 found = []
 for p in pods:
     spec, name = p["spec"], p["metadata"]["name"]
     if spec.get("imagePullSecrets"):
         found.append(name + ": imagePullSecrets")
     for v in spec.get("volumes", []):
-        if "secret" in v and v["secret"].get("secretName") != tls:
+        if "secret" in v:
             found.append(name + ": the Secret volume " + v["name"])
+        if v["name"] == "tls" and v.get("csi", {}).get("driver") != "csi.cert-manager.io":
+            found.append(name + ": the doors' certificate is not the csi-driver's")
         for source in v.get("projected", {}).get("sources", []):
             if not set(source) <= {"serviceAccountToken", "configMap", "downwardAPI"}:
                 found.append(name + ": the projected volume " + v["name"] + " carries " + ",".join(source))
@@ -145,14 +148,13 @@ PY
 			grep -q 'DEVELOPMENT identity' "$WORK/logs/$pod.log" && fail "node $pod runs a development identity (a key)"
 		done
 	done
-	# the namespace's Secrets: the operator's certificate and the console's, each group's doors' and the front's public
-	# one, nothing else
-	secrets="$(k -n hugr get secrets -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort | tr '\n' ' ')"
-	want="$( (printf '%s\n' hugr-platform-tls "${GROUPS_[@]/#/hugr-node-}" | sed -e '2,$s/$/-tls/'; echo hugr-front
-		echo hugr-console) |
-		sort | tr '\n' ' ')"
+	# the namespace's Secrets: cert-manager's - the operator's certificate, the console's and the front's public ones -
+	# and Helm's record of the release (its manifests and values, which hold no credential: spec 005); no door's
+	secrets="$(k -n hugr get secrets -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' |
+		grep -v '^sh\.helm\.release\.v1\.hugr\.v[0-9]*$' | sort | tr '\n' ' ')"
+	want="hugr-console hugr-front hugr-platform-tls "
 	[ "$secrets" = "$want" ] || fail "the namespace's Secrets are $secrets, want $want"
-	ok "a node mounts only its doors' certificate and reads no Secret; its tresor login is its projected ServiceAccount token ($IDP_NAME's federation); the namespace holds only TLS Secrets"
+	ok "a node mounts no Secret: its doors' key is made in its pod (the csi-driver) and its tresor login is its projected ServiceAccount token ($IDP_NAME's federation); the namespace holds only cert-manager's TLS Secrets and Helm's record"
 }
 
 check_engine() {

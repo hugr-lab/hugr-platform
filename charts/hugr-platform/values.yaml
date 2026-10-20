@@ -1,0 +1,81 @@
+# The hugr platform's chart (spec 005). One release per namespace: the namespace is the platform's alone (spec 001),
+# and the cluster-scoped objects are named after it. Prerequisites in the cluster: cert-manager, its csi-driver and
+# trust-manager. No credential belongs in these values - a database login lives in tresor, a key in its key source.
+
+# The CRDs (HugrPlatform, HugrNodeGroup) are in crds/: Helm installs them before anything else, skips them when the
+# cluster has them (another platform's release), and never upgrades or deletes them. A chart whose CRDs changed is
+# applied first: kubectl apply --server-side -f <the chart>/crds, then helm upgrade.
+
+operator:
+  image:
+    repository: ghcr.io/hugr-lab/hugr-platform
+    tag: "" # default: the chart's appVersion
+    pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+# cert-manager's side: the platform's internal CA and its ClusterIssuer live in cert-manager's namespace, named after
+# this one (hugr-<namespace>-internal-ca, hugr-<namespace>-internal) - a ClusterIssuer reads its CA there, and
+# trust-manager its sources (the owner's decision, 2026-10-20). The CA issues the operator's certificate and the
+# doors' (the csi-driver, per pod); trust-manager writes the platform's CA bundle - the CA beside the public roots.
+certManager:
+  namespace: cert-manager
+  internalCA:
+    # a Secret in that namespace with the CA's tls.crt and tls.key, when the organisation brings its own internal CA;
+    # empty: the chart makes one (a self-signed root)
+    existingSecret: ""
+    duration: 87600h # the made root's life
+  # more trust-manager sources for the bundle, in its namespace (an IdP's or a database's private CA), as Bundle
+  # sources: [{configMap: {name: corp-ca, key: ca.crt}}]
+  extraTrustSources: []
+
+# The console's public certificate (spec 003), for the names people reach it by. issuerRef: the organisation's
+# issuer for them; empty: the internal CA. Or secretName: a TLS Secret the installer brings (then nothing is issued).
+console:
+  enabled: true
+  dnsNames: []
+  ipAddresses: []
+  issuerRef: {}
+  secretName: ""
+
+# The front's public certificate (spec 002), the same way.
+front:
+  dnsNames: []
+  ipAddresses: []
+  issuerRef: {}
+  secretName: ""
+
+# spec 001, Security: the ValidatingAdmissionPolicies that let a group's pods come only from the operator's chain
+# (Kubernetes 1.30+)
+admissionPolicies:
+  enabled: false
+
+# The HugrPlatform, its spec as written (api/v1alpha1). The chart fills caBundle with trust-manager's bundle and the
+# front's and console's certificates when they are left unset.
+platform:
+  name: hugr
+  spec:
+    node:
+      image: ghcr.io/hugr-lab/hugr-node:v0.1.0
+    idp:
+      issuer: "" # required
+    tresor:
+      host: "" # required: tresor-server's host:port
+    repository:
+      prefix: "" # required: the nodes' extension repository (the in-cluster kista)
+    front: {}
+    sizes: {}
+    plan:
+      maxNodes: 0
+      sizes: []
+
+# The first node groups, created once, at install (post-install hooks, after the operator - whose webhook judges a
+# group - is ready: install with --wait): an upgrade never touches them, so a scale made in the console or with kubectl
+# stays, and they stay when the release goes. tls defaults to a certificate the csi-driver issues into each pod from
+# the internal CA.
+#   - name: etl
+#     spec: {replicas: 2, size: large, identity: {clientID: "..."}, doors: {quack: true}}
+groups: []
+groupCertificateDuration: 720h

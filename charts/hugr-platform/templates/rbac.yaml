@@ -1,0 +1,51 @@
+{{/* The operator's rights (spec 001): the generated role (files/rbac/role.yaml, from config/rbac) bound in this
+namespace only, and tokenreviews/create cluster-wide (a node's entry is its ServiceAccount token). */}}
+{{- $role := .Files.Get "files/rbac/role.yaml" | fromYaml }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hugr-platform
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "hugr.clusterName" . }}-operator
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+rules:
+  {{- toYaml $role.rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hugr-platform-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "hugr.clusterName" . }}-operator
+subjects:
+- kind: ServiceAccount
+  name: hugr-platform
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "hugr.clusterName" . }}-auth-delegator
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: hugr-platform
+  namespace: {{ .Release.Namespace }}

@@ -1,0 +1,141 @@
+{{/* The platform's certificates (spec 005). The internal CA and its ClusterIssuer are in cert-manager's namespace,
+named after this one (a ClusterIssuer reads its CA there, trust-manager its sources: the owner's decision of
+2026-10-20); the CA issues the operator's certificate here and the doors' through the csi-driver. The console's and
+the front's public certificates come from the organisation's issuer, the internal CA, or a Secret the installer
+brings. */}}
+{{- $cm := .Values.certManager.namespace }}
+{{- if not .Values.certManager.internalCA.existingSecret }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: hugr-{{ .Release.Namespace }}-selfsigned
+  namespace: {{ $cm }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "hugr.caName" . }}
+  namespace: {{ $cm }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: hugr platform {{ .Release.Namespace }} internal CA
+  secretName: {{ include "hugr.caName" . }}
+  duration: {{ .Values.certManager.internalCA.duration }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: hugr-{{ .Release.Namespace }}-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ include "hugr.issuerName" . }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ include "hugr.caSecret" . }}
+---
+# the operator's serving certificate: the node API and the webhook (the nodes trust it through the CA bundle)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hugr-platform
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  secretName: hugr-platform-tls
+  dnsNames:
+  - hugr-platform.{{ .Release.Namespace }}.svc
+  - hugr-platform.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    {{- include "hugr.internalIssuerRef" . | nindent 4 }}
+{{- if and .Values.console.enabled (not .Values.console.secretName) }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hugr-console
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  secretName: hugr-console
+  dnsNames:
+  {{- range .Values.console.dnsNames }}
+  - {{ . }}
+  {{- end }}
+  - hugr-platform-console.{{ .Release.Namespace }}.svc
+  {{- with .Values.console.ipAddresses }}
+  ipAddresses:
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+  issuerRef:
+    {{- if .Values.console.issuerRef }}
+    {{- toYaml .Values.console.issuerRef | nindent 4 }}
+    {{- else }}
+    {{- include "hugr.internalIssuerRef" . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if and (hasKey .Values.platform.spec "front") (not .Values.front.secretName) }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hugr-front
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  secretName: hugr-front
+  dnsNames:
+  {{- range .Values.front.dnsNames }}
+  - {{ . }}
+  {{- end }}
+  - hugr-front.{{ .Release.Namespace }}.svc
+  {{- with .Values.front.ipAddresses }}
+  ipAddresses:
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+  issuerRef:
+    {{- if .Values.front.issuerRef }}
+    {{- toYaml .Values.front.issuerRef | nindent 4 }}
+    {{- else }}
+    {{- include "hugr.internalIssuerRef" . | nindent 4 }}
+    {{- end }}
+{{- end }}
+---
+{{/* trust-manager writes the CA bundle into this namespace: the internal CA beside the public roots, since a node's
+HUGR_CA_FILE replaces its system roots for httpfs - and the front verifies the nodes by the same ConfigMap */}}
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: {{ include "hugr.bundleName" . }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  sources:
+  - useDefaultCAs: true
+  - secret:
+      name: {{ include "hugr.caSecret" . }}
+      key: tls.crt
+  {{- with .Values.certManager.extraTrustSources }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+  target:
+    configMap:
+      key: ca.crt
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}

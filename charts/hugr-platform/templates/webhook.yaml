@@ -1,0 +1,26 @@
+{{/* The group webhook (spec 001): the generated registration (files/webhook/manifests.yaml, from config/webhook)
+pointed at the operator's Service, for this namespace's groups, with the CA cert-manager's cainjector puts in. */}}
+{{- $generated := .Files.Get "files/webhook/manifests.yaml" | fromYaml }}
+{{- $hook := index $generated.webhooks 0 }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "hugr.clusterName" . }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/hugr-platform
+webhooks:
+- name: {{ $hook.name }}
+  admissionReviewVersions: {{ toYaml $hook.admissionReviewVersions | nindent 2 }}
+  clientConfig:
+    service:
+      name: hugr-platform
+      namespace: {{ .Release.Namespace }}
+      path: {{ $hook.clientConfig.service.path }}
+  failurePolicy: {{ $hook.failurePolicy }}
+  sideEffects: {{ $hook.sideEffects }}
+  rules: {{ toYaml $hook.rules | nindent 2 }}
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ .Release.Namespace }}

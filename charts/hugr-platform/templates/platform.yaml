@@ -1,0 +1,27 @@
+{{/* The HugrPlatform (api/v1alpha1), its spec as the values write it. The chart fills what it provides when the
+values leave it unset: the CA bundle (trust-manager's ConfigMap) and the front's certificate Secret. */}}
+{{- $spec := deepCopy .Values.platform.spec }}
+{{- $_ := required "platform.spec.idp.issuer is required" $spec.idp.issuer }}
+{{- $_ := required "platform.spec.tresor.host is required" $spec.tresor.host }}
+{{- $_ := required "platform.spec.repository.prefix is required" $spec.repository.prefix }}
+{{- if not $spec.caBundle }}
+{{- $_ := set $spec "caBundle" (dict "configMapRef" (dict "name" (include "hugr.bundleName" .) "key" "ca.crt")) }}
+{{- end }}
+{{- if hasKey $spec "front" }}
+{{- $front := default (dict) $spec.front }}
+{{- $certificate := default (dict) $front.certificate }}
+{{- if not $certificate.secretName }}
+{{- $_ := set $certificate "secretName" (default "hugr-front" .Values.front.secretName) }}
+{{- end }}
+{{- $_ := set $front "certificate" $certificate }}
+{{- $_ := set $spec "front" $front }}
+{{- end }}
+apiVersion: platform.hugr.io/v1alpha1
+kind: HugrPlatform
+metadata:
+  name: {{ .Values.platform.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  {{- toYaml $spec | nindent 2 }}

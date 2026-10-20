@@ -1,0 +1,108 @@
+{{/* spec 001, Security (config/policy, optional): a pod, a ReplicaSet or a Deployment that runs as a group's
+ServiceAccount (hugr-node-*) comes only from the chain that owns it - the operator writes the group's Deployment, the
+deployment controller its ReplicaSets, the ReplicaSet controller its pods. Kubernetes 1.30+. */}}
+{{- if .Values.admissionPolicies.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "hugr.clusterName" . }}-group-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      operations: [CREATE]
+      resources: [pods]
+  matchConditions:
+  - name: runs-as-a-group
+    expression: has(object.spec.serviceAccountName) && object.spec.serviceAccountName.startsWith('hugr-node-')
+  validations:
+  - expression: >-
+      request.userInfo.username in ['system:serviceaccount:kube-system:replicaset-controller',
+      'system:kube-controller-manager']
+    message: a pod that runs as a node group's ServiceAccount is created by its Deployment only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "hugr.clusterName" . }}-group-replicasets
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [apps]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE]
+      resources: [replicasets]
+  matchConditions:
+  - name: runs-as-a-group
+    expression: >-
+      has(object.spec.template.spec.serviceAccountName) &&
+      object.spec.template.spec.serviceAccountName.startsWith('hugr-node-')
+  validations:
+  - expression: >-
+      request.userInfo.username in ['system:serviceaccount:kube-system:deployment-controller',
+      'system:serviceaccount:kube-system:generic-garbage-collector', 'system:kube-controller-manager']
+    message: a ReplicaSet that runs as a node group's ServiceAccount is its Deployment's only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "hugr.clusterName" . }}-group-deployments
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [apps]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE]
+      resources: [deployments]
+  matchConditions:
+  - name: runs-as-a-group
+    expression: >-
+      has(object.spec.template.spec.serviceAccountName) &&
+      object.spec.template.spec.serviceAccountName.startsWith('hugr-node-')
+  validations:
+  - expression: >-
+      request.userInfo.username in ['system:serviceaccount:{{ .Release.Namespace }}:hugr-platform',
+      'system:serviceaccount:kube-system:deployment-controller',
+      'system:serviceaccount:kube-system:generic-garbage-collector', 'system:kube-controller-manager']
+    message: a Deployment that runs as a node group's ServiceAccount is the operator's only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "hugr.clusterName" . }}-group-pods
+spec:
+  policyName: {{ include "hugr.clusterName" . }}-group-pods
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "hugr.clusterName" . }}-group-replicasets
+spec:
+  policyName: {{ include "hugr.clusterName" . }}-group-replicasets
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "hugr.clusterName" . }}-group-deployments
+spec:
+  policyName: {{ include "hugr.clusterName" . }}-group-deployments
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+{{- end }}

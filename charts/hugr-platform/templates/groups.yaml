@@ -1,0 +1,27 @@
+{{/* The first node groups (spec 005): post-install hooks, so they are made once, after the operator is ready - its
+webhook judges a group against the plan, and Helm runs the hooks once the release's resources are up (--wait). A hook
+is no part of the release: an upgrade never touches a group again (a scale made in the console stays), and the groups
+stay when the release goes. tls defaults to a certificate the csi-driver issues into each pod from the internal CA. */}}
+{{- range $i, $group := .Values.groups }}
+{{- $spec := deepCopy (default (dict) $group.spec) }}
+{{- if not $spec.platform }}
+{{- $_ := set $spec "platform" $.Values.platform.name }}
+{{- end }}
+{{- if not $spec.tls }}
+{{- $issuer := dict "name" (include "hugr.issuerName" $) "kind" "ClusterIssuer" "group" "cert-manager.io" }}
+{{- $_ := set $spec "tls" (dict "csi" (dict "issuerRef" $issuer "duration" $.Values.groupCertificateDuration)) }}
+{{- end }}
+---
+apiVersion: platform.hugr.io/v1alpha1
+kind: HugrNodeGroup
+metadata:
+  name: {{ required "every group needs a name" $group.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" $ | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-weight: "{{ $i }}"
+spec:
+  {{- toYaml $spec | nindent 2 }}
+{{- end }}

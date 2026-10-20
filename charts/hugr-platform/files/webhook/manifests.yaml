@@ -1,0 +1,26 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-platform-hugr-io-v1alpha1-hugrnodegroup
+  failurePolicy: Fail
+  name: vhugrnodegroup.platform.hugr.io
+  rules:
+  - apiGroups:
+    - platform.hugr.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - hugrnodegroups
+  sideEffects: None

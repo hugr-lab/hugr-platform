@@ -1,0 +1,33 @@
+# The example the chart is linted and rendered with (make chart): one platform, one group of large nodes
+console:
+  dnsNames: [console.hugr.example]
+front:
+  dnsNames: [hugr.example]
+admissionPolicies:
+  enabled: true
+platform:
+  spec:
+    node:
+      image: ghcr.io/hugr-lab/hugr-node:v0.1.0
+    idp:
+      issuer: https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0
+    tresor:
+      host: tresor.tresor.svc:443
+      scope: api://tresor/.default
+    repository:
+      prefix: https://kista.kista.svc/hugr/prod
+    front:
+      replicas: 2
+    console:
+      clientID: hugr-console
+      audiences: {nodes: api://hugr, tresor: api://tresor}
+    sizes:
+      large:
+        resources:
+          requests: {cpu: "8", memory: 32Gi}
+          limits: {memory: 32Gi}
+        temp: {medium: local, size: 200Gi}
+    plan: {maxNodes: 6, sizes: [large]}
+groups:
+  - name: etl
+    spec: {replicas: 2, size: large, identity: {clientID: 00000000-0000-0000-0000-000000000001}, doors: {quack: true}}

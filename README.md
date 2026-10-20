@@ -32,10 +32,22 @@ platform's design and status are in the phase 1 document, and the work here goes
 
 ## Install
 
-The operator runs in the namespace `hugr` with cert-manager for its serving certificate (bring an `Issuer` named
-`hugr-platform`). The platform's `caBundle` is the nodes' `HUGR_CA_FILE`, which replaces their system roots: put the
-system roots in it, plus that Issuer's CA, so the nodes trust the operator and still reach the public repository and
-IdP.
+The chart `charts/hugr-platform` (spec 005) installs one platform per namespace: the operator, its rights and webhook,
+the platform's internal CA (a ClusterIssuer) with trust-manager's CA bundle, the `HugrPlatform` and its first node
+groups, each door's certificate issued into its pod by cert-manager's csi-driver. The cluster needs cert-manager, its
+csi-driver and trust-manager first.
+
+```sh
+helm upgrade --install hugr charts/hugr-platform -n hugr --create-namespace -f my-values.yaml --wait
+```
+
+`--wait` matters: the first groups are made after the operator - whose webhook judges a group - is ready. The values
+hold no credential (`charts/hugr-platform/values.yaml` documents them; `ci/example-values.yaml` is a whole one). The
+CRDs are in the chart's `crds/`: Helm installs them once and never upgrades them, so a chart whose CRDs changed is
+applied first (`kubectl apply --server-side -f charts/hugr-platform/crds`).
+
+Without Helm, `config/` is the same operator as kustomize (bring an `Issuer` named `hugr-platform` and a `caBundle`
+ConfigMap holding the system roots plus its CA: a node's `HUGR_CA_FILE` replaces its roots):
 
 ```sh
 kubectl create namespace hugr

@@ -43,9 +43,9 @@ It builds on two decisions of 2026-10-20 (the phase-1 doc):
 
 | part | how | default |
 | --- | --- | --- |
-| the operator | the CRDs as templates (`helm.sh/resource-policy: keep`, so an upgrade applies them and an uninstall leaves the groups), RBAC as spec 001 states it, the Deployment, its Service, the webhook with cert-manager's CA injection, the NetworkPolicy; the ValidatingAdmissionPolicies of `config/policy` optional | on |
+| the operator | the CRDs in `crds/` (Helm installs them first and never upgrades or deletes them: as templates, a `HugrPlatform` in the same release would not map; a changed CRD is `kubectl apply`'d before an upgrade), RBAC as spec 001 states it, the Deployment, its Service, the webhook with cert-manager's CA injection, the NetworkPolicy; the ValidatingAdmissionPolicies of `config/policy` optional | on |
 | `HugrPlatform` | rendered from `platform.*` values: node image, IdP, tresor, repository, CA bundle, front, console, sizes, plan | on |
-| the first groups | `groups[]` values, created at install only: rendered only when `lookup` finds no such group, and kept on uninstall. After that the console and kubectl change them, and `helm upgrade` never resets a scale | one group |
+| the first groups | `groups[]` values as post-install hooks: made once, after the operator - whose webhook judges a group - is ready (`--wait`). A hook is no part of the release: `helm upgrade` never resets a scale made in the console or with kubectl, and the groups stay when the release goes | none |
 | certificates | cert-manager is required. The platform's internal CA is a self-signed root, an Issuer the chart makes. It issues the operator's serving and webhook certificate and the doors' (csi-driver, below). trust-manager's `Bundle` writes the `caBundle` ConfigMap: the internal CA beside the default public roots, since `HUGR_CA_FILE` replaces a node's system roots for httpfs. The front reads the same ConfigMap to verify the nodes. The front's and the console's public certificates come from the organisation's Issuer for their names, or from Secrets the installer brings | on |
 | kista | a subchart: kista's own chart, `oci://ghcr.io/hugr-lab/charts/kista`. It is the nodes' only repository, and `repository.prefix` defaults to it. Its store (PostgreSQL) and its key source come from values. Its upstreams: DuckDB's core and community repositories, plus our channel or the organisation's hosted tenant, the latter as a private upstream by kista's ServiceAccount token (kista spec 0009, phase 3) | on |
 | tresor-server | a subchart: `oci://ghcr.io/hugr-lab/charts/tresor-server` (v0.6.0 is out), its store from values; `tresor.enabled: false` + `platform.tresor.host` for one the organisation already runs | on |
@@ -201,7 +201,9 @@ The order is one `helm install` plus one action of the installer in tresor:
 
 1. **tresor-server** is a subchart, on by default. `tresor.enabled: false` points at an external one.
 2. **kista**: the demo packages it from source until kista's first release. That release is the product's decision.
-3. **The first groups are created at install only** (`lookup` + keep). After that, the console and kubectl own them.
+3. **The first groups are created at install only**, as post-install hooks rather than a `lookup`. Made with the
+   release's other resources, a group meets the operator's webhook before it serves (`failurePolicy: Fail`), and a
+   `lookup` renders nothing under `helm template`. After that, the console and kubectl own them.
 4. **duckdb-acl's certificate reload is part of stage A**, as a precondition of decision 6.
 5. **The CA bundle** comes from trust-manager, the second prerequisite after cert-manager. A node appending its
    image's roots itself was the alternative: it would change what `HUGR_CA_FILE` means, and the front would still need
