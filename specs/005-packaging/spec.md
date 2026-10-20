@@ -43,10 +43,10 @@ It builds on two decisions of 2026-10-20 (the phase-1 doc):
 
 | part | how | default |
 | --- | --- | --- |
-| the operator | the CRDs as templates (`helm.sh/resource-policy: keep`, so an upgrade applies them and an uninstall leaves the groups), RBAC as spec 001 states it, the Deployment, its Service, the webhook with cert-manager's CA injection, the NetworkPolicy; the ValidatingAdmissionPolicies of `config/policy` optional | on |
+| the operator | the CRDs in `crds/` (Helm installs them first and never upgrades or deletes them: as templates, a `HugrPlatform` in the same release would not map; a changed CRD is `kubectl apply`'d before an upgrade), RBAC as spec 001 states it, the Deployment, its Service, the webhook with cert-manager's CA injection, the NetworkPolicy; the ValidatingAdmissionPolicies of `config/policy` optional | on |
 | `HugrPlatform` | rendered from `platform.*` values: node image, IdP, tresor, repository, CA bundle, front, console, sizes, plan | on |
-| the first groups | `groups[]` values, created at install only: rendered only when `lookup` finds no such group, and kept on uninstall. After that the console and kubectl change them, and `helm upgrade` never resets a scale | one group |
-| certificates | cert-manager is required. The platform's internal CA is a self-signed root, an Issuer the chart makes. It issues the operator's serving and webhook certificate and the doors' (csi-driver, below), and its root goes into the `caBundle` ConfigMap. The front's and the console's public certificates come from the organisation's Issuer for their names, or from Secrets the installer brings | on |
+| the first groups | `groups[]` values as post-install hooks: made once, after the operator - whose webhook judges a group - is ready (`--wait`). A hook is no part of the release: `helm upgrade` never resets a scale made in the console or with kubectl, and the groups stay when the release goes | none |
+| certificates | cert-manager is required. The platform's internal CA and its Issuer (`hugr-internal`) are the namespace's own, so only a pod or a Certificate of this namespace is issued from them: a self-signed root the chart makes, or the organisation's CA as a Secret of the namespace. It issues the operator's serving and webhook certificate and the doors' (csi-driver, below). The operator writes the CA bundle (`hugr-ca-bundle`): its image's public roots, the internal CA (its own certificate's `ca.crt`), the organisation's CAs. The front's and the console's public certificates come from the organisation's issuer for their names, or from Secrets the installer brings | on |
 | kista | a subchart: kista's own chart, `oci://ghcr.io/hugr-lab/charts/kista`. It is the nodes' only repository, and `repository.prefix` defaults to it. Its store (PostgreSQL) and its key source come from values. Its upstreams: DuckDB's core and community repositories, plus our channel or the organisation's hosted tenant, the latter as a private upstream by kista's ServiceAccount token (kista spec 0009, phase 3) | on |
 | tresor-server | a subchart: `oci://ghcr.io/hugr-lab/charts/tresor-server` (v0.6.0 is out), its store from values; `tresor.enabled: false` + `platform.tresor.host` for one the organisation already runs | on |
 
@@ -87,6 +87,35 @@ key source. A password in values would also land in Helm's release Secret.
   create pods in the namespace can ask the platform's issuer for a node's name. That is spec 001's boundary: such a
   person can already run a pod as a group's ServiceAccount. A group's editor picks only the issuer; the names are
   the operator's. cert-manager's approver-policy can narrow it further, as a follow-up.
+
+### Stage A: the spill volume, a group's resource (the owner, 2026-10-20)
+
+DuckDB spills to `temp_directory` when memory runs out, so the volume must be fast and big enough for the group's
+work: an ETL group's large and on local SSD, a BI group's small. Today only the platform's size names it
+(`sizes.<s>.temp: {medium: local, size}`), as an `emptyDir` with a `sizeLimit`, and that falls short in three ways:
+
+- **Its speed is the node's.** An `emptyDir` sits on the kubelet's disk, which in AKS is by default the network OS
+  disk. It is fast only on a pool with an ephemeral OS disk and `kubeletDiskType: Temporary`, on a SKU with a local
+  disk (the `d` series, E16ds_v5: 600 GiB; NVMe on the L series). That is the pool's configuration: stage B.
+- **Its size is not reserved.** A `sizeLimit` caps the volume, but the scheduler knows nothing of it, and a pod may land
+  where it cannot fit, to be evicted mid-query.
+- **There is no choice without a local disk**: a sovereign cluster, a pool of network disks only.
+
+The design:
+
+- **`HugrNodeGroup.spec.temp`** (`medium`, `size`, `storageClassName`) is the group's. The size's `temp` stays its
+  default, so a group written today keeps working.
+- **`medium: local`**: the `emptyDir`, plus an `ephemeral-storage` request of its size, so the scheduler places the
+  pod only where the disk fits.
+- **`medium: volume`**: a generic ephemeral volume, a PVC per pod from `storageClassName`, made with the pod and deleted
+  with it. Azure Premium SSD v2 or Ultra take an IOPS and throughput of their own; a sovereign cluster uses local PVs
+  (TopoLVM, OpenEBS LVM) or its cloud's fast SSD class.
+- **The directory**: the operator mounts the volume and tells the node `HUGR_TEMP_DIRECTORY` (spec 001). DuckDB's
+  `temp_directory` moves through the profile when needed (`ACL CLUSTER SET temp_directory … IN GROUP g`). The node keeps
+  `max_temp_directory_size` under the volume, so an overflow fails one query rather than evicting the pod.
+- **Stage B**: each of the plan's sizes names a SKU with a local disk, and a group's pool gets an ephemeral OS disk and
+  `kubeletDiskType: Temporary`. The Managed Application checks that a group's `local` temp fits the SKU's local disk,
+  and offers `volume` otherwise.
 
 ### Stage A: hugr_node on the node
 
@@ -146,7 +175,7 @@ The order is one `helm install` plus one action of the installer in tresor:
 - **Install**: `install_operator` and `install_platform` become one `helm upgrade --install` with
   `test/demo/values/<provider>.yaml`.
 - **Certificates**: the run's own door certificates go. The demo installs cert-manager and its csi-driver at pinned
-  versions.
+  versions, and gives the chart its CA as the platform's internal CA.
 - **tresor and kista**: subcharts packaged from their source at the dependency's version into the chart's `charts/`.
   The demo runs their main, as it does today.
 - **Keycloak, PostgreSQL and OpenBao** stay the demo's own.
@@ -201,14 +230,34 @@ The order is one `helm install` plus one action of the installer in tresor:
 
 1. **tresor-server** is a subchart, on by default. `tresor.enabled: false` points at an external one.
 2. **kista**: the demo packages it from source until kista's first release. That release is the product's decision.
-3. **The first groups are created at install only** (`lookup` + keep). After that, the console and kubectl own them.
+3. **The first groups are created at install only**, as post-install hooks rather than a `lookup`. Made with the
+   release's other resources, a group meets the operator's webhook before it serves (`failurePolicy: Fail`), and a
+   `lookup` renders nothing under `helm template`. After that, the console and kubectl own them.
 4. **duckdb-acl's certificate reload is part of stage A**, as a precondition of decision 6.
-5. **hugr_node** stays in the image until `v2.0.0`. Its path after that is the proposal in "hugr_node on the node",
+5. **The CA bundle is the operator's** (the owner, 2026-10-20; it replaces trust-manager, decided the same day). The
+   operator writes `hugr-ca-bundle` from three sources: its image's public roots, its own serving certificate's
+   `ca.crt` (the internal CA, so the operator needs no right to the CA's Secret), and the ConfigMaps
+   `caBundle.extra` names. Only CERTIFICATE blocks enter, each once. It never writes over a ConfigMap of that name
+   that is not its own. One prerequisite fewer; the public roots follow the operator's image.
+6. **Several platforms in one cluster** are isolated by namespace: one platform per namespace (spec 001's boundary).
+   The cluster-scoped objects (ClusterRole, ClusterRoleBinding, the webhook's configuration) are named after the
+   namespace. The CRDs are the one thing they share, at one version: one release installs them (`crds.install`, on
+   by default), and the others set it off.
+7. **The internal CA is the namespace's own** (the owner, 2026-10-20). It replaces a ClusterIssuer in cert-manager's
+   namespace, decided the same day: a ClusterIssuer issues to every namespace, so any team that may create a
+   Certificate, or mount the csi-driver into its pods, would get a certificate for a node's or the operator's name
+   from the CA the platform trusts. Found in review before the chart's first PR. A namespaced Issuer keeps spec 001's
+   boundary: only the platform's namespace is issued from it.
+8. **hugr_node** stays in the image until `v2.0.0`. Its path after that is the proposal in "hugr_node on the node",
    to be confirmed.
 
 ## Follow-ups
 
 - Stage B.
+- **The front and the console verify a node by the internal CA alone.** Today they read the platform's whole bundle
+  (spec 002's `FrontCABundle`), public roots and `caBundle.extra` included. A public CA issues no certificate for a
+  `.svc` name, but an organisation's CA added to `extra` could. The operator would write a second ConfigMap with the
+  internal CA only, and the chart would point `spec.front.caBundle` at it.
 - ADBC drivers (decision 9; the owner, 2026-10-20). For now: a driver image per group in `HugrNodeGroup`, mounted by an
   init container, plus `adbc_` in duckdb-acl's never set; its own spec. After the release: kista serves ADBC drivers on
   a par with extensions, as a product change of kista's.

@@ -1,0 +1,118 @@
+{{/* The platform's certificates (spec 005). The internal CA and its Issuer are this namespace's own - only a pod or a
+Certificate of this namespace is issued from them (spec 001's boundary; a ClusterIssuer would issue a node's name to
+any namespace). The CA issues the operator's certificate here and the doors' through the csi-driver; the operator
+writes the CA bundle (hugr-ca-bundle) from its own certificate's ca.crt. The console's and the front's public
+certificates come from the organisation's issuer, the internal CA, or a Secret the installer brings. */}}
+{{- if not .Values.internalCA.existingSecret }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: hugr-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "hugr.caName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: hugr platform {{ .Release.Namespace }} internal CA
+  secretName: {{ include "hugr.caName" . }}
+  duration: {{ .Values.internalCA.duration }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: hugr-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "hugr.issuerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ include "hugr.caSecret" . }}
+---
+# the operator's serving certificate: the node API and the webhook; its ca.crt is the internal CA the operator puts
+# into the CA bundle
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hugr-platform
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  secretName: hugr-platform-tls
+  dnsNames:
+  - hugr-platform.{{ .Release.Namespace }}.svc
+  - hugr-platform.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    {{- include "hugr.internalIssuerRef" . | nindent 4 }}
+{{- if and .Values.console.enabled (not .Values.console.secretName) }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hugr-console
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  secretName: hugr-console
+  dnsNames:
+  {{- range .Values.console.dnsNames }}
+  - {{ . }}
+  {{- end }}
+  - hugr-platform-console.{{ .Release.Namespace }}.svc
+  {{- with .Values.console.ipAddresses }}
+  ipAddresses:
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+  issuerRef:
+    {{- if .Values.console.issuerRef }}
+    {{- toYaml .Values.console.issuerRef | nindent 4 }}
+    {{- else }}
+    {{- include "hugr.internalIssuerRef" . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if and (hasKey .Values.platform.spec "front") (not .Values.front.secretName) }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hugr-front
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  secretName: hugr-front
+  dnsNames:
+  {{- range .Values.front.dnsNames }}
+  - {{ . }}
+  {{- end }}
+  - hugr-front.{{ .Release.Namespace }}.svc
+  {{- with .Values.front.ipAddresses }}
+  ipAddresses:
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+  issuerRef:
+    {{- if .Values.front.issuerRef }}
+    {{- toYaml .Values.front.issuerRef | nindent 4 }}
+    {{- else }}
+    {{- include "hugr.internalIssuerRef" . | nindent 4 }}
+    {{- end }}
+{{- end }}

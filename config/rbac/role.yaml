@@ -8,9 +8,10 @@ rules:
   - ""
   resources:
   - configmaps
-  - pods/log
   verbs:
+  - create
   - get
+  - update
 - apiGroups:
   - ""
   resources:
@@ -29,6 +30,12 @@ rules:
   - list
   - patch
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
 - apiGroups:
   - ""
   resources:

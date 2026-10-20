@@ -8,7 +8,7 @@ STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@2026.1
 ENVTEST_K8S_VERSION ?= 1.35.0
 IMAGE ?= ghcr.io/hugr-lab/hugr-platform:dev
 
-.PHONY: all generate manifests build test test-unit test-envtest fmt vet staticcheck lint image console console-test console-e2e
+.PHONY: all generate manifests chart build test test-unit test-envtest fmt vet staticcheck lint image console console-test console-e2e
 
 all: generate manifests build test
 
@@ -21,6 +21,15 @@ manifests:
 	$(CONTROLLER_GEN) crd rbac:roleName=hugr-platform-operator webhook paths=./... \
 		output:crd:artifacts:config=config/crd output:rbac:artifacts:config=config/rbac \
 		output:webhook:artifacts:config=config/webhook
+	@# spec 005: the chart carries the same generated files - its CRDs, the operator's rules, the webhook's registration
+	cp config/crd/platform.hugr.io_*.yaml charts/hugr-platform/crds/
+	cp config/rbac/role.yaml charts/hugr-platform/files/rbac/role.yaml
+	cp config/webhook/manifests.yaml charts/hugr-platform/files/webhook/manifests.yaml
+
+## chart: the chart linted and rendered with its example values (spec 005)
+chart:
+	helm lint --strict charts/hugr-platform -f charts/hugr-platform/ci/example-values.yaml
+	helm template hugr charts/hugr-platform -n hugr -f charts/hugr-platform/ci/example-values.yaml >/dev/null
 
 build:
 	go build ./...

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: hugr-platform
+description: >-
+  The hugr platform in one namespace - its operator (node groups, the node API, the webhook, the front and the
+  console), its internal CA and trust bundle, the HugrPlatform and its first node groups (hugr-platform spec 005)
+type: application
+version: 0.1.0
+appVersion: "dev"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/hugr-lab/hugr-platform
+sources:
+  - https://github.com/hugr-lab/hugr-platform

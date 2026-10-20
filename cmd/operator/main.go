@@ -37,6 +37,7 @@ import (
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 	"github.com/hugr-lab/hugr-platform/internal/front/watch"
 	"github.com/hugr-lab/hugr-platform/internal/nodeapi"
+	"github.com/hugr-lab/hugr-platform/internal/trustbundle"
 	groupwebhook "github.com/hugr-lab/hugr-platform/internal/webhook"
 	webconsole "github.com/hugr-lab/hugr-platform/web/console"
 )
@@ -56,6 +57,9 @@ func main() {
 		consoleAddr     string
 		consoleCertDir  string
 		consolePlatform string
+		caBundle        string
+		caBundleRoots   string
+		caBundleExtra   string
 	)
 	flag.StringVar(&namespace, "namespace", os.Getenv("POD_NAMESPACE"), "the namespace the operator serves")
 	flag.StringVar(&orchestratorURL, "orchestrator-url", "", "the operator's in-cluster https URL the nodes reach (HUGR_ORCHESTRATOR)")
@@ -70,6 +74,10 @@ func main() {
 	flag.StringVar(&consoleAddr, "console-address", ":8444", "where the web console listens (https, spec 003)")
 	flag.StringVar(&consoleCertDir, "console-cert-dir", "/etc/hugr-console/tls", "the console's public certificate (tls.crt, tls.key); none: no console")
 	flag.StringVar(&consolePlatform, "console-platform", "", "the HugrPlatform the console serves (empty: the only one of the namespace)")
+	flag.StringVar(&caBundle, "ca-bundle", "", "spec 005: the ConfigMap (key ca.crt) the operator writes the platform's CA bundle "+
+		"into - the image's public roots, the issuer of its serving certificate, the extra CAs (empty: none written)")
+	flag.StringVar(&caBundleRoots, "ca-bundle-roots", "/etc/ssl/certs/ca-certificates.crt", "the public roots the CA bundle starts from")
+	flag.StringVar(&caBundleExtra, "ca-bundle-extra", "", "more CAs for the bundle: ConfigMaps of the namespace, name/key[,name/key...]")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -146,6 +154,21 @@ func main() {
 	if err := mgr.Add(door); err != nil {
 		logger.Error(err, "no node API")
 		os.Exit(1)
+	}
+
+	// spec 005: the platform's CA bundle, the leader's to write
+	if caBundle != "" {
+		extra, err := trustbundle.ParseSources(caBundleExtra)
+		if err != nil {
+			logger.Error(err, "--ca-bundle-extra")
+			os.Exit(1)
+		}
+		if err := mgr.Add(&trustbundle.Writer{Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Namespace: namespace,
+			Name: caBundle, Key: "ca.crt", RootsFile: caBundleRoots, InternalCAFile: filepath.Join(certDir, "ca.crt"),
+			Extra: extra, Log: logger.WithName("ca-bundle")}); err != nil {
+			logger.Error(err, "no CA bundle writer")
+			os.Exit(1)
+		}
 	}
 
 	// the console (spec 003): every replica serves it when its certificate is mounted

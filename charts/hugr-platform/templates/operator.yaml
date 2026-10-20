@@ -1,0 +1,138 @@
+{{/* The operator (config/manager): every replica answers HTTP - the node API on 8443, the webhook on 9443, the
+console on 8444 when its certificate is mounted, the probes on 8081; the leader reconciles. */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hugr-platform
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: hugr-platform
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: hugr-platform
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: hugr-platform
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: operator
+        image: {{ include "hugr.operatorImage" . }}
+        imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+        args:
+        - --orchestrator-url=https://hugr-platform.{{ .Release.Namespace }}.svc:8443
+        # spec 005: the platform's CA bundle - the image's public roots, the internal CA, the organisation's CAs
+        - --ca-bundle={{ include "hugr.bundleName" . }}
+        {{- with .Values.caBundle.extra }}
+        - --ca-bundle-extra={{ range $i, $s := . }}{{ if $i }},{{ end }}{{ $s.name }}/{{ $s.key }}{{ end }}
+        {{- end }}
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME # the front runs this pod's image (spec 002)
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - {name: node-api, containerPort: 8443}
+        - {name: webhook, containerPort: 9443}
+        - {name: console, containerPort: 8444}
+        - {name: probes, containerPort: 8081}
+        readinessProbe:
+          httpGet: {path: /readyz, port: probes}
+        livenessProbe:
+          httpGet: {path: /healthz, port: probes}
+        resources:
+          {{- toYaml .Values.operator.resources | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        volumeMounts:
+        - {name: tls, mountPath: /etc/hugr-platform/tls, readOnly: true}
+        - {name: console-tls, mountPath: /etc/hugr-console/tls, readOnly: true}
+      volumes:
+      - name: tls
+        secret:
+          secretName: hugr-platform-tls
+      # the console's public certificate (spec 003); without it the operator serves no console
+      - name: console-tls
+        secret:
+          secretName: {{ default "hugr-console" .Values.console.secretName }}
+          optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hugr-platform
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  selector:
+    app.kubernetes.io/part-of: hugr-platform
+    app.kubernetes.io/component: operator
+  ports:
+  - {name: node-api, port: 8443, targetPort: node-api}
+  - {name: webhook, port: 443, targetPort: webhook}
+{{- if .Values.console.enabled }}
+---
+# the console (spec 003): the installation's Ingress or load balancer points here
+apiVersion: v1
+kind: Service
+metadata:
+  name: hugr-platform-console
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  selector:
+    app.kubernetes.io/part-of: hugr-platform
+    app.kubernetes.io/component: operator
+  ports:
+  - {name: https, port: 443, targetPort: console}
+{{- end }}
+---
+# the operator's own doors: the node API answers a group's pods only; the console, the webhook, the metrics (behind
+# TokenReview and SubjectAccessReview) and the probes stay reachable - the API server and kubelet are no pods a policy
+# can name
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hugr-platform
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: hugr-platform
+      app.kubernetes.io/component: operator
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - {key: platform.hugr.io/group, operator: Exists}
+    ports:
+    - {protocol: TCP, port: 8443}
+  - ports:
+    - {protocol: TCP, port: 8444} # the console: people, through the installation's Ingress
+    - {protocol: TCP, port: 9443}
+    - {protocol: TCP, port: 8080}
+    - {protocol: TCP, port: 8081}
