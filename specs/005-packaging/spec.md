@@ -165,12 +165,14 @@ the admission policies leave it alone. Then the first node writes the first poli
      no group serves, say) gets no document: the node waits, and the operator logs why;
    - **where it is applied:** in the node's own process, before it serves, into a catalog nobody administers yet: one
      with no role mapping and no issuer but the first policy's own (an empty database gets its schema first). It writes
-     the role `platform_admin` with the `cluster` and `policy` bundles, a resource group per group bound to that role,
-     the issuer, its clients, and last the administrators' mapping. A node whose group the policy lacks refuses
-     everyone and drains (duckdb-acl spec 096), so the groups are part of it;
+     the role `platform_admin` with the `cluster`, `policy` and `passthrough` bundles, a resource group per group bound
+     to that role, the issuer, its clients, and last the administrators' mapping. A node whose group the policy lacks
+     refuses everyone and drains (duckdb-acl spec 096), so the groups are part of it;
    - **never overwrites:** the mappings come last, so a write that stopped part-way is completed by the next start,
      and a catalog with a mapping is left alone. Nodes that start together race to the same policy;
-   - **what `platform_admin` cannot do:** hand out administration, which is `passthrough`'s alone in duckdb-acl;
+   - **`passthrough` too** (the owner, 2026-10-20): handing out administration is `passthrough`'s alone in duckdb-acl
+     (a catalog's `manage` for a mapped role, a mapping to an administering role, the issuer and the console's client),
+     and no one else in a deployed platform holds it. It is also `ACL NATIVE`: the administrators' value is for few;
    - **the specs:** hugr-node spec 015 (the document's field, the write) and this one (the field, the document).
 
 Where `hugr-init`'s rights come from:
