@@ -229,7 +229,8 @@ they run once per `up` (`all` does both).
    admin's; a scale of `a` to 4 is the webhook's refusal (422), one of `b` within the plan is the console's field
    manager's, the admin named on the group; tresor's and kista's modules come through the mounts, and tresor's
    `whoami` answers the seeder there (the demo's kista signs nobody in: the platform names no kista audience, so the
-   shell offers no Extensions page). The admin holds the `meta` and `environment` function categories (the engine's
+   shell offers no Extensions page). After it all, no session of the admin's is left on any node (`platform.sessions`
+   as the break-glass principal): each console call was a session of its own. The admin holds the `meta` and `environment` function categories (the engine's
    memory and extensions are duckdb's own functions).
 5. **A hot item.** `ACL CLUSTER ATTACH … IN GROUP a`, written by `platform_admin` through a node of `a`:
    - every node of `a` applies it on its tick and reports `applied` at the new version;

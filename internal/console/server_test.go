@@ -42,10 +42,9 @@ func tokenOf(iss, sub string, exp time.Time) string {
 type call struct{ label, token, statement string }
 
 type fakeNodes struct {
-	mu        sync.Mutex
-	calls     []call
-	answer    func(node fleet.Node, statement string) (*Result, error)
-	signedOut []string
+	mu     sync.Mutex
+	calls  []call
+	answer func(node fleet.Node, statement string) (*Result, error)
 }
 
 func (f *fakeNodes) Query(_ context.Context, node fleet.Node, token, statement string) (*Result, error) {
@@ -56,13 +55,6 @@ func (f *fakeNodes) Query(_ context.Context, node fleet.Node, token, statement s
 		return nil, errUnreachable // as the Pool: a node with no door is dialled nowhere
 	}
 	return f.answer(node, statement)
-}
-
-func (f *fakeNodes) SignOut(_ context.Context, token string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.signedOut = append(f.signedOut, token)
-	return 1
 }
 
 func (f *fakeNodes) statements(statement string) int {
@@ -302,11 +294,6 @@ func TestRefusedToken(t *testing.T) {
 	if code != http.StatusUnauthorized {
 		t.Errorf("a token the nodes refuse is the sign-in's problem: %d", code)
 	}
-	// the pool's sessions are a person's, by the subject a token names: one no node verified ends none of them
-	if code, _, _ := h.do(t, "POST", APIPrefix+"sign-out", opsToken, ""); code != http.StatusUnauthorized ||
-		len(h.nodes.signedOut) != 0 {
-		t.Errorf("sign-out with a refused token: %d, signed out %d", code, len(h.nodes.signedOut))
-	}
 }
 
 func TestNoAdministration(t *testing.T) {
@@ -456,19 +443,19 @@ func TestGroupsAnswer(t *testing.T) {
 func TestSignOut(t *testing.T) {
 	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
 	h.do(t, "GET", APIPrefix+"me", opsToken, "")
-	if code, _, _ := h.do(t, "POST", APIPrefix+"sign-out", opsToken, ""); code != 200 {
+	calls := len(h.nodes.calls)
+	if code, _, _ := h.do(t, "POST", APIPrefix+"sign-out", opsToken, ""); code != http.StatusNoContent {
 		t.Fatalf("sign-out: %d", code)
 	}
-	if len(h.nodes.signedOut) != 1 {
-		t.Errorf("the pool closes the person's sessions")
+	if len(h.nodes.calls) != calls {
+		t.Errorf("sign-out asks no node: the console holds no session on any")
 	}
 	if _, ok := h.server.rights.get(tokenHash(opsToken), testNow); ok {
 		t.Error("the rights of a token signed out are forgotten")
 	}
 }
 
-// A token past its exp is refused before any node is asked: a node keeps a person's session for a later token and,
-// by duckdb-acl's default binding, judges exp only when a session opens. The rights cached for a token end with it.
+// A token past its exp is refused before any node is asked, and the rights cached for a token end with it.
 func TestTokenPastItsTime(t *testing.T) {
 	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
 	for name, token := range map[string]string{
@@ -601,5 +588,27 @@ func TestHeaders(t *testing.T) {
 	if !strings.HasPrefix(w.Header().Get("Strict-Transport-Security"), "max-age=") ||
 		w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("the headers every answer carries: %v", w.Header())
+	}
+}
+
+// A draining node seats only the call of a person who may resume it: the rights are asked of a node that serves first,
+// and of a draining one only when no other answers - an operator still signs in when every node drains.
+func TestRightsAskAServingNodeFirst(t *testing.T) {
+	draining := node("hugr-node-etl-a", "etl")
+	draining.Lease.Summary.Draining = true
+	h := newHarness(t, observeInfo, draining, node("hugr-node-etl-b", "etl"))
+	for range 4 { // whichever the shuffle
+		h.server.rights = rightsCache{}
+		h.nodes.calls = nil
+		if code, _, _ := h.do(t, "GET", APIPrefix+"me", opsToken, ""); code != 200 {
+			t.Fatalf("me: %d", code)
+		}
+		if len(h.nodes.calls) != 1 || h.nodes.calls[0].label != "hugr-node-etl-b" {
+			t.Fatalf("the serving node is asked: %v", h.nodes.calls)
+		}
+	}
+	only := newHarness(t, observeInfo, draining)
+	if code, _, _ := only.do(t, "GET", APIPrefix+"me", opsToken, ""); code != 200 || only.nodes.calls[0].label != "hugr-node-etl-a" {
+		t.Errorf("every node drains: the draining one is asked: %d %v", code, only.nodes.calls)
 	}
 }

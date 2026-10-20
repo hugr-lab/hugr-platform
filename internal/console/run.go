@@ -31,7 +31,7 @@ type Door struct {
 	Addr    string
 	CertDir string
 	Server  *Server
-	// Pool is pruned of gone nodes and idle sessions every minute.
+	// Pool is pruned of gone nodes every minute.
 	Pool *Pool
 	// Watch keeps the Server's fleet current until its context ends.
 	Watch func(ctx context.Context)
@@ -120,9 +120,9 @@ func (d *Door) prune(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-ticker.C:
+		case <-ticker.C:
 			v := d.Server.view()
-			d.Pool.Prune(func(label string) bool { return v != nil && v.Node(label) != nil }, now)
+			d.Pool.Prune(func(label string) bool { return v != nil && v.Node(label) != nil })
 		}
 	}
 }

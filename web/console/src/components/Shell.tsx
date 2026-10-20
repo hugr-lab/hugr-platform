@@ -16,7 +16,7 @@ export function Shell({ children }: { children: ReactNode }) {
       .then(([tresor, kista]) => setMounts({ tresor, kista }))
   }, [config, session])
   const signOut = async () => {
-    await api.signOut().catch(() => undefined) // the nodes' sessions end; the IdP's next
+    await api.signOut().catch(() => undefined) // the rights the console read are forgotten; the IdP's next
     await session.signOut()
   }
   const nav = 'flex items-center gap-3 rounded-full px-4 py-2.5 text-[15px] font-medium text-[#e8f1f2] transition-colors hover:bg-navy-line hover:text-white'

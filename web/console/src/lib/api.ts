@@ -74,7 +74,7 @@ export class Api {
     this.request<unknown>('POST', `nodes/${part(label)}/sessions/${part(id)}/end`)
   drain = (label: string) => this.request<unknown>('POST', `nodes/${part(label)}/drain`)
   resume = (label: string) => this.request<unknown>('POST', `nodes/${part(label)}/resume`)
-  signOut = () => this.request<{ closed: number }>('POST', 'sign-out')
+  signOut = () => this.request<void>('POST', 'sign-out')
   // round 2
   pod = (label: string) => this.request<PodPage>('GET', `nodes/${part(label)}/kubernetes`)
   memory = (label: string) => this.request<MemoryPage>('GET', `nodes/${part(label)}/memory`)

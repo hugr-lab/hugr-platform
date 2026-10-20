@@ -117,8 +117,19 @@ func answering(view *fleet.View, now time.Time) []*fleet.Node {
 // the token is refused only when every node that answered refused it so.
 func askRights(ctx context.Context, nodes Caller, view *fleet.View, token string, now time.Time,
 	rnd *rand.Rand) (Info, error) {
-	candidates := answering(view, now)
-	rnd.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
+	// a draining node seats only the call of a person who may resume it (duckdb-acl spec 066's addendum): it is asked
+	// last, so everyone else is answered by a node that serves - and an operator still is when all of them drain
+	var serving, draining []*fleet.Node
+	for _, n := range answering(view, now) {
+		if n.Lease != nil && n.Lease.Summary.Draining {
+			draining = append(draining, n)
+		} else {
+			serving = append(serving, n)
+		}
+	}
+	rnd.Shuffle(len(serving), func(i, j int) { serving[i], serving[j] = serving[j], serving[i] })
+	rnd.Shuffle(len(draining), func(i, j int) { draining[i], draining[j] = draining[j], draining[i] })
+	candidates := append(serving, draining...)
 	tried := map[string]bool{}
 	var groups []string
 	refusedToken, failed := 0, 0
@@ -242,9 +253,8 @@ func claimsOf(token string) tokenClaims {
 }
 
 // current says whether the console takes the token at `now`: a JWT whose `exp` has not passed. Read unverified, it can
-// only refuse: a node keeps a session's cookie for a later token of the same principal, and under duckdb-acl's default
-// binding (spec 059) judges `exp` only when a session opens - so the console's pool, which keeps a person's session
-// for the person's next token, must not hand it to a token past its time.
+// only refuse: no node is asked for a token past its time (each call's session opens anew, where the node judges it
+// too), and the rights cached for a token end with it.
 func current(token string, now time.Time) bool {
 	exp := claimsOf(token).exp
 	return !exp.IsZero() && now.Before(exp.Add(tokenSkew))

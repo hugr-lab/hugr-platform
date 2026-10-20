@@ -82,7 +82,8 @@ probe() { # <token file> <statement>...
 	"$WORK/probe" -node "etl=127.0.0.1:$PORT" -ca "$WORK/ca.crt" -token-file "$token" "$@"
 }
 
-# the operator: its rights, the load report, the sessions (its own among them), drain and resume, an unknown session
+# the operator: its rights, the load report, the sessions (its own call's among them), drain and resume, an unknown
+# session
 probe "$WORK/ops.token" \
 	"SELECT * FROM platform.console_info()" \
 	"SELECT * FROM platform.node_load" \
@@ -101,6 +102,13 @@ probe "$WORK/ops.token" \
 	"SELECT ts, seq, kind, level, door, session, subject, roles, statement, verdict, reason_code, rows, duration_us, correlation_id, traceparent, detail FROM platform.audit_events ORDER BY seq DESC LIMIT 200" \
 	"SET SESSION '0A1B2C3D4E5F' AUDIT LEVEL ALL" "PROFILE SESSION '0A1B2C3D4E5F' SAMPLED" \
 	>"$WORK/round2.json" || fail "the round 2 probe"
+# the console holds no session on the node: after the operator's dozen calls, a fresh one finds at most its own
+probe "$WORK/ops.token" "SELECT count(*) AS n FROM platform.sessions WHERE subject = 'ops@example.org'" \
+	>"$WORK/left.json" || fail "the sessions left"
+python3 -c 'import json, sys
+left = list(json.load(open(sys.argv[1])).values())[0][0]["n"]
+assert left <= 1, f"the console left sessions of the operator on the node: {left}"' "$WORK/left.json" ||
+	fail "the console left a session on the node"
 # the analyst: no administration - the rights say so and the node refuses its reads
 probe "$WORK/analyst.token" \
 	"SELECT * FROM platform.console_info()" "SELECT * FROM platform.node_load" "DRAIN NODE" \
@@ -123,7 +131,7 @@ assert all(len(s["id"]) == 12 for s in sessions), sessions
 for k in ("DRAIN NODE", "RESUME NODE"):
     assert "error" not in ops[k], (k, ops[k])
 assert ops["KILL SESSION '0A1B2C3D4E5F'"] == [{"kill_session": False}], ops["KILL SESSION '0A1B2C3D4E5F'"]
-assert ops["signed_out"] == 1, ops["signed_out"]
+# each call was a session of its own: the one that listed the sessions was there, none is left after (below)
 # no administration at all: the node refuses console_info itself (a binder error) - the console reads no rights
 assert analyst["SELECT * FROM platform.console_info()"].get("code") == "InvalidArgument", analyst
 assert "error" in analyst["SELECT * FROM platform.node_load"], analyst

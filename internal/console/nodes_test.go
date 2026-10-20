@@ -8,8 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"math/big"
 	"net"
@@ -84,12 +82,6 @@ func principalOf(token string) string {
 		return c.iss + "|" + c.sub
 	}
 	return token
-}
-
-// jwt is a token of iss and sub; jti makes each one another token, signature names how the door judges it
-func jwt(iss, sub, jti, signature string) string {
-	claims, _ := json.Marshal(map[string]string{"iss": iss, "sub": sub, "jti": jti})
-	return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(claims) + "." + signature
 }
 
 func (d *fakeDoor) GetFlightInfoStatement(ctx context.Context, cmd flightsql.StatementQuery,
@@ -212,20 +204,18 @@ func TestPoolAgainstADoor(t *testing.T) {
 	seen := append([]string{}, door.seen...)
 	issued := door.issued
 	door.mu.Unlock()
-	if issued != 2 {
-		t.Errorf("one session per node and token: %d issued, calls %q", issued, seen)
+	// no session kept on the node: every call - a statement's GetFlightInfo, its DoGet - comes without a cookie, so the
+	// node seats a session for that call alone, and the cookie it sets is never sent back
+	if issued != len(seen) || len(seen) != 6 {
+		t.Errorf("a session per call: %d issued for %d calls %q", issued, len(seen), seen)
 	}
-	if seen[0] != "info alice-token " {
-		t.Errorf("the first call opens the session, no cookie: %q", seen[0])
+	for _, call := range seen {
+		if !strings.HasSuffix(call, " ") {
+			t.Errorf("a call carried a cookie: %q", call)
+		}
 	}
-	if seen[1] != "get alice-token acl_flight_session_id=s1; acl_node=hugr-node-etl-a" {
-		t.Errorf("the DoGet carries the cookie the node set, and only the kept ones: %q", seen[1])
-	}
-	if seen[2] != "info alice-token acl_flight_session_id=s1; acl_node=hugr-node-etl-a" {
-		t.Errorf("a later statement reuses the session: %q", seen[2])
-	}
-	if !strings.HasPrefix(seen[4], "info bob-token ") || strings.Contains(seen[4], "s1") {
-		t.Errorf("another token never carries alice's cookie: %q", seen[4])
+	if seen[1] != "get alice-token " {
+		t.Errorf("the DoGet redeems its ticket by the bearer alone: %q", seen[1])
 	}
 
 	if at, ok := pool.CertificateExpiry(n.Label); !ok || at.Before(time.Now()) {
@@ -234,66 +224,15 @@ func TestPoolAgainstADoor(t *testing.T) {
 	if _, ok := pool.CertificateExpiry("never-spoken-to"); ok {
 		t.Error("a node never spoken to has no known certificate")
 	}
-	if closed := pool.SignOut(ctx, "alice-token"); closed != 1 {
-		t.Errorf("sign-out closes alice's one session: %d", closed)
-	}
-	door.mu.Lock()
-	if len(door.closed) != 1 || door.closed[0] != "s1" {
-		t.Errorf("CloseSession with alice's cookie: %v", door.closed)
-	}
-	door.mu.Unlock()
-	if closed := pool.SignOut(ctx, "alice-token"); closed != 0 {
-		t.Errorf("nothing left to close: %d", closed)
-	}
-
 	_, err = pool.Query(ctx, n, "refused", "SELECT 1")
 	var refused *NodeError
 	if !errors.As(err, &refused) || !authFailed(err) || refused.Message != "acl: authentication failed" {
 		t.Errorf("a refused token is the node's own answer: %v", err)
 	}
-	pool.mu.Lock()
-	if _, kept := pool.sessions[sessionKey{label: n.Label, person: personOf("refused")}]; kept {
-		t.Error("a refused token's cookie is never kept: the pool holds nothing for a token nobody verified")
-	}
-	pool.mu.Unlock()
 	_, err = pool.Query(ctx, n, "elsewhere", "SELECT 1")
 	if !errors.As(err, &refused) || len(refused.Groups) != 2 || refused.Groups[0] != "gen eral" ||
 		refused.Groups[1] != "etl" {
 		t.Errorf("the groups the refusal names, decoded: %v %+v", err, refused)
-	}
-}
-
-// A person's refreshed token keeps the node's session: a draining node seats nobody new (duckdb-acl spec 066), and the
-// person who drained it resumes it with the token they hold by then.
-func TestPoolKeepsAPersonsSession(t *testing.T) {
-	door, n, roots := startDoor(t)
-	pool := &Pool{Namespace: "hugr", Roots: func(context.Context) (*x509.CertPool, error) { return roots, nil }}
-	ctx := context.Background()
-	issuer := "https://idp.example.org/realms/hugr"
-	for _, token := range []string{jwt(issuer, "alice", "1", "sig"), jwt(issuer, "alice", "2", "sig")} {
-		if _, err := pool.Query(ctx, n, token, "SELECT 1"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// a token naming alice that the node does not verify carries her cookie and is refused there, her session kept
-	if _, err := pool.Query(ctx, n, jwt(issuer, "alice", "3", "forged"), "SELECT 1"); err == nil {
-		t.Fatal("the node refuses a token it does not verify")
-	}
-	if _, err := pool.Query(ctx, n, jwt(issuer, "alice", "4", "sig"), "SELECT 1"); err != nil {
-		t.Fatal(err)
-	}
-	// the same subject of another issuer is somebody else
-	if _, err := pool.Query(ctx, n, jwt("https://other.example.org", "alice", "5", "sig"), "SELECT 1"); err != nil {
-		t.Fatal(err)
-	}
-	door.mu.Lock()
-	issued, seen := door.issued, append([]string{}, door.seen...)
-	door.mu.Unlock()
-	if issued != 2 {
-		t.Errorf("one session for alice's tokens, one for the other issuer's alice: %d, calls %q", issued, seen)
-	}
-	if closed := pool.SignOut(ctx, jwt(issuer, "alice", "6", "sig")); closed != 1 {
-		t.Errorf("sign-out with alice's latest token closes her session: %d", closed)
 	}
 }
 
@@ -318,39 +257,18 @@ func TestPoolUnreachableAndUntrusted(t *testing.T) {
 	}
 }
 
-func TestMergeCookies(t *testing.T) {
-	got := mergeCookies("", []string{"acl_flight_session_id=a; HttpOnly", "tracker=1", "acl_node=n1; Path=/"})
-	if got != "acl_flight_session_id=a; acl_node=n1" {
-		t.Errorf("only the node's two cookies are kept: %q", got)
-	}
-	got = mergeCookies(got, []string{"acl_flight_session_id=b"})
-	if got != "acl_flight_session_id=b; acl_node=n1" {
-		t.Errorf("a newer value replaces the older: %q", got)
-	}
-}
-
-func TestPoolBoundsItsSessions(t *testing.T) {
-	pool := &Pool{}
-	for i := 0; i <= sessionsMax; i++ {
-		pool.keep(sessionKey{label: "a", person: strconv.Itoa(i)},
-			metadata.Pairs("set-cookie", "acl_flight_session_id=s"+strconv.Itoa(i)))
-	}
-	if len(pool.sessions) != sessionsMax {
-		t.Errorf("past the bound the session unused longest goes: %d kept", len(pool.sessions))
-	}
-}
-
 func TestPrune(t *testing.T) {
-	pool := &Pool{}
-	now := time.Now()
-	pool.sessions = map[sessionKey]session{
-		{label: "a", person: "t"}: {cookie: "x", used: now},
-		{label: "a", person: "u"}: {cookie: "y", used: now.Add(-sessionIdle - time.Second)},
-		{label: "b", person: "t"}: {cookie: "z", used: now},
+	_, n, roots := startDoor(t)
+	pool := &Pool{Namespace: "hugr", Roots: func(context.Context) (*x509.CertPool, error) { return roots, nil }}
+	if _, err := pool.Query(context.Background(), n, "alice-token", "SELECT 1"); err != nil {
+		t.Fatal(err)
 	}
-	pool.channels = map[string]*channel{"a": {}}
-	pool.Prune(func(label string) bool { return label == "a" }, now)
-	if len(pool.sessions) != 1 {
-		t.Errorf("an idle session and one of a node without a channel go: %v", pool.sessions)
+	pool.Prune(func(string) bool { return true })
+	if len(pool.channels) != 1 {
+		t.Errorf("a live node's channel stays: %d", len(pool.channels))
+	}
+	pool.Prune(func(string) bool { return false })
+	if len(pool.channels) != 0 {
+		t.Errorf("a gone node's channel is closed: %d", len(pool.channels))
 	}
 }
