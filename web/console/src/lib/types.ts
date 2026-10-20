@@ -154,6 +154,8 @@ export interface PodPage {
   limits: Usage
   usage: Usage | null
   usageError?: string
+  /** the metrics API has not sampled the pod yet: asked again shortly */
+  usagePending?: boolean
   certificateExpiry: string | null
   events: { type: string; reason: string; message: string; count: number; last: string }[]
 }

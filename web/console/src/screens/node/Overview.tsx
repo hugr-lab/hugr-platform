@@ -1,14 +1,32 @@
+import { useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { Bar, Problem, Ring } from '../../components/ui'
 import { useApp, useLoad } from '../../lib/context'
 import { bytes, share } from '../../lib/format'
 import { NodeFrame, entries } from './Frame'
 
+const sampleWait = 20_000 // ms: the metrics API samples a pod about once a minute
+const samplesAsked = 6
+
 export function Overview() {
   const { label = '' } = useParams()
   const { api } = useApp()
   const pod = useLoad(() => api.pod(label), [api, label])
   const memory = useLoad(() => api.memory(label), [api, label])
+  // a new pod has no sample for up to a minute: read it again until it has one (a few times, then the person's Refresh)
+  const asked = useRef(0)
+  useEffect(() => {
+    asked.current = 0 // another node: its own few reads
+  }, [label])
+  const pending = pod.data?.usagePending === true
+  useEffect(() => {
+    if (!pending || asked.current >= samplesAsked) return
+    const timer = setTimeout(() => {
+      asked.current++
+      pod.reload()
+    }, sampleWait)
+    return () => clearTimeout(timer)
+  }, [pending, pod.data])
   return (
     <NodeFrame label={label} alsoReload={() => { pod.reload(); memory.reload() }}>
       {(page) => {

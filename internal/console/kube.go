@@ -284,6 +284,8 @@ type PodAnswer struct {
 	Limits     ResourcesPair `json:"limits"`
 	Usage      *Usage        `json:"usage"`
 	UsageError string        `json:"usageError,omitempty"`
+	// UsagePending: the metrics API has not sampled the pod yet - a page asks again shortly.
+	UsagePending bool `json:"usagePending,omitempty"`
 	// CertificateExpiry of the node's doors, as the console's last TLS handshake with it showed it.
 	CertificateExpiry *time.Time    `json:"certificateExpiry"`
 	Events            []EventAnswer `json:"events"`

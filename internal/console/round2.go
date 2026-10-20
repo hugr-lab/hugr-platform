@@ -65,10 +65,14 @@ func (s *Server) kubernetes(w http.ResponseWriter, r *http.Request, _ string, _ 
 	out := podAnswer(pod, events)
 	if usage, err := s.Kube.Usage(r.Context(), n.Label); err != nil {
 		out.UsageError = "the metrics API did not answer"
-	} else if usage == nil {
-		out.UsageError = "the cluster has no metrics API (metrics-server), or no sample of the pod yet"
-	} else {
+	} else if usage != nil {
 		out.Usage = usage
+	} else if all, err := s.Kube.UsageAll(r.Context()); err == nil && all != nil {
+		// the API answers for the namespace, not yet for this pod: a new one, sampled within about a minute
+		out.UsageError = "no sample of this pod yet: the metrics API samples a pod about once a minute"
+		out.UsagePending = true
+	} else {
+		out.UsageError = "the cluster has no metrics API (metrics-server)"
 	}
 	if c, ok := s.Nodes.(certificates); ok {
 		if at, ok := c.CertificateExpiry(n.Label); ok {

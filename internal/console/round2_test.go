@@ -22,6 +22,7 @@ import (
 type fakeKube struct {
 	logs        []string // "<pod> <previous> <lines>"
 	noUsage     bool
+	unsampled   bool // the metrics API answers, not yet for the pod
 	down        bool // the API server fails every log read
 	pods        []corev1.Pod
 	deployments []appsv1.Deployment
@@ -69,7 +70,7 @@ func (k *fakeKube) GroupDeployments(context.Context) ([]appsv1.Deployment, error
 }
 
 func (k *fakeKube) Usage(context.Context, string) (*Usage, error) {
-	if k.noUsage {
+	if k.noUsage || k.unsampled {
 		return nil, nil
 	}
 	return &Usage{CPUMilli: 2100, MemoryBytes: 9 << 30}, nil
@@ -78,6 +79,9 @@ func (k *fakeKube) Usage(context.Context, string) (*Usage, error) {
 func (k *fakeKube) UsageAll(context.Context) (map[string]Usage, error) {
 	if k.noUsage {
 		return nil, nil
+	}
+	if k.unsampled {
+		return map[string]Usage{}, nil
 	}
 	return map[string]Usage{"hugr-node-etl-a": {CPUMilli: 2100, MemoryBytes: 9 << 30}}, nil
 }
@@ -134,8 +138,14 @@ func TestKubernetesPart(t *testing.T) {
 	}
 	h.server.Kube = &fakeKube{noUsage: true}
 	_, out, _ = h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/kubernetes", opsToken, "")
-	if out["usage"] != nil || !strings.Contains(out["usageError"].(string), "metrics API") {
+	if out["usage"] != nil || !strings.Contains(out["usageError"].(string), "no metrics API") || out["usagePending"] != nil {
 		t.Errorf("no metrics API: the page says so: %v", out)
+	}
+	// a new pod: the API answers, not yet for it - the page asks again shortly
+	h.server.Kube = &fakeKube{unsampled: true}
+	_, out, _ = h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/kubernetes", opsToken, "")
+	if out["usage"] != nil || out["usagePending"] != true || !strings.Contains(out["usageError"].(string), "no sample of this pod yet") {
+		t.Errorf("a pod not sampled yet: %v", out)
 	}
 }
 
