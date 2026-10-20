@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Api, ApiError } from './api'
 import { localPath, ownTokenScope } from './auth'
-import { groupState, room } from '../screens/Fleet'
+import { groupState, room, wanted } from '../screens/Fleet'
 import type { Fleet, Group } from './types'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -81,6 +81,16 @@ describe('the fleet', () => {
   it('names a group state by its conditions and nodes', () => {
     expect(groupState(group({})).text).toBe('Ready')
     expect(groupState(group({ readyReplicas: 1 })).mark).toBe('half')
+    expect(groupState(group({ readyReplicas: 1 })).note).toBe('1 of 2 nodes ready: the operator makes the rest')
+    expect(groupState(group({ readyReplicas: 3 })).text).toBe('Scaling down')
+    expect(groupState(group({ readyReplicas: 1, problem: 'a pod cannot be made: exceeded quota' })).text).toBe('Not starting')
+    const node = (label: string, ready: boolean, state: 'starting' | 'running' | 'failing', reason?: string, message?: string) => ({
+      label, ready, serving: ready, leaseAge: null, current: false, sessions: 0, seatsLeft: -1, admitting: ready, draining: false,
+      target: 0, applied: 0, needsRestart: false, usage: null, pod: { state, phase: 'Pending', reason, message, restarts: 0 } })
+    const scaled = group({ replicas: 3, readyReplicas: 1, nodes: [node('a', true, 'running'), node('b', false, 'starting', 'ContainerCreating'),
+      node('c', false, 'failing', 'Unschedulable', '0/1 nodes are available')] })
+    expect(groupState(scaled)).toEqual({ mark: 'off', text: 'A node does not start', note: 'c: Unschedulable - 0/1 nodes are available' })
+    expect(wanted(scaled)).toEqual(['ok', 'half', 'off'])
     expect(groupState(group({ replicas: 0, readyReplicas: 0, scaling: { mode: 'auto', min: 0, max: 3 } })).note)
       .toBe('Starts on the first client')
     expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: ['n'] } })).text).toBe('Restart pending')

@@ -55,3 +55,6 @@ provider_down() {
 	down_cluster_scoped
 	ok "the demo's namespaces and cluster-wide objects are deleted; the profile $DEMO_PROFILE stays"
 }
+
+# provider_metrics: the pods' usage for the console (metrics-server, the profile's addon)
+provider_metrics() { minikube -p "$DEMO_PROFILE" addons enable metrics-server >/dev/null 2>&1 || true; }

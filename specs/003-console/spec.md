@@ -425,6 +425,14 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
     an unauthenticated request with a JWT-shaped, unexpired bearer costs one node call (a rate limit belongs at the
     Ingress - the packaging spec).
 
+- **A scale's nodes are shown from their pods on** (the owner, looking at the stand, 2026-10-20): a group's nodes are the
+  fleet's (an endpoint, a Lease) and its pods that have none yet, each with its pod's state - starting (made, not
+  serving: ContainerCreating, its doors not up), stopping (a drain, a scale down), failing (it will not start as it is:
+  Unschedulable, ImagePullBackOff, CrashLoopBackOff with the last exit, Evicted - Kubernetes' own words beside the
+  reason); the group carries its Deployment's refusal to make a pod (ReplicaFailure: a quota, an admission policy) or a
+  roll that made no progress. The group's page highlights a starting row and marks a failing one; the fleet's row counts
+  serving, starting and the rest, and says which node does not start and why.
+
 - **Stage 4, as built:**
   - tresor-server's and kista's consoles are mounted at `/tresor` and `/kista` (their `/ui/mfe/` module and their
     API paths only, the console origin's cookies and the client's address kept back, no redirect followed, their
@@ -457,8 +465,26 @@ spec that does not place a session whose principal holds an administrative bundl
   Azure; acl_otel speaks OTLP, so whether it goes straight in or through a collector is that spec's question), one
   deployed with the platform (an OTel Collector and Grafana; for lineage to be decided), or none; later perhaps the
   platform's own DuckLake as the telemetry store. It also gives the console its links.
-- duckdb-acl: whether a draining node seats a new session for a principal holding `operate` (the drain's own right), so
-  that somebody other than the person who drained a node can resume it from the console (stage 4 above).
+- duckdb-acl, decided (the owner, 2026-10-20): a cluster's operator resumes from the console a node somebody else
+  drained - a draining node seats a session for a principal who may call `platform.resume` (an addendum to spec 066),
+  everyone else refused as now.
+- duckdb-acl: a drain waits for every live session up to the group's deadline (300 s by default), an idle one too - a
+  console's (it keeps a person's session per node for 15 minutes) or an idle driver's; whether a drain should not wait
+  for an idle session with nothing pinned (it moves to another node silently, spec 135) is that spec's question.
+- **The console as the cluster's place of work** (the owner, 2026-10-20 - an outline, specs of their own; v1 stays as
+  it is): it does as well as shows.
+  - **The cluster's operations**: create a group (a physical group in Kubernetes), change it (size, count, the scaling
+    bounds), delete it, scale within it. A group is made in Kubernetes first; adding it to the policy (its resource
+    group, the roles it serves) is a second step, by hand, from the console. What a group needs beyond its object - its
+    identity in the IdP, its doors' certificate, room in the plan - is that spec's to settle (the installation's or the
+    orchestrator's), as is a deletion's order (drain first; the policy's resource group removed only when asked).
+  - **The policy, as the DBeaver client sees and edits it** (acl-clients): catalogs, objects, roles, grants, resource
+    groups, view-as - through the same `platform` catalog and management statements, the ACL the judge; and SQL under
+    `ACL NATIVE` on a node from the console.
+- The bootstrap in the console (the owner, 2026-10-20): what a node starts with - the bootstrap document the operator
+  hands it (spec 001) and the cluster's profile it applies - seen in the console first (today the Cluster page lists
+  the profile's items and a node's page its drift), edited later (the profile by the same `ACL CLUSTER` statements, Q10;
+  the document's parts by the platform's and the group's spec).
 - To check: what a session moved by duckdb-acl spec 135 keeps of an operator's tracing override (the override is on
   the old node's record).
 - Languages: tresor's and kista's `locale`, once the console has more than English.

@@ -33,6 +33,13 @@ type Rights struct {
 	Infrastructure bool `json:"infrastructure"`
 	// Events: a node's audit ring.
 	Events bool `json:"events"`
+	// Drift, Profile, Effective: a node against the cluster's profile, the profile's items, the items that apply to a
+	// node - the cluster bundle's views, and only a cluster node's (a standalone one keeps no profile, spec 125).
+	Drift     bool `json:"drift"`
+	Profile   bool `json:"profile"`
+	Effective bool `json:"effective"`
+	// Deployment as the node said: "cluster" (hugr-node's) or "standalone".
+	Deployment string `json:"deployment"`
 	// Bundles as the node named them, for the person to read.
 	Bundles []string `json:"bundles"`
 }
@@ -53,8 +60,20 @@ func RightsOf(info Info) Rights {
 		Scale:          cluster,
 		Infrastructure: cluster,
 		Events:         view("audit_events"),
+		Drift:          view("drift"),
+		Profile:        view("cluster_items"),
+		Effective:      view("cluster_effective"),
+		Deployment:     info.Deployment,
 		Bundles:        append([]string{}, info.Bundles...), // a list in JSON, never null
 	}
+}
+
+// noProfile says why the person reads no node against the cluster's profile.
+func (r Rights) noProfile() string {
+	if r.Deployment == "standalone" {
+		return "a standalone node keeps no cluster profile: its sources and settings are not read against one"
+	}
+	return "reading a node against the cluster's profile is the cluster bundle's"
 }
 
 // Any says whether the person may see anything of the console's own pages.

@@ -6,6 +6,10 @@
 # signs Keycloak's, the node's and the console's certificates. Screenshots land in E2E_SHOTS when it is set.
 #
 #   DUCKDB_ACL=<a duckdb-acl checkout, built> test/console/e2e/run.sh
+#
+# E2E_SERVE=<dir> keeps the stand up for a person instead of Playwright: the console at https://127.0.0.1:18644, its
+# people's sign-in (admin: passthrough; ops: observe and operate; analyst: nothing) and the run's CA written to <dir> (mode 0700, the passwords 0600, never printed),
+# until the run is stopped (Ctrl-C, or a kill of its process).
 set -euo pipefail
 unset AI_AGENT CLAUDECODE # duckdb's CLI answers an agent in another format
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -61,9 +65,10 @@ chmod 644 "$WORK/kc/kc.crt" "$WORK/kc/kc.key"
 KC_ADMIN_PW="$(openssl rand -hex 16)"
 OPS_PW="$(openssl rand -hex 16)"
 ANALYST_PW="$(openssl rand -hex 16)"
+ADMIN_PW="$(openssl rand -hex 16)"
 
 echo "e2e: Keycloak"
-CONSOLE="$CONSOLE" OPS_PW="$OPS_PW" ANALYST_PW="$ANALYST_PW" python3 - "$WORK/realm.json" <<'PY'
+CONSOLE="$CONSOLE" OPS_PW="$OPS_PW" ANALYST_PW="$ANALYST_PW" ADMIN_PW="$ADMIN_PW" python3 - "$WORK/realm.json" <<'PY'
 import json, os, sys
 console = os.environ["CONSOLE"]
 user = lambda name, pw, role: {"username": name, "enabled": True, "email": f"{name}@example.test", "emailVerified": True,
@@ -71,7 +76,7 @@ user = lambda name, pw, role: {"username": name, "enabled": True, "email": f"{na
     "realmRoles": [role, "offline_access"]}  # the console asks offline_access for its refresh token
 realm = {
     "realm": "hugr", "enabled": True,
-    "roles": {"realm": [{"name": "platform_ops"}, {"name": "analyst"}]},
+    "roles": {"realm": [{"name": "platform_ops"}, {"name": "analyst"}, {"name": "platform_admin"}]},
     "clients": [{
         "clientId": "hugr-console", "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
         "redirectUris": [f"{console}/*"], "webOrigins": [console],
@@ -84,7 +89,9 @@ realm = {
         "protocolMappers": [{"name": "aud", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
             "config": {"included.custom.audience": "hugr-nodes", "access.token.claim": "true", "id.token.claim": "false"}}],
     }],
-    "users": [user("ops", os.environ["OPS_PW"], "platform_ops"), user("analyst", os.environ["ANALYST_PW"], "analyst")],
+    "users": [user("ops", os.environ["OPS_PW"], "platform_ops"), user("analyst", os.environ["ANALYST_PW"], "analyst"),
+              # the stand's third person: passthrough, so every page (scale, restart, logs) - Playwright signs in the two
+              user("admin", os.environ["ADMIN_PW"], "platform_admin")],
 }
 json.dump(realm, open(sys.argv[1], "w"))
 PY
@@ -120,6 +127,11 @@ ACL ADMIN GRANT ADMIN observe TO ROLE ops;
 ACL ADMIN GRANT ADMIN operate TO ROLE ops;
 ACL ADMIN GRANT FUNCTION CATEGORY meta TO ROLE ops;
 ACL ADMIN GRANT FUNCTION CATEGORY environment TO ROLE ops;
+ACL ADMIN CREATE ROLE admin;
+ACL ADMIN MAP CLAIM 'platform_admin' FROM CLIENT '$REALM' TO ROLE admin;
+ACL ADMIN GRANT ADMIN passthrough TO ROLE admin;
+ACL ADMIN GRANT FUNCTION CATEGORY meta TO ROLE admin;
+ACL ADMIN GRANT FUNCTION CATEGORY environment TO ROLE admin;
 SET GLOBAL acl_allow_anonymous_admin = false;
 SET GLOBAL acl_node_label = 'hugr-node-etl-a';
 SELECT acl_flight_serve('grpc+tls://127.0.0.1:$NODE_PORT', '$WORK/node.crt', '$WORK/node.key');
@@ -151,13 +163,24 @@ curl -sf --cacert "$WORK/ca.crt" "$REALM/protocol/openid-connect/token" -d grant
 "$WORK/probe" -keep -node "etl=127.0.0.1:$NODE_PORT" -ca "$WORK/ca.crt" -token-file "$WORK/analyst.token" \
 	"SELECT * FROM c.t" "SELECT * FROM c.t" >"$WORK/probe.json" || fail "the analyst's session"
 
+if [ -n "${E2E_SERVE:-}" ]; then
+	mkdir -p "$E2E_SERVE" && chmod 700 "$E2E_SERVE"
+	cp "$WORK/ca.crt" "$E2E_SERVE/ca.crt"
+	(umask 077 && printf 'console  %s\nadmin    %s\nops      %s\nanalyst  %s\n' "$CONSOLE" "$ADMIN_PW" "$OPS_PW" \
+		"$ANALYST_PW" >"$E2E_SERVE/sign-in")
+	echo "e2e: the stand serves: $CONSOLE (Keycloak $KC); the sign-in in $E2E_SERVE/sign-in, the CA in $E2E_SERVE/ca.crt"
+	trap 'rm -f "$E2E_SERVE/sign-in"; cleanup' EXIT
+	wait "${PIDS[@]}"
+	exit 0
+fi
+
 echo "e2e: Playwright"
 status=0
 (cd "$WEB" && E2E_CONSOLE_URL="$CONSOLE" E2E_OPS_PW="$OPS_PW" E2E_ANALYST_PW="$ANALYST_PW" E2E_SHOTS="${E2E_SHOTS:-}" \
 	npx playwright test) || status=$?
 # nothing secret in the logs: a bearer token (a JWT), a password of this run
 for log in "$WORK/console.log" "$WORK/node.log"; do
-	if grep -qF -e "$OPS_PW" -e "$ANALYST_PW" -e "$KC_ADMIN_PW" "$log" || grep -qE 'eyJ[A-Za-z0-9_-]{8,}\.eyJ' "$log"; then
+	if grep -qF -e "$OPS_PW" -e "$ANALYST_PW" -e "$ADMIN_PW" -e "$KC_ADMIN_PW" "$log" || grep -qE 'eyJ[A-Za-z0-9_-]{8,}\.eyJ' "$log"; then
 		fail "a token or a password reached $(basename "$log")"
 	fi
 done

@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/funcr"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,7 +71,7 @@ func main() {
 				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")}}}},
 			Plan: v1alpha1.PlanSpec{MaxNodes: 4, Sizes: []string{"small"}},
 			Console: &v1alpha1.ConsoleSpec{ClientID: clientID, Audiences: v1alpha1.ConsoleAudiences{Nodes: audience},
-				Links: []v1alpha1.ConsoleLink{{Kind: "telemetry", Name: "Grafana",
+				Links: []v1alpha1.ConsoleLink{{Kind: "telemetry", Name: "Grafana (an example link)",
 					URL: "https://grafana.example.org/explore?node={node}"}}}}}
 	g := &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Name: group, Namespace: "hugr"},
 		Spec: v1alpha1.HugrNodeGroupSpec{Platform: "e2e", Replicas: 1, Size: "small",
@@ -94,7 +95,7 @@ func main() {
 		Groups:   &memoryWriter{reader: reader, log: log},
 		Fleet:    nodes,
 		Nodes:    &console.Pool{Namespace: "hugr", Roots: func(context.Context) (*x509.CertPool, error) { return roots, nil }},
-		Kube:     madeUpKube{label: label},
+		Kube:     madeUpKube{label: label, group: group},
 		Web:      web,
 		Log:      log,
 	}
@@ -132,8 +133,9 @@ func (w *memoryWriter) Change(ctx context.Context, change console.GroupChange) e
 	return w.reader.Update(ctx, &g)
 }
 
-// madeUpKube is the node's pod as a page shows it: no metrics API, no events, a log that says where it is.
-type madeUpKube struct{ label string }
+// madeUpKube is the node's pod as a page shows it: its usage and the pod made up, no events, a log that says where it
+// is.
+type madeUpKube struct{ label, group string }
 
 func (k madeUpKube) Pod(_ context.Context, name string) (*corev1.Pod, error) {
 	start := metav1.NewTime(time.Now().Add(-time.Hour))
@@ -150,9 +152,24 @@ func (madeUpKube) Logs(context.Context, string, bool, int64) (string, error) {
 	return "e2e: this node runs outside Kubernetes; its log is the run's node.log\n", nil
 }
 
-func (madeUpKube) Usage(context.Context, string) (*console.Usage, error) { return nil, nil }
+// GroupPods: the stand's one pod, running (made up, as Pod's) - a scale's new pods are the cluster's to make
+func (k madeUpKube) GroupPods(ctx context.Context) ([]corev1.Pod, error) {
+	p, _ := k.Pod(ctx, k.label)
+	p.Labels = map[string]string{build.LabelGroup: k.group}
+	p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	return []corev1.Pod{*p}, nil
+}
 
-func (madeUpKube) UsageAll(context.Context) (map[string]console.Usage, error) { return nil, nil }
+func (madeUpKube) GroupDeployments(context.Context) ([]appsv1.Deployment, error) { return nil, nil }
+
+// the pod's usage as the metrics API would answer it: made up, as the pod is
+var madeUpUsage = console.Usage{CPUMilli: 120, MemoryBytes: 900 << 20}
+
+func (madeUpKube) Usage(context.Context, string) (*console.Usage, error) { return &madeUpUsage, nil }
+
+func (k madeUpKube) UsageAll(context.Context) (map[string]console.Usage, error) {
+	return map[string]console.Usage{k.label: madeUpUsage}, nil
+}
 
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, err)

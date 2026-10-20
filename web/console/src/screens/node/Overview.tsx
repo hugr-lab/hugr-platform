@@ -71,7 +71,8 @@ export function Overview() {
                   {p && (
                     <>
                       <div className="flex items-center gap-6">
-                        <Ring percent={share(p.usage?.memoryBytes, p.limits.memoryBytes)} label="the share of the pod's memory limit" />
+                        <Ring percent={p.usage && p.limits.memoryBytes ? share(p.usage.memoryBytes, p.limits.memoryBytes) : undefined}
+                          label="the share of the pod's memory limit" />
                         <dl className="flex flex-col gap-2 text-sm">
                           <div><dt className="eyebrow">Memory</dt><dd className="text-lg font-semibold">{p.usage ? `${bytes(p.usage.memoryBytes)} of ${bytes(p.limits.memoryBytes || null)}` : '-'}</dd></div>
                           <div><dt className="eyebrow">CPU</dt><dd className="font-semibold">{p.usage ? `${(p.usage.cpuMilli / 1000).toFixed(1)} of ${(p.requests.cpuMilli / 1000).toFixed(1)} cores requested` : '-'}</dd></div>

@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -18,7 +20,10 @@ import (
 	"github.com/hugr-lab/hugr-platform/internal/build"
 )
 
-// The console reads a node's pod, its events, its log and its usage (spec 003 round 2).
+// The console reads a node's pod, its events, its log and its usage (spec 003 round 2), and the groups' pods and
+// Deployments - how far a scale has got.
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list
 // +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
@@ -38,6 +43,10 @@ type Kube interface {
 	Usage(ctx context.Context, pod string) (*Usage, error)
 	// UsageAll is every pod's of the namespace, by name: one read for a page of nodes; nil without the metrics API.
 	UsageAll(ctx context.Context) (map[string]Usage, error)
+	// GroupPods are the namespace's node pods (a group's label), those a scale made before they serve included.
+	GroupPods(ctx context.Context) ([]corev1.Pod, error)
+	// GroupDeployments are the groups' Deployments: a pod their ReplicaSet cannot make says so there.
+	GroupDeployments(ctx context.Context) ([]appsv1.Deployment, error)
 }
 
 // Usage of a pod, by the metrics API.
@@ -67,6 +76,114 @@ func (k KubeClient) Events(ctx context.Context, pod string) ([]corev1.Event, err
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+// GroupPods by the group label.
+func (k KubeClient) GroupPods(ctx context.Context) ([]corev1.Pod, error) {
+	list, err := k.Clientset.CoreV1().Pods(k.Namespace).List(ctx, metav1.ListOptions{LabelSelector: build.LabelGroup})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// GroupDeployments by the group label.
+func (k KubeClient) GroupDeployments(ctx context.Context) ([]appsv1.Deployment, error) {
+	list, err := k.Clientset.AppsV1().Deployments(k.Namespace).List(ctx, metav1.ListOptions{LabelSelector: build.LabelGroup})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// PodState is how far a node's pod has got, as Kubernetes says it: starting (made, not serving yet), running,
+// stopping (going away: a drain, a scale down) or failing - it will not start as it is (the reason and Kubernetes' own
+// message say why).
+type PodState struct {
+	State    string     `json:"state"`
+	Phase    string     `json:"phase"`
+	Reason   string     `json:"reason,omitempty"`
+	Message  string     `json:"message,omitempty"`
+	Restarts int32      `json:"restarts"`
+	Created  *time.Time `json:"created,omitempty"`
+}
+
+// waitingFails are the reasons a container waits that it will not leave by itself.
+var waitingFails = map[string]bool{"CrashLoopBackOff": true, "ImagePullBackOff": true, "ErrImagePull": true,
+	"CreateContainerConfigError": true, "CreateContainerError": true, "InvalidImageName": true,
+	"RunContainerError": true, "PreCreateHookError": true, "PostStartHookError": true}
+
+// podState of a node's pod.
+func podState(p *corev1.Pod) PodState {
+	out := PodState{Phase: string(p.Status.Phase)}
+	if !p.CreationTimestamp.IsZero() {
+		t := p.CreationTimestamp.Time
+		out.Created = &t
+	}
+	statuses := append(append([]corev1.ContainerStatus{}, p.Status.InitContainerStatuses...), p.Status.ContainerStatuses...)
+	for _, c := range statuses {
+		out.Restarts += c.RestartCount
+	}
+	switch {
+	case p.DeletionTimestamp != nil:
+		out.State, out.Reason = "stopping", "Terminating"
+		return out
+	case p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodSucceeded:
+		out.State, out.Reason, out.Message = "failing", p.Status.Reason, p.Status.Message
+		if out.Reason == "" {
+			out.Reason = string(p.Status.Phase)
+		}
+		return out
+	}
+	for _, c := range statuses {
+		if w := c.State.Waiting; w != nil && waitingFails[w.Reason] {
+			out.State, out.Reason, out.Message = "failing", w.Reason, w.Message
+			if t := c.LastTerminationState.Terminated; t != nil && w.Reason == "CrashLoopBackOff" {
+				out.Message = fmt.Sprintf("the container exited with %d (%s)", t.ExitCode, t.Reason)
+			}
+			return out
+		}
+	}
+	for _, c := range p.Status.Conditions {
+		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse {
+			// no node of the cluster takes it now: a full cluster, a size it cannot fit
+			out.State, out.Reason, out.Message = "failing", c.Reason, c.Message
+			return out
+		}
+	}
+	for _, c := range p.Status.Conditions {
+		if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+			out.State = "running"
+			return out
+		}
+	}
+	out.State = "starting"
+	for _, c := range statuses {
+		if w := c.State.Waiting; w != nil {
+			out.Reason = w.Reason // ContainerCreating, PodInitializing
+			return out
+		}
+	}
+	if p.Status.Phase == corev1.PodRunning {
+		out.Reason = "NotReady" // its readiness probe: the node bootstraps, then its doors serve
+	}
+	return out
+}
+
+// deploymentProblem is what a group's Deployment says stops its pods: the ReplicaSet cannot make one (a quota, an
+// admission policy), or a roll made no progress within its deadline.
+func deploymentProblem(d *appsv1.Deployment) string {
+	for _, c := range d.Status.Conditions {
+		if c.Type == appsv1.DeploymentReplicaFailure && c.Status == corev1.ConditionTrue {
+			return "a pod cannot be made: " + c.Message
+		}
+	}
+	for _, c := range d.Status.Conditions {
+		if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse {
+			return "the roll made no progress: " + c.Message
+		}
+	}
+	return ""
 }
 
 // Logs of the pod's node container, the last `lines` (bounded) or the previous container's.

@@ -83,7 +83,7 @@ test('an operator runs the fleet; an analyst sees nothing', async ({ browser }) 
   // the other tabs
   await ops.getByRole('link', { name: 'Sources and extensions' }).click()
   await expect(ops.getByRole('heading', { name: 'Extensions', exact: true })).toBeVisible()
-  await expect(ops.getByText(/the cluster right reads the node against its profile/)).toBeVisible()
+  await expect(ops.getByText(/A standalone node keeps no cluster profile/)).toBeVisible() // the stand's node: duckdb-acl's own
   await shot(ops, 'node-inventory')
   await ops.getByRole('link', { name: 'Logs' }).click()
   await expect(ops.getByText('A node\'s log names hosts and sources; reading it takes the cluster right.')).toBeVisible()

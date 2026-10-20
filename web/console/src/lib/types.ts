@@ -32,6 +32,12 @@ export interface Rights {
   scale: boolean
   infrastructure: boolean
   events: boolean
+  /** a node against the cluster's profile, the profile's items, a node's items: a cluster node's views only */
+  drift: boolean
+  profile: boolean
+  effective: boolean
+  /** "cluster" (hugr-node's) or "standalone", as the node said */
+  deployment: string
   bundles: string[]
 }
 
@@ -49,6 +55,18 @@ export interface NodeInfo {
   applied: number
   needsRestart: boolean
   usage: Usage | null
+  /** how far its pod has got; null when the pods were not read */
+  pod: PodState | null
+}
+
+/** a node's pod as Kubernetes says it: made and not serving yet, serving, going away, or not starting as it is */
+export interface PodState {
+  state: 'starting' | 'running' | 'stopping' | 'failing'
+  phase: string
+  reason?: string
+  message?: string
+  restarts: number
+  created?: string
 }
 
 export interface Usage {
@@ -85,6 +103,8 @@ export interface Group {
   scaling: { mode: 'manual' | 'auto'; min?: number; max?: number }
   identity: Identity
   memoryLimitBytes: number
+  /** what the group's Deployment says stops its pods */
+  problem?: string
   nodes: NodeInfo[]
 }
 

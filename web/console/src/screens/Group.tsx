@@ -4,9 +4,14 @@ import { Bar, Chip, Crumbs, Header, Problem, Refresh, Stat, Status, age } from '
 import { useApp, useLoad } from '../lib/context'
 import { bytes, share } from '../lib/format'
 import type { NodeInfo } from '../lib/types'
-import { groupState } from './Fleet'
+import { groupState, podReason } from './Fleet'
 
-export function nodeState(n: NodeInfo): { mark: 'ok' | 'half' | 'off'; text: string } {
+export function nodeState(n: NodeInfo): { mark: 'ok' | 'half' | 'off'; text: string; why?: string } {
+  // the pod first: a node a scale made is in the group before it serves - starting, or not starting and why
+  if (n.pod?.state === 'failing') return { mark: 'off', text: 'Not starting', why: podReason(n.pod) }
+  if (n.pod?.state === 'stopping') return { mark: 'half', text: 'Stopping', why: n.draining ? 'draining its sessions' : undefined }
+  if (n.pod && !n.ready)
+    return { mark: 'half', text: 'Starting', why: n.pod.reason === 'NotReady' ? 'running, its doors not serving yet' : n.pod.reason }
   if (!n.serving) return { mark: 'off', text: 'Gone' }
   if (!n.ready) return { mark: 'off', text: 'Not ready' }
   if (n.leaseAge !== null && !n.current) return { mark: 'half', text: 'Lease expired' }
@@ -35,6 +40,15 @@ export function Group() {
             <Stat label="Profile" value={`version ${group.profile.target}`} sub={`${group.profile.applied} of ${group.replicas} applied`} />
             <Stat label="Sessions" value={group.nodes.reduce((n, x) => n + x.sessions, 0)} />
           </section>
+          {group.problem && (
+            <div role="alert" className="flex items-start gap-4 rounded-md border border-line px-6 py-4">
+              <CircleAlert size={20} aria-hidden="true" className="mt-0.5 flex-none" />
+              <div>
+                <div className="font-semibold">The group's pods are not made</div>
+                <div className="break-words text-sm text-ink-muted">{group.problem}</div>
+              </div>
+            </div>
+          )}
           {group.profile.needsRestart.length > 0 && (
             <div role="status" className="flex items-start gap-4 rounded-md border border-line px-6 py-4">
               <CircleAlert size={20} aria-hidden="true" className="mt-0.5 flex-none" />
@@ -64,8 +78,11 @@ export function Group() {
                 <tbody>
                   {group.nodes.map((n) => {
                     const state = nodeState(n)
+                    // a node not serving yet stands out: starting softly, not starting as an alert
+                    const tone = state.text === 'Not starting' ? 'border-l-4 border-l-[var(--ink)] bg-[var(--surface-soft)]'
+                      : state.text === 'Starting' ? 'bg-[var(--surface-soft)]' : ''
                     return (
-                      <tr key={n.label}>
+                      <tr key={n.label} className={tone}>
                         <td className="td">
                           {n.ready ? (
                             <Link className="link mono break-all" to={`/nodes/${encodeURIComponent(n.label)}`}>{n.label}</Link>
@@ -74,7 +91,11 @@ export function Group() {
                           )}
                           {n.needsRestart && <div className="text-ink-muted">restart pending</div>}
                         </td>
-                        <td className="td"><Status mark={state.mark}>{state.text}</Status></td>
+                        <td className="td">
+                          <Status mark={state.mark}>{state.text}</Status>
+                          {state.why && <div className="mt-1 max-w-[420px] break-words text-sm text-ink-muted">{state.why}</div>}
+                          {n.pod && n.pod.restarts > 0 && <div className="text-sm text-ink-muted">restarted {n.pod.restarts} {n.pod.restarts === 1 ? 'time' : 'times'}</div>}
+                        </td>
                         <td className="td text-ink-muted">{n.leaseAge === null ? 'none yet' : `${age(n.leaseAge)} ago`}</td>
                         <td className="td tabular-nums">{n.leaseAge === null ? '-' : n.sessions}</td>
                         <td className="td">
@@ -92,6 +113,13 @@ export function Group() {
                   })}
                   {group.nodes.length === 0 && (
                     <tr><td className="td text-ink-muted" colSpan={7}>No node runs: the group is stopped or starting.</td></tr>
+                  )}
+                  {group.nodes.length > 0 && group.nodes.length < group.replicas && (
+                    <tr className="bg-[var(--surface-soft)]">
+                      <td className="td text-ink-muted" colSpan={7}>
+                        {group.replicas - group.nodes.length} more {group.replicas - group.nodes.length === 1 ? 'node is' : 'nodes are'} wanted and no pod is made yet{group.problem ? ': see above' : ''}.
+                      </td>
+                    </tr>
                   )}
                 </tbody>
               </table>

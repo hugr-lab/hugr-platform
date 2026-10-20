@@ -162,14 +162,18 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request, token string,
 	}
 	extensions, answered := s.tryPart(r.Context(), *n, token, stmtExtensions)
 	out := InventoryAnswer{Extensions: extensions}
-	if !answered {
+	none := Part{Rows: []map[string]any{}, Error: p.rights.noProfile()}
+	out.Drift, out.Effective = none, none
+	switch {
+	case !answered:
 		out.Drift, out.Effective = unanswered, unanswered
-	} else if p.rights.Infrastructure {
-		out.Drift = s.part(r.Context(), *n, token, stmtDrift)
-		out.Effective = s.part(r.Context(), *n, token, stmtEffective)
-	} else {
-		none := Part{Rows: []map[string]any{}, Error: "the cluster right reads the node against its profile"}
-		out.Drift, out.Effective = none, none
+	case p.rights.Drift || p.rights.Effective:
+		if p.rights.Drift {
+			out.Drift = s.part(r.Context(), *n, token, stmtDrift)
+		}
+		if p.rights.Effective {
+			out.Effective = s.part(r.Context(), *n, token, stmtEffective)
+		}
 	}
 	answer(w, out)
 }
@@ -294,10 +298,10 @@ func (s *Server) cluster(w http.ResponseWriter, r *http.Request, token string, p
 		problem(w, http.StatusServiceUnavailable, "no_node", "no node answers")
 		return
 	}
-	if p.rights.Infrastructure {
+	if p.rights.Profile {
 		out.Profile = s.profile(r.Context(), nodes, token)
 	} else {
-		out.Profile = Part{Rows: []map[string]any{}, Error: "the cluster right reads the profile"}
+		out.Profile = Part{Rows: []map[string]any{}, Error: p.rights.noProfile()}
 	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup

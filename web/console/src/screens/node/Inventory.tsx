@@ -54,6 +54,9 @@ function Table({ id, title, lead, part, columns }: { id: string; title: string; 
   )
 }
 
+/** a reason as a sentence: capitalised, a full stop */
+const sentence = (s: string) => `${s.charAt(0).toUpperCase()}${s.slice(1)}${/[.!?]$/.test(s) ? '' : '.'}`
+
 export function Inventory() {
   const { label = '' } = useParams()
   const { api } = useApp()
@@ -68,7 +71,7 @@ export function Inventory() {
           {inv.error !== undefined && <Problem error={inv.error} />}
           {drift?.error && (
             <p role="note" className="rounded-md border border-line px-6 py-4 text-sm">
-              {drift.error}: the sources, the settings and the profile's items are read against the profile, a platform node's views. The extensions are below.
+              {sentence(drift.error)} The extensions are below.
             </p>
           )}
           {!drift?.error && <Table id="src-h" title="Sources"

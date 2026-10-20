@@ -4,6 +4,9 @@ import (
 	"sort"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
@@ -38,8 +41,10 @@ type GroupAnswer struct {
 	// Identity is who the group's nodes are (round 2): every node of a group is the same workload.
 	Identity IdentityAnswer `json:"identity"`
 	// MemoryLimitBytes is a node's pod limit, its size's (0 when the size names none).
-	MemoryLimitBytes int64        `json:"memoryLimitBytes"`
-	Nodes            []NodeAnswer `json:"nodes"`
+	MemoryLimitBytes int64 `json:"memoryLimitBytes"`
+	// Problem is what the group's Deployment says stops its pods (none: empty).
+	Problem string       `json:"problem,omitempty"`
+	Nodes   []NodeAnswer `json:"nodes"`
 }
 
 // IdentityAnswer is a group's workload identity and the name its doors answer as - never a token.
@@ -90,6 +95,8 @@ type NodeAnswer struct {
 	NeedsRestart bool   `json:"needsRestart"`
 	// Usage is the pod's CPU and memory by the metrics API; nil without it.
 	Usage *Usage `json:"usage"`
+	// Pod is how far the node's pod has got; nil when Kubernetes' pods were not read.
+	Pod *PodState `json:"pod"`
 }
 
 // groupOf names the node group a node belongs to: its Service is hugr-node-<group> (spec 001).
@@ -101,22 +108,53 @@ func groupOf(n *fleet.Node) string {
 	return ""
 }
 
-// FleetOf the platform's groups and the fleet's view, at `now`.
+// KubeState is what the fleet's page reads of Kubernetes beside the groups; a part it could not read is empty.
+type KubeState struct {
+	Usage       map[string]Usage
+	Pods        []corev1.Pod
+	Deployments []appsv1.Deployment
+}
+
+// FleetOf the platform's groups and the fleet's view, at `now`. A group's nodes are the fleet's (an endpoint, a
+// Lease) and its pods that have none yet - the node a scale made, starting or failing to - each with its pod's state.
 func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, view *fleet.View,
-	now time.Time, usage map[string]Usage) FleetAnswer {
+	now time.Time, kube KubeState) FleetAnswer {
 	answer := FleetAnswer{Plan: PlanAnswer{Sizes: []string{}}, Groups: []GroupAnswer{}}
 	if platform != nil {
 		answer.Plan = PlanAnswer{MaxNodes: platform.Spec.Plan.MaxNodes, Sizes: append([]string{}, platform.Spec.Plan.Sizes...)}
 	}
+	pods := map[string]*corev1.Pod{}
+	for i := range kube.Pods {
+		pods[kube.Pods[i].Name] = &kube.Pods[i]
+	}
 	byGroup := map[string][]NodeAnswer{}
+	seen := map[string]bool{}
 	if view != nil {
 		for _, n := range view.Nodes() {
 			a := nodeAnswer(n, now)
-			if u, ok := usage[n.Label]; ok {
+			if u, ok := kube.Usage[n.Label]; ok {
 				a.Usage = &u
 			}
+			if p := pods[n.Label]; p != nil {
+				state := podState(p)
+				a.Pod = &state
+			}
+			seen[n.Label] = true
 			byGroup[groupOf(n)] = append(byGroup[groupOf(n)], a)
 		}
+	}
+	for _, p := range kube.Pods {
+		if seen[p.Name] {
+			continue
+		}
+		state := podState(&p)
+		byGroup[p.Labels[build.LabelGroup]] = append(byGroup[p.Labels[build.LabelGroup]],
+			NodeAnswer{Label: p.Name, SeatsLeft: -1, Pod: &state})
+	}
+	problems := map[string]string{}
+	for i := range kube.Deployments {
+		d := &kube.Deployments[i]
+		problems[d.Labels[build.LabelGroup]] = deploymentProblem(d)
 	}
 	for _, g := range groups {
 		if platform != nil && g.Spec.Platform != platform.Name {
@@ -153,6 +191,7 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 			Conditions:  conditions,
 			Scaling:     ScalingAnswer{Mode: "manual"},
 			Identity:    identityOf(platform, &g),
+			Problem:     problems[g.Name],
 			Nodes:       nodes,
 		})
 	}

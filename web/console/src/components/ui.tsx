@@ -174,16 +174,17 @@ export function Bar({ percent, dark }: { percent: number; dark?: boolean }) {
 }
 
 /** a ring gauge (the brand's circles): a share of a limit */
-export function Ring({ percent, label, dark }: { percent: number; label: string; dark?: boolean }) {
+/** a share as a ring; unknown (no sample) is a dash, never 0% */
+export function Ring({ percent, label, dark }: { percent: number | undefined; label: string; dark?: boolean }) {
   const c = 2 * Math.PI * 26
   return (
-    <svg width="96" height="96" viewBox="0 0 64 64" role="img" aria-label={label}>
+    <svg width="96" height="96" viewBox="0 0 64 64" role="img" aria-label={percent === undefined ? `${label}: unknown` : label}>
       <circle cx="32" cy="32" r="26" fill="none" stroke="var(--surface-soft)" strokeWidth="7" />
-      {percent > 0 && (
+      {percent !== undefined && percent > 0 && (
         <circle cx="32" cy="32" r="26" fill="none" stroke={dark ? 'var(--ink)' : 'var(--brand)'} strokeWidth="7"
           strokeLinecap="round" strokeDasharray={`${(c * percent) / 100} ${c}`} transform="rotate(-90 32 32)" />
       )}
-      <text x="32" y="36" textAnchor="middle" fontSize="13" fontWeight="700" fill="var(--ink)">{percent}%</text>
+      <text x="32" y="36" textAnchor="middle" fontSize="13" fontWeight="700" fill="var(--ink)">{percent === undefined ? '-' : `${percent}%`}</text>
     </svg>
   )
 }

@@ -317,16 +317,24 @@ func (s *Server) groups(w http.ResponseWriter, r *http.Request, _ string, _ *per
 		problem(w, http.StatusServiceUnavailable, "kubernetes", "the groups could not be read")
 		return
 	}
-	var usage map[string]Usage
+	var kube KubeState
 	if s.Kube != nil {
-		usage, _ = s.Kube.UsageAll(r.Context()) // best effort: without the metrics API the page shows none
+		// best effort, each part: without the metrics API the page shows no usage, without the pods no starting node
+		kube.Usage, _ = s.Kube.UsageAll(r.Context())
+		var err error
+		if kube.Pods, err = s.Kube.GroupPods(r.Context()); err != nil {
+			s.Log.Info("the groups' pods not read", "error", err.Error())
+		}
+		if kube.Deployments, err = s.Kube.GroupDeployments(r.Context()); err != nil {
+			s.Log.Info("the groups' Deployments not read", "error", err.Error())
+		}
 	}
 	view, err := s.platformView(r.Context())
 	if err != nil {
 		problem(w, http.StatusServiceUnavailable, "kubernetes", "the groups could not be read")
 		return
 	}
-	answer(w, FleetOf(platform, list.Items, view, s.now(), usage))
+	answer(w, FleetOf(platform, list.Items, view, s.now(), kube))
 }
 
 // GroupPatch is `PATCH groups/{g}`: one of a count or a restart.

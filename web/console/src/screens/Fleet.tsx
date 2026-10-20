@@ -3,7 +3,7 @@ import { CircleAlert, Minus, Plus, RotateCcw } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Chip, Dialog, Glyph, Header, Problem, Refresh, Stat, Status, messageOf, type Mark } from '../components/ui'
 import { useApp, useLoad } from '../lib/context'
-import type { Fleet as FleetAnswer, Group } from '../lib/types'
+import type { Fleet as FleetAnswer, Group, PodState } from '../lib/types'
 
 /** a group's state as one word and a circle (spec 003 round 2: shape, never colour alone) */
 export function groupState(g: Group): { mark: Mark; text: string; note: string } {
@@ -11,11 +11,29 @@ export function groupState(g: Group): { mark: Mark; text: string; note: string }
   if (condition('Refused')) return { mark: 'off', text: 'Refused', note: condition('Refused')!.message }
   if (condition('Draining')) return { mark: 'half', text: 'Draining', note: 'The policy has no such resource group' }
   if (g.replicas === 0) return { mark: 'off', text: 'Stopped', note: g.scaling.mode === 'auto' ? 'Starts on the first client' : '' }
+  if (g.problem) return { mark: 'off', text: 'Not starting', note: g.problem }
+  const failing = g.nodes.find((n) => n.pod?.state === 'failing')
+  if (failing) return { mark: 'off', text: 'A node does not start', note: `${failing.label}: ${podReason(failing.pod!)}` }
   if (g.profile.needsRestart.length > 0)
     return { mark: 'half', text: 'Restart pending', note: 'A node applies an item only at a restart' }
-  if (g.readyReplicas < g.replicas) return { mark: 'half', text: 'Starting', note: '' }
+  if (g.readyReplicas < g.replicas)
+    return { mark: 'half', text: 'Starting', note: `${g.readyReplicas} of ${g.replicas} nodes ready: the operator makes the rest` }
+  if (g.readyReplicas > g.replicas)
+    return { mark: 'half', text: 'Scaling down', note: `${g.readyReplicas} ready, ${g.replicas} asked: a node drains, then goes` }
   if (g.lost.length > 0) return { mark: 'half', text: 'Node lost', note: g.lost.join(', ') }
   return { mark: 'ok', text: 'Ready', note: '' }
+}
+
+/** a pod's reason and Kubernetes' own words, as one line */
+export function podReason(p: PodState): string {
+  return [p.reason, p.message].filter(Boolean).join(' - ') || p.phase
+}
+
+/** a glyph per node the group wants: serving, starting, then the ones not starting or not made yet */
+export function wanted(g: Group): Mark[] {
+  const starting = g.nodes.filter((n) => !n.ready && n.pod && (n.pod.state === 'starting' || n.pod.state === 'running')).length
+  return Array.from({ length: g.replicas }, (_, i) =>
+    i < g.readyReplicas ? 'ok' : i < g.readyReplicas + starting ? 'half' : 'off')
 }
 
 /** what the group's count may grow to: the plan's nodes less what the others keep (an autoscaled one at its max) */
@@ -73,9 +91,7 @@ export function Fleet() {
                         </td>
                         <td className="td">
                           <span role="img" aria-label={`${g.readyReplicas} of ${g.replicas} ready`} className="flex min-h-3 gap-1.5">
-                            {Array.from({ length: g.replicas }, (_, i) => (
-                              <Glyph key={i} mark={i < g.readyReplicas ? 'ok' : 'off'} />
-                            ))}
+                            {wanted(g).map((mark, i) => <Glyph key={i} mark={mark} />)}
                           </span>
                           <div className="text-ink-muted">{g.replicas === 0 ? 'no nodes' : `${g.readyReplicas} of ${g.replicas} ready`}</div>
                         </td>

@@ -132,3 +132,6 @@ provider_leftovers() {
 	az group list --tag purpose=hugr-platform-demo --query '[].{name:name, run:tags.run, expires:tags.expires}' -o table
 	idp_leftovers
 }
+
+# provider_metrics: AKS runs metrics-server
+provider_metrics() { :; }

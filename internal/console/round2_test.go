@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -19,9 +20,11 @@ import (
 )
 
 type fakeKube struct {
-	logs    []string // "<pod> <previous> <lines>"
-	noUsage bool
-	down    bool // the API server fails every log read
+	logs        []string // "<pod> <previous> <lines>"
+	noUsage     bool
+	down        bool // the API server fails every log read
+	pods        []corev1.Pod
+	deployments []appsv1.Deployment
 }
 
 func (k *fakeKube) Pod(_ context.Context, name string) (*corev1.Pod, error) {
@@ -59,6 +62,12 @@ func (k *fakeKube) Logs(_ context.Context, pod string, previous bool, lines int6
 	return "bootstrap: environment read\ndoors: Flight on :32010\n", nil
 }
 
+func (k *fakeKube) GroupPods(context.Context) ([]corev1.Pod, error) { return k.pods, nil }
+
+func (k *fakeKube) GroupDeployments(context.Context) ([]appsv1.Deployment, error) {
+	return k.deployments, nil
+}
+
 func (k *fakeKube) Usage(context.Context, string) (*Usage, error) {
 	if k.noUsage {
 		return nil, nil
@@ -74,7 +83,8 @@ func (k *fakeKube) UsageAll(context.Context) (map[string]Usage, error) {
 }
 
 func clusterRights() *Result {
-	return infoRow([]string{"observe", "operate", "cluster"}, []string{"node_load", "sessions", "audit_events"},
+	return infoRow([]string{"observe", "operate", "cluster"}, []string{"node_load", "sessions", "audit_events", "drift",
+		"cluster_items", "cluster_effective"},
 		[]string{"kill_session", "drain", "resume", "session_audit_level", "session_profile"})
 }
 
@@ -219,9 +229,24 @@ func TestPartsShowWhatTheNodeAllows(t *testing.T) {
 	}
 	observe := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
 	_, out, _ = observe.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/inventory", opsToken, "")
-	if !strings.Contains(out["drift"].(map[string]any)["error"].(string), "cluster right") ||
+	if !strings.Contains(out["drift"].(map[string]any)["error"].(string), "cluster bundle") ||
 		observe.nodes.statements(stmtDrift) != 0 {
 		t.Errorf("without the cluster right the profile's views are not asked: %v", out)
+	}
+	// a standalone node keeps no profile: console_info names no profile view, whatever the bundles - nothing is asked,
+	// and the page says why
+	standalone := infoRow([]string{"observe", "operate", "passthrough"}, []string{"node_load", "sessions"}, nil)
+	standalone.Rows[0][4] = "standalone"
+	solo := newHarness(t, standalone, node("hugr-node-etl-a", "etl"))
+	_, out, _ = solo.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/inventory", opsToken, "")
+	if !strings.Contains(out["drift"].(map[string]any)["error"].(string), "standalone node") ||
+		solo.nodes.statements(stmtDrift) != 0 || solo.nodes.statements(stmtEffective) != 0 {
+		t.Errorf("a standalone node's inventory: %v", out)
+	}
+	_, out, _ = solo.do(t, "GET", APIPrefix+"cluster", opsToken, "")
+	if !strings.Contains(out["profile"].(map[string]any)["error"].(string), "standalone node") ||
+		solo.nodes.statements(stmtItems) != 0 {
+		t.Errorf("a standalone node's cluster page: %v", out)
 	}
 }
 

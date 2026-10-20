@@ -1,6 +1,7 @@
 package console
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -34,6 +35,16 @@ func TestRightsOf(t *testing.T) {
 	passthrough := RightsOf(Info{Bundles: []string{"passthrough"}})
 	if !passthrough.Scale {
 		t.Errorf("passthrough implies the cluster bundle: %+v", passthrough)
+	}
+	// the profile's views as the node names them: a cluster node offers them to the cluster bundle, a standalone none
+	profile := RightsOf(Info{Bundles: []string{"cluster"}, MyViews: []string{"drift", "cluster_items", "cluster_effective"},
+		Deployment: "cluster"})
+	if !profile.Drift || !profile.Profile || !profile.Effective || profile.Deployment != "cluster" {
+		t.Errorf("the profile's views: %+v", profile)
+	}
+	solo := RightsOf(Info{Bundles: []string{"passthrough"}, Deployment: "standalone"})
+	if solo.Drift || solo.Profile || !strings.Contains(solo.noProfile(), "standalone") {
+		t.Errorf("a standalone node offers no profile view, whatever the bundles: %+v", solo)
 	}
 	policy := RightsOf(Info{Bundles: []string{"policy"}})
 	if policy.Scale {

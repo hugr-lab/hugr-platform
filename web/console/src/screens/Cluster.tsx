@@ -5,7 +5,7 @@ import { home, linksOf } from '../lib/format'
 
 /** the cluster's settings, read only (spec 003 round 2, Q10): the profile, where telemetry and lineage go */
 export function Cluster() {
-  const { api, rights } = useApp()
+  const { api } = useApp()
   const page = useLoad(() => api.cluster(), [api])
   const [scope, setScope] = useState('all')
   const profile = page.data?.profile
@@ -35,7 +35,7 @@ export function Cluster() {
             </div>
             {profile?.error ? (
               <p role="note" className="rounded-md border border-line px-6 py-4 text-sm">
-                {rights.infrastructure ? `${profile.error}: a standalone node has no cluster profile.` : profile.error}
+                {profile.error.charAt(0).toUpperCase() + profile.error.slice(1)}.
               </p>
             ) : (
               <div className="overflow-x-auto rounded-md border border-line">

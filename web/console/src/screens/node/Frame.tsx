@@ -46,8 +46,9 @@ export function NodeFrame({ label, children, alsoReload }: { label: string; chil
               {k.admitting && <Status mark="ok">Admitting</Status>}
               {draining && <Status mark="half">Draining</Status>}
               <span className="text-sm text-ink-muted">
-                group <span className="mono text-ink">{page.data?.group}</span> · profile version {k.target}
-                {k.applied === k.target ? ', applied' : `, ${k.applied} applied`}
+                group <span className="mono text-ink">{page.data?.group}</span> ·{' '}
+                {rights.deployment === 'standalone' ? 'no cluster profile (a standalone node)'
+                  : `profile version ${k.target}${k.applied === k.target ? ', applied' : `, ${k.applied} applied`}`}
               </span>
             </div>
           )}
