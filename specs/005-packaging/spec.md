@@ -151,12 +151,17 @@ The order is one `helm install` plus one action of the installer in tresor:
 3. **The installer writes the catalog's login into tresor** as `hugr_policy_catalog` and grants it to the nodes'
    principal, with tresor's console or CLI. It is a credential, so it is never written into the chart, its values or
    a Job.
-4. **The bootstrap Job** (`bootstrap.enabled`, a post-install hook; spec 001's "install Job") runs on the node's
-   image, in its own process, as the first group's ServiceAccount. It does this:
-   - waits until tresor serves the login;
-   - attaches the catalog as a node does;
-   - writes the minimum policy from values, idempotent: the issuer, its client, and the mapping of the
-     administrators' claim to a role with the `cluster` and `policy` bundles.
+4. **The first policy is the node's** (the owner, 2026-10-20). It replaces an install Job run as the first group's
+   ServiceAccount, which the admission policies refuse: only a group's ReplicaSet may run as the group.
+   - **What it is:** `HugrPlatform.spec.firstPolicy`, structured fields, never SQL: the issuer's URL, its audiences, the
+     roles claim, and the claim value of the administrators.
+   - **How it travels:** in each node's bootstrap document, from the operator.
+   - **Where it is applied:** a node that attaches a catalog with no issuer writes it once, in one transaction, in its
+     own process before it serves. It writes the issuer, its client, the role `platform_admin` with the `cluster` and
+     `policy` bundles, and the mapping of the administrators' claim to that role.
+   - **Never overwrites:** a catalog that has an issuer is left alone, and nodes starting together race to one write.
+   - **The specs:** a small spec in hugr-node (the document's field, the write) and one in this repository (the field
+     and the document).
 
    The nodes come up. The administrator signs into the console and does the rest there.
 
@@ -194,13 +199,29 @@ The order is one `helm install` plus one action of the installer in tresor:
     Azure Database for PostgreSQL, Key Vault for kista's signing key, and the chart;
   - `createUiDefinition`: the plan becomes the groups;
   - the publisher's access is just-in-time, never standing (spec 001).
+- **The databases** (the owner, 2026-10-20): the Managed Application offers two engines, Azure SQL or Azure Database
+  for PostgreSQL. One server holds three databases: `tresor`, `kista` and `hugr` (the policy catalog). The server is
+  Entra-only.
+  - **tresor and kista** log in by their managed identity's Entra token, with no password (tresor's `auth: entra`,
+    kista's `store.login.kind: entra`). The deployment script creates their database users for the identities
+    (`CREATE USER … FROM EXTERNAL PROVIDER`, `pgaadauth_create_principal`).
+  - **The policy catalog on Azure SQL**: a node logs in by its group's Entra token through mssql and the linked `azure`
+    extension (mssql reads a token per connection), so `hugr_policy_catalog` in tresor names the host and the
+    database only. Still to verify: the group's workload identity reaching the `azure` extension's credential chain.
+  - **The policy catalog on PostgreSQL**, phase 1: a password login. postgres_scanner does not re-read a token as a
+    password yet (decision 5 of 2026-10-15, later). The deployment script makes the login and writes it straight into
+    tresor, so no person and no file ever holds it. The server then admits a password for that one login.
+  - **The first deployment is automatic.** The deployment script creates the server, the databases and the users,
+    writes `hugr_policy_catalog` into tresor and grants it to the groups' identities. The first node writes the first
+    policy (`firstPolicy`, decision 4 of stage A).
 - **The images**: which registry the Marketplace requires for them is to check.
 - **The first live AKS run**: `test/demo/run.sh aks`, through the chart.
 
 ## Security
 
-- **No credential** in the chart, its values, a ConfigMap or a Job. The bootstrap Job authenticates as a group, by
-  its projected ServiceAccount token.
+- **No credential** in the chart, its values, a ConfigMap or the bootstrap document. The first policy is written by a
+  node, as itself: its projected ServiceAccount token logs it in to tresor, and the fields name an issuer, never a
+  secret.
 - **A door's key** never reaches etcd. The operator's own webhook certificate stays a cert-manager Secret: the API
   server's CA injection reads it.
 - **The operator's RBAC** is spec 001's. Spec 001's boundary holds: the namespace is the platform's alone. The
@@ -228,7 +249,18 @@ The order is one `helm install` plus one action of the installer in tresor:
 
 ## Decided (the owner, 2026-10-20)
 
-1. **tresor-server** is a subchart, on by default. `tresor.enabled: false` points at an external one.
+1. **Two ways to install** (the owner, 2026-10-20; this replaces "tresor-server is a subchart of hugr-platform"):
+   - **the strict one**: the chart `hugr-platform` is the platform alone, and tresor and kista are releases of their
+     own, in their own namespaces. tresor holds credentials and kista reaches a signing key, so neither shares the
+     platform's namespace, whose administrator would otherwise be theirs too. The installer orders the releases;
+   - **the one for a catalog** (IONOS, OTC, Hetzner, the Azure Marketplace): an umbrella chart `hugr` with
+     `hugr-platform`, `tresor-server` and `kista` as dependencies, and their values wired together (tresor's host,
+     kista's prefix, their certificates from the platform's internal CA). A platform works only with both services,
+     and a catalog takes one chart.
+   - To keep each service in its own namespace inside the umbrella, their charts need a `namespaceOverride`. That is a
+     product gap of tresor-server and kista, for their sessions. Until it lands, the umbrella installs them in the
+     platform's namespace, a trade-off its documentation states. kista's first release, with its chart, is the other
+     precondition.
 2. **kista**: the demo packages it from source until kista's first release. That release is the product's decision.
 3. **The first groups are created at install only**, as post-install hooks rather than a `lookup`. Made with the
    release's other resources, a group meets the operator's webhook before it serves (`failurePolicy: Fail`), and a
