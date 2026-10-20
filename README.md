@@ -56,6 +56,11 @@ kubectl apply -k config/default            # the CRDs, the operator, its rights,
 kubectl apply -f config/samples/platform.yaml   # a HugrPlatform and a HugrNodeGroup, edited for the cluster
 ```
 
+A platform installed from nothing has an empty policy catalog. `spec.firstPolicy` names what the first node writes
+into it (spec 005, hugr-node spec 015): the IdP, the applications whose tokens count (the console's always), the
+roles-claim value of the administrators and the default group. Its resource groups are the groups'. A node writes it
+only into a catalog nobody administers yet, so a later edit of the field changes nothing.
+
 A group's doors need a certificate for `hugr-node-<group>.hugr.svc`, named by exactly one of:
 
 - `tls.secretRef`: a TLS Secret named `hugr-node-…`;

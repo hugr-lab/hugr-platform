@@ -139,26 +139,60 @@ The design:
 
   A loadable is built for one duckdb version, so a new duckdb still means a new hugr_node.
 
-### Stage A: the first deployment
+### Stage A: the first deployment, by itself (the owner, 2026-10-20: "everything installs itself, as far as it can")
 
-The order is one `helm install` plus one action of the installer in tresor:
+One mechanism everywhere: the chart's install Job `hugr-init`, under a ServiceAccount of its own. It is no group's, so
+the admission policies leave it alone. Then the first node writes the first policy.
 
-1. **Prerequisites**: cert-manager with its csi-driver, the databases, and the IdP's registrations (Keycloak by hand;
-   Entra in stage B).
-2. **`helm install hugr`**: tresor, kista, the operator, the platform, the first groups. The nodes start, find no
-   catalog login in tresor and exit. Kubernetes restarts them with backoff, and the console shows them `failing` with
-   the reason.
-3. **The installer writes the catalog's login into tresor** as `hugr_policy_catalog` and grants it to the nodes'
-   principal, with tresor's console or CLI. It is a credential, so it is never written into the chart, its values or
-   a Job.
-4. **The bootstrap Job** (`bootstrap.enabled`, a post-install hook; spec 001's "install Job") runs on the node's
-   image, in its own process, as the first group's ServiceAccount. It does this:
-   - waits until tresor serves the login;
-   - attaches the catalog as a node does;
-   - writes the minimum policy from values, idempotent: the issuer, its client, and the mapping of the
-     administrators' claim to a role with the `cluster` and `policy` bundles.
+1. **The database.** `hugr-init` makes the policy catalog's database and its login:
+   - on Azure SQL, Entra users for the groups' identities, with no password;
+   - elsewhere, a login with a generated password, written straight into tresor and nowhere else.
+2. **tresor.** It writes `hugr_policy_catalog` and grants it to the groups' identities.
+3. **kista.** It makes the tenant and the channel, and the upstreams: DuckDB's core and community repositories, our
+   public channel, and the organisation's Enterest tenant when the form names one. Subscribing to Enterest and granting
+   the in-cluster kista there stays manual, as a matter between the organisation and Enterest.
+4. **The nodes** start, and the first one writes the first policy. The administrator signs into the console. The
+   first policy:
+   - **what it is:** `HugrPlatform.spec.firstPolicy`, structured fields, never SQL:
+     - the issuer: its name, its URL (default `idp.issuer`), the audiences besides the console's, and the roles claim;
+     - the clients whose tokens count. The console's is always there (`console.clientID`, its tokens for
+       `console.audiences.nodes`), so `firstPolicy` needs `console`; a tool's may join it;
+     - the roles-claim value of the administrators;
+     - the default group (optional). The resource groups themselves are the namespace's `HugrNodeGroup`s', which a
+       marketplace's deployment form chooses (groups, node counts, sizes) as the chart's values;
+   - **how it travels:** in each node's bootstrap document, as `first_policy`, which the operator builds per request
+     from the platform and the namespace's groups. A platform whose first policy the node would refuse (a default group
+     no group serves, say) gets no document: the node waits, and the operator logs why;
+   - **where it is applied:** in the node's own process, before it serves, into a catalog nobody administers yet: one
+     with no role mapping and no issuer but the first policy's own (an empty database gets its schema first). It writes
+     the role `platform_admin` with the `cluster`, `policy` and `passthrough` bundles, a resource group per group bound
+     to that role, the issuer, its clients, and last the administrators' mapping. A node whose group the policy lacks
+     refuses everyone and drains (duckdb-acl spec 096), so the groups are part of it;
+   - **never overwrites:** the mappings come last, so a write that stopped part-way is completed by the next start,
+     and a catalog with a mapping is left alone. Nodes that start together race to the same policy;
+   - **`passthrough` too** (the owner, 2026-10-20): handing out administration is `passthrough`'s alone in duckdb-acl
+     (a catalog's `manage` for a mapped role, a mapping to an administering role, the issuer and the console's client),
+     and no one else in a deployed platform holds it. It is also `ACL NATIVE`: the administrators' value is for few;
+   - **the specs:** hugr-node spec 015 (the document's field, the write) and this one (the field, the document).
 
-   The nodes come up. The administrator signs into the console and does the rest there.
+Where `hugr-init`'s rights come from:
+
+- **Azure** (the Managed Application): its ServiceAccount is federated with a managed identity the Managed Application
+  makes. That identity is the database server's Entra administrator and a tresor administrator.
+- **IONOS, OTC, Hetzner** (a catalog's form):
+  - **The database**, the form's choice: the provider's managed database, whose administrator credential the form
+    hands over once, in a Secret that `hugr-init` deletes after use (the owner: acceptable where needed); or one in
+    the cluster, CloudNativePG as a dependency of the umbrella.
+  - **tresor** trusts the cluster's own ServiceAccount issuer, and `hugr-init` logs in with its projected token
+    (`FLOW 'token'`: a short Job needs no renewal). This is to verify live: tresor-server takes any OIDC issuer with
+    discovery.
+  - **The nodes** log in to tresor as today, by `federated`: the organisation's IdP trusts the cluster's issuer once.
+    Without that, the tresor extension would need a login by a token file it re-reads per request: a product gap.
+- **Product gaps**, for their sessions:
+  - kista: its first setup by API or by declarative values (today `kista admin` in the pod), `namespaceOverride` in
+    its chart, and a first release with the chart;
+  - tresor-server: `namespaceOverride` in its chart, and the token-file login above if the nodes are to skip the
+    IdP.
 
 ### Stage A: the operator's release
 
@@ -194,13 +228,35 @@ The order is one `helm install` plus one action of the installer in tresor:
     Azure Database for PostgreSQL, Key Vault for kista's signing key, and the chart;
   - `createUiDefinition`: the plan becomes the groups;
   - the publisher's access is just-in-time, never standing (spec 001).
+- **The databases** (the owner, 2026-10-20): the Managed Application offers two managed engines, Azure SQL Database or
+  Azure Database for PostgreSQL Flexible Server. One server holds three databases: `tresor`, `kista` and `hugr` (the
+  policy catalog). The goal is that each of the three logs in by its managed identity, with no password, on either
+  engine. The server is Entra-only.
+  - **tresor and kista** log in by their managed identity's Entra token, with no password (tresor's `auth: entra`,
+    kista's `store.login.kind: entra`). The deployment script creates their database users for the identities
+    (`CREATE USER … FROM EXTERNAL PROVIDER`, `pgaadauth_create_principal`).
+  - **The policy catalog on Azure SQL**: a node logs in by its group's Entra token through mssql and the linked `azure`
+    extension (mssql reads a token per connection), so `hugr_policy_catalog` in tresor names the host and the
+    database only. Still to verify: the group's workload identity reaching the `azure` extension's credential chain.
+  - **The policy catalog on PostgreSQL** has one gap. An Entra token lives about an hour, and postgres_scanner takes
+    its password once, so a new connection after that fails. Two ways close it: postgres_scanner re-reading a token as
+    the password per connection (a patch of ours), or a dynamic secret in tresor that hands out a fresh token ("CREATE
+    DYNAMIC SECRET", decision 5 of 2026-10-15). Until one lands, the catalog on PostgreSQL logs in by a password that
+    only tresor holds: the deployment script makes it and writes it straight into tresor, and the server admits a
+    password for that one login.
+  - **The order** (the owner, 2026-10-20): SQL Server first, with no password anywhere. The PostgreSQL catalog's Entra
+    login waits for upstream postgres_scanner to support a refreshed token. No patch of ours.
+  - **The first deployment is automatic.** The deployment script creates the server, the databases and the users,
+    writes `hugr_policy_catalog` into tresor and grants it to the groups' identities. The first node writes the first
+    policy (`firstPolicy`, decision 4 of stage A).
 - **The images**: which registry the Marketplace requires for them is to check.
 - **The first live AKS run**: `test/demo/run.sh aks`, through the chart.
 
 ## Security
 
-- **No credential** in the chart, its values, a ConfigMap or a Job. The bootstrap Job authenticates as a group, by
-  its projected ServiceAccount token.
+- **No credential** in the chart, its values, a ConfigMap or the bootstrap document. The first policy is written by a
+  node, as itself: its projected ServiceAccount token logs it in to tresor, and the fields name an issuer, never a
+  secret.
 - **A door's key** never reaches etcd. The operator's own webhook certificate stays a cert-manager Secret: the API
   server's CA injection reads it.
 - **The operator's RBAC** is spec 001's. Spec 001's boundary holds: the namespace is the platform's alone. The
@@ -228,7 +284,18 @@ The order is one `helm install` plus one action of the installer in tresor:
 
 ## Decided (the owner, 2026-10-20)
 
-1. **tresor-server** is a subchart, on by default. `tresor.enabled: false` points at an external one.
+1. **Two ways to install** (the owner, 2026-10-20; this replaces "tresor-server is a subchart of hugr-platform"):
+   - **the strict one**: the chart `hugr-platform` is the platform alone, and tresor and kista are releases of their
+     own, in their own namespaces. tresor holds credentials and kista reaches a signing key, so neither shares the
+     platform's namespace, whose administrator would otherwise be theirs too. The installer orders the releases;
+   - **the one for a catalog** (IONOS, OTC, Hetzner, the Azure Marketplace): an umbrella chart `hugr` with
+     `hugr-platform`, `tresor-server` and `kista` as dependencies, and their values wired together (tresor's host,
+     kista's prefix, their certificates from the platform's internal CA). A platform works only with both services,
+     and a catalog takes one chart.
+   - To keep each service in its own namespace inside the umbrella, their charts need a `namespaceOverride`. That is a
+     product gap of tresor-server and kista, for their sessions. Until it lands, the umbrella installs them in the
+     platform's namespace, a trade-off its documentation states. kista's first release, with its chart, is the other
+     precondition.
 2. **kista**: the demo packages it from source until kista's first release. That release is the product's decision.
 3. **The first groups are created at install only**, as post-install hooks rather than a `lookup`. Made with the
    release's other resources, a group meets the operator's webhook before it serves (`failurePolicy: Fail`), and a

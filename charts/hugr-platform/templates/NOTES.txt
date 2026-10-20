@@ -8,4 +8,10 @@ The hugr platform "{{ .Values.platform.name }}" is installed in the namespace {{
   and the front trust: the ConfigMap {{ include "hugr.bundleName" . }}, which the operator writes.
 - The nodes start once tresor holds the policy catalog's login (the secret hugr_policy_catalog, granted to the
   groups' identities) - until then they exit and Kubernetes restarts them, and the console shows why.
+{{- if .Values.platform.spec.firstPolicy }}
+- The first node writes the first policy into a catalog nobody administers yet: the administrators (the roles
+  claim's "{{ .Values.platform.spec.firstPolicy.administrators }}") sign in to the console as platform_admin.
+{{- else }}
+- No platform.spec.firstPolicy: until the catalog holds a policy, no token verifies.
+{{- end }}
 - Node groups: kubectl -n {{ .Release.Namespace }} get hng

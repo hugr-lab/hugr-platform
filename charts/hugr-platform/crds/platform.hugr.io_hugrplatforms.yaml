@@ -141,6 +141,81 @@ spec:
                 - audiences
                 - clientID
                 type: object
+              firstPolicy:
+                description: |-
+                  FirstPolicy is what the first node writes into a policy catalog nobody administers yet (spec 005, hugr-node
+                  spec 015): the IdP, the applications whose tokens count, the administrators, the default group. Names only,
+                  never SQL nor a secret; a catalog that has its policy is never written again, whatever this says later.
+                properties:
+                  administrators:
+                    description: Administrators is the roles claim's value that makes
+                      a person the platform's administrator.
+                    minLength: 1
+                    type: string
+                  clients:
+                    description: 'Clients are applications besides the console whose
+                      tokens count: a tool''s registration (DBeaver, a driver).'
+                    items:
+                      description: FirstPolicyClient is an application whose tokens
+                        count.
+                      properties:
+                        clientID:
+                          description: 'ClientID is the application''s id at the IdP:
+                            its tokens'' azp.'
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name of the client in the policy.
+                          pattern: ^[A-Za-z0-9_-]{1,63}$
+                          type: string
+                      required:
+                      - clientID
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: console is the console's own client, made from console.clientID
+                        rule: self.name != 'console'
+                    maxItems: 16
+                    type: array
+                  defaultGroup:
+                    description: |-
+                      DefaultGroup is the resource group of a principal bound to none: one of the namespace's groups' resource
+                      groups. Without it, a principal is served only by the groups the administrator binds it to.
+                    type: string
+                  issuer:
+                    description: Issuer is the IdP the people's tokens come from.
+                    properties:
+                      audiences:
+                        description: Audiences the people's tokens may carry besides
+                          the console's (console.audiences.nodes).
+                        items:
+                          minLength: 1
+                          type: string
+                        maxItems: 16
+                        type: array
+                      name:
+                        description: Name of the issuer in the policy.
+                        pattern: ^[A-Za-z0-9_-]{1,63}$
+                        type: string
+                      rolesClaim:
+                        description: 'RolesClaim is the claim that carries a person''s
+                          roles: roles for Entra ID, realm_access.roles for Keycloak.'
+                        minLength: 1
+                        type: string
+                      url:
+                        description: |-
+                          URL is the issuer of the people's tokens (their iss); its keys are read from it by discovery. Default:
+                          spec.idp.issuer.
+                        pattern: ^https://[^@]+$
+                        type: string
+                    required:
+                    - name
+                    - rolesClaim
+                    type: object
+                required:
+                - administrators
+                - issuer
+                type: object
               front:
                 description: Front is the clients' one address for the nodes' doors
                   (spec 002); without it the operator builds no front.
@@ -1449,6 +1524,10 @@ spec:
             - sizes
             - tresor
             type: object
+            x-kubernetes-validations:
+            - message: 'firstPolicy needs console: the console''s client is how the
+                administrator gets in'
+              rule: '!has(self.firstPolicy) || has(self.console)'
           status:
             description: HugrPlatformStatus is the installation's state.
             properties:

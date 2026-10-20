@@ -192,6 +192,47 @@ func TestDocument(t *testing.T) {
 	}
 }
 
+// TestFirstPolicy: the console's client and audience always, the platform's groups' resource groups once each, the
+// IdP's URL by default (spec 005, hugr-node spec 015)
+func TestFirstPolicy(t *testing.T) {
+	platform, group := Fixture()
+	if policy, err := FirstPolicy(platform, nil); policy != nil || err != nil {
+		t.Fatalf("a platform without a first policy: %v, %v", policy, err)
+	}
+	platform.Spec.FirstPolicy = &v1alpha1.FirstPolicySpec{
+		Issuer: v1alpha1.FirstPolicyIssuer{Name: "corp", Audiences: []string{"api://hugr-tools", "api://hugr"},
+			RolesClaim: "roles"},
+		Clients:        []v1alpha1.FirstPolicyClient{{Name: "dbeaver", ClientID: "dbeaver-app"}},
+		Administrators: "hugr-admins",
+		DefaultGroup:   "etl",
+	}
+	if _, err := FirstPolicy(platform, nil); err == nil {
+		t.Error("a first policy without the console is built")
+	}
+	platform.Spec.Console = &v1alpha1.ConsoleSpec{ClientID: "console-app",
+		Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr"}}
+	bi := *group
+	bi.Name, bi.Spec.ResourceGroup = "bi", "bi-prod"
+	twin := *group
+	twin.Name, twin.Spec.ResourceGroup = "etl-twin", "etl" // the same resource group as etl's
+	foreign := *group
+	foreign.Name, foreign.Spec.Platform = "other", "another-platform"
+	policy, err := FirstPolicy(platform, []v1alpha1.HugrNodeGroup{bi, *group, twin, foreign})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := Document(platform, group, "hugr-node-etl-7f9c-x2k8p", platform.EffectiveHeartbeatSeconds())
+	doc.FirstPolicy = policy
+	if err := doc.Validate(); err != nil {
+		t.Fatalf("the first policy the operator builds is one the node refuses: %v", err)
+	}
+	golden(t, "document-first-policy", doc)
+	platform.Spec.FirstPolicy.DefaultGroup = "missing"
+	if _, err := FirstPolicy(platform, []v1alpha1.HugrNodeGroup{*group}); err == nil {
+		t.Error("a default group no group serves is built")
+	}
+}
+
 func TestCheckSize(t *testing.T) {
 	platform, _ := Fixture()
 	if err := CheckSize(platform, "large"); err != nil {

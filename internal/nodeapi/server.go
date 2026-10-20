@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
 )
@@ -79,6 +80,22 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	document := build.Document(node.Platform, node.Group, node.Pod.Name,
 		build.HeartbeatSeconds(node.Platform, node.Pod.Annotations))
+	if node.Platform.Spec.FirstPolicy != nil {
+		// spec 005: the first policy names the namespace's groups, so a node of any of them may write it
+		var groups v1alpha1.HugrNodeGroupList
+		if err := s.Auth.Reader.List(r.Context(), &groups, client.InNamespace(node.Platform.Namespace)); err != nil {
+			s.Log.Error(err, "groups not listed for the first policy", "pod", node.Pod.Name)
+			http.Error(w, "the orchestrator cannot read the platform now", http.StatusServiceUnavailable)
+			return
+		}
+		policy, err := build.FirstPolicy(node.Platform, groups.Items)
+		if err != nil {
+			s.Log.Info("bootstrap document incomplete", "group", node.Group.Name, "pod", node.Pod.Name, "reason", err.Error())
+			http.Error(w, "the platform's configuration is incomplete", http.StatusServiceUnavailable)
+			return
+		}
+		document.FirstPolicy = policy
+	}
 	if err := document.Validate(); err != nil {
 		// the installation is incomplete: the node would refuse the document, so it is not served
 		s.Log.Info("bootstrap document incomplete", "group", node.Group.Name, "pod", node.Pod.Name, "reason", err.Error())
