@@ -210,7 +210,13 @@ The order is one `helm install` plus one action of the installer in tresor:
    The cluster-scoped objects (ClusterRole, ClusterRoleBinding, the webhook's configuration) are named after the
    namespace. The CRDs are the one thing they share, at one version: one release installs them (`crds.install`, on
    by default), and the others set it off.
-7. **hugr_node** stays in the image until `v2.0.0`. Its path after that is the proposal in "hugr_node on the node",
+7. **The internal CA lives in cert-manager's namespace.** trust-manager reads its sources only from its trust
+   namespace (cert-manager's by default), and a ClusterIssuer reads its CA Secret from there too. So the chart writes
+   a platform's CA there, named after the platform's namespace: `hugr-<ns>-internal-ca`, plus the ClusterIssuer
+   `hugr-<ns>-internal`. Two platforms in one cluster never meet, and the chart writes these few objects outside its
+   own namespace. The alternative, trust-manager bound to one platform's namespace, would serve one platform per
+   cluster.
+8. **hugr_node** stays in the image until `v2.0.0`. Its path after that is the proposal in "hugr_node on the node",
    to be confirmed.
 
 ## Follow-ups
