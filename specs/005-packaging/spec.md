@@ -254,6 +254,10 @@ The order is one `helm install` plus one action of the installer in tresor:
 ## Follow-ups
 
 - Stage B.
+- **The front and the console verify a node by the internal CA alone.** Today they read the platform's whole bundle
+  (spec 002's `FrontCABundle`), public roots and `caBundle.extra` included. A public CA issues no certificate for a
+  `.svc` name, but an organisation's CA added to `extra` could. The operator would write a second ConfigMap with the
+  internal CA only, and the chart would point `spec.front.caBundle` at it.
 - ADBC drivers (decision 9; the owner, 2026-10-20). For now: a driver image per group in `HugrNodeGroup`, mounted by an
   init container, plus `adbc_` in duckdb-acl's never set; its own spec. After the release: kista serves ADBC drivers on
   a par with extensions, as a product change of kista's.
