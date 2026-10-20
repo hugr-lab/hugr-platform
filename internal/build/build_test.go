@@ -42,7 +42,7 @@ func Fixture() (*v1alpha1.HugrPlatform, *v1alpha1.HugrNodeGroup) {
 			Platform: "hugr", Replicas: 3, Size: "large",
 			Identity:    v1alpha1.WorkloadIdentity{ClientID: "etl-app"},
 			Doors:       v1alpha1.DoorsSpec{Quack: true},
-			TLS:         v1alpha1.TLSSpec{SecretRef: v1alpha1.SecretRef{Name: "hugr-node-etl-tls"}},
+			TLS:         v1alpha1.TLSSpec{SecretRef: &v1alpha1.SecretRef{Name: "hugr-node-etl-tls"}},
 			RestartedAt: "2026-10-18T12:00:00Z",
 		},
 	}
@@ -87,6 +87,59 @@ func TestGroupObjects(t *testing.T) {
 	golden(t, "service", Service(group))
 	golden(t, "pdb", PodDisruptionBudget(group))
 	golden(t, "networkpolicy", NetworkPolicy(group))
+}
+
+// TestDoorsCertificateByCSI: a group whose doors' certificate the csi-driver issues mounts no Secret; the driver is
+// asked for the group's Service names (the operator's, never the editor's), the files are the node's group's, and the
+// issuer, its kind and the duration are passed as written.
+func TestDoorsCertificateByCSI(t *testing.T) {
+	platform, group := Fixture()
+	group.Spec.TLS = v1alpha1.TLSSpec{CSI: &v1alpha1.CSICertificate{
+		IssuerRef: v1alpha1.IssuerRef{Name: "hugr-internal", Kind: "ClusterIssuer"}, Duration: "720h"}}
+	deployment, err := Deployment(platform, group, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tls *corev1.Volume
+	for i, v := range deployment.Spec.Template.Spec.Volumes {
+		if v.Secret != nil {
+			t.Errorf("the pod mounts the Secret %q", v.Secret.SecretName)
+		}
+		if v.Name == "tls" {
+			tls = &deployment.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if tls == nil || tls.CSI == nil {
+		t.Fatalf("no csi volume for the doors: %+v", tls)
+	}
+	if tls.CSI.Driver != CSIDriver || tls.CSI.ReadOnly == nil || !*tls.CSI.ReadOnly {
+		t.Errorf("driver %q, read-only %v", tls.CSI.Driver, tls.CSI.ReadOnly)
+	}
+	want := map[string]string{
+		"csi.cert-manager.io/issuer-name": "hugr-internal",
+		"csi.cert-manager.io/issuer-kind": "ClusterIssuer",
+		"csi.cert-manager.io/dns-names":   "hugr-node-etl.hugr.svc,hugr-node-etl.hugr.svc.cluster.local",
+		"csi.cert-manager.io/fs-group":    "10001",
+		"csi.cert-manager.io/duration":    "720h",
+	}
+	for k, v := range want {
+		if got := tls.CSI.VolumeAttributes[k]; got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+	}
+	if len(tls.CSI.VolumeAttributes) != len(want) {
+		t.Errorf("attributes %v, want exactly %v", tls.CSI.VolumeAttributes, want)
+	}
+	// neither form, or both: no Deployment
+	group.Spec.TLS = v1alpha1.TLSSpec{}
+	if _, err := Deployment(platform, group, Settings{}); err == nil {
+		t.Error("a group with no doors' certificate is expanded")
+	}
+	group.Spec.TLS = v1alpha1.TLSSpec{SecretRef: &v1alpha1.SecretRef{Name: "hugr-node-etl-tls"},
+		CSI: &v1alpha1.CSICertificate{IssuerRef: v1alpha1.IssuerRef{Name: "hugr-internal"}}}
+	if _, err := Deployment(platform, group, Settings{}); err == nil {
+		t.Error("a group with two doors' certificates is expanded")
+	}
 }
 
 func TestDeploymentRefusesAnUnknownSize(t *testing.T) {

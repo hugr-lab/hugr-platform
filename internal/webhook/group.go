@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -39,7 +40,7 @@ func (v *GroupValidator) ValidateUpdate(ctx context.Context, old, group *v1alpha
 		return nil, nil // a group going (the garbage collector's finalizer removal is an update)
 	}
 	if old.Spec.Size == group.Spec.Size && old.Spec.Platform == group.Spec.Platform && group.Spec.Replicas <= old.Spec.Replicas {
-		return nil, CheckTLSSecret(group.Spec.TLS.SecretRef.Name)
+		return nil, CheckTLS(group.Spec.TLS)
 	}
 	return nil, v.check(ctx, group)
 }
@@ -53,7 +54,7 @@ func (v *GroupValidator) check(ctx context.Context, group *v1alpha1.HugrNodeGrou
 	if err := plan.CheckName(group.Name); err != nil {
 		return err
 	}
-	if err := CheckTLSSecret(group.Spec.TLS.SecretRef.Name); err != nil {
+	if err := CheckTLS(group.Spec.TLS); err != nil {
 		return err
 	}
 	var platform v1alpha1.HugrPlatform
@@ -90,6 +91,24 @@ func CheckTLSSecret(name string) error {
 	if !strings.HasPrefix(name, TLSSecretPrefix) {
 		return fmt.Errorf("the doors' certificate %q is not a Secret named %s… - a group mounts no other Secret of the "+
 			"namespace", name, TLSSecretPrefix)
+	}
+	return nil
+}
+
+// CheckTLS says whether a group may name the doors' certificate it names: exactly one of a Secret named for the
+// nodes and cert-manager's csi-driver, whose certificate lasts at least an hour. The csi-driver's names are the
+// operator's (the group's Service), so a group's editor chooses only which issuer signs them.
+func CheckTLS(tls v1alpha1.TLSSpec) error {
+	if (tls.SecretRef == nil) == (tls.CSI == nil) {
+		return fmt.Errorf("the doors' certificate names exactly one of tls.secretRef and tls.csi")
+	}
+	if tls.SecretRef != nil {
+		return CheckTLSSecret(tls.SecretRef.Name)
+	}
+	if tls.CSI.Duration != "" {
+		if d, err := time.ParseDuration(tls.CSI.Duration); err != nil || d < time.Hour {
+			return fmt.Errorf("the doors' certificate's duration %q is not a duration of at least 1h", tls.CSI.Duration)
+		}
 	}
 	return nil
 }

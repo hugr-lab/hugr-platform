@@ -64,8 +64,11 @@ key source. A password in values would also land in Helm's release Secret.
 
 - **The CRD**: `HugrNodeGroup.spec.tls` gains `csi: {issuerRef, duration}` beside `secretRef`, and the chart's groups
   use it. The operator mounts the csi-driver volume into the node's pod with these attributes:
-  - `csi.cert-manager.io/issuer-name` and `issuer-kind`;
+  - `csi.cert-manager.io/issuer-name`, `issuer-kind` and `issuer-group`;
   - `dns-names`: `hugr-node-<group>.<ns>.svc` and `.cluster.local`;
+  - `fs-group`: the node's group (10001). The pod's `fsGroup` reaches the files as well (measured on minikube with
+    cert-manager v1.21.2 and csi-driver v0.16.0), but the attribute keeps the files readable whatever a driver's
+    version defaults to;
   - `duration`.
 - **The key** is generated on the pod's node, kept in tmpfs, and never written to a Secret. cert-manager renews the
   certificate in place.
@@ -77,7 +80,13 @@ key source. A password in values would also land in Helm's release Secret.
   hugr-node passes the paths it already has (`HUGR_FLIGHT_CERT`, `HUGR_QUACK_CERT`).
 - **The fallback** is visible, not silent. The console already shows each door's `notAfter` as its last handshake
   saw it. A certificate that a node still serves past renewal is flagged there.
-- **`secretRef` stays** for an installation that brings its own.
+- **`secretRef` stays** for an installation that brings its own. A group names exactly one of the two: the CRD's
+  rule refuses both or neither at the API server, and the webhook checks it again with the Secret's name rule and a
+  `duration` of at least 1h.
+- **Who can get a door's certificate.** The csi-driver issues to any pod that mounts its volume, so anyone who may
+  create pods in the namespace can ask the platform's issuer for a node's name. That is spec 001's boundary: such a
+  person can already run a pod as a group's ServiceAccount. A group's editor picks only the issuer; the names are
+  the operator's. cert-manager's approver-policy can narrow it further, as a follow-up.
 
 ### Stage A: hugr_node on the node
 

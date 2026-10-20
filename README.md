@@ -43,8 +43,13 @@ kubectl apply -k config/default            # the CRDs, the operator, its rights,
 kubectl apply -f config/samples/platform.yaml   # a HugrPlatform and a HugrNodeGroup, edited for the cluster
 ```
 
-A group's pods need the doors' TLS Secret it names (`tls.secretRef`, named `hugr-node-…`, SAN
-`hugr-node-<group>.hugr.svc`). The namespace is the platform's alone: whoever may create pods in it can run one as a
+A group's doors need a certificate for `hugr-node-<group>.hugr.svc`, named by exactly one of:
+
+- `tls.secretRef`: a TLS Secret named `hugr-node-…`;
+- `tls.csi`: cert-manager's csi-driver issues each pod its own certificate from the issuer named there. The key is
+  made on the pod's node and never written to a Secret (spec 005). It needs the csi-driver in the cluster.
+
+The namespace is the platform's alone: whoever may create pods in it can run one as a
 group's ServiceAccount. `kubectl apply -k config/policy` (Kubernetes 1.30+) lets a group's pods, ReplicaSets and
 Deployment come only from the operator and the cluster's own controllers.
 

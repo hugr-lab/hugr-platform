@@ -29,8 +29,8 @@ type HugrNodeGroupSpec struct {
 	// Doors the nodes open. Flight is always open.
 	// +optional
 	Doors DoorsSpec `json:"doors,omitempty"`
-	// TLS is the doors' certificate, one per group: a kubernetes.io/tls Secret whose SAN is
-	// hugr-node-<group>.<namespace>.svc.
+	// TLS is the doors' certificate, one per group, for the name hugr-node-<group>.<namespace>.svc: a
+	// kubernetes.io/tls Secret, or one cert-manager's csi-driver issues into each pod (spec 005).
 	TLS TLSSpec `json:"tls"`
 	// RestartedAt rolls the group when it changes: the console's restart button, or a kubectl patch.
 	// +optional
@@ -44,9 +44,39 @@ type DoorsSpec struct {
 	Quack bool `json:"quack,omitempty"`
 }
 
-// TLSSpec names the doors' certificate.
+// TLSSpec names the doors' certificate: exactly one of a Secret and the csi-driver.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.secretRef) != has(self.csi)",message="tls names exactly one of secretRef and csi"
 type TLSSpec struct {
-	SecretRef SecretRef `json:"secretRef"`
+	// SecretRef is a kubernetes.io/tls Secret of the namespace, named hugr-node-…: its key is kept in etcd.
+	// +optional
+	SecretRef *SecretRef `json:"secretRef,omitempty"`
+	// CSI has cert-manager's csi-driver issue each pod its own certificate: the key is made on the pod's node, held
+	// in memory and never written to a Secret (spec 005, the owner's decision 6).
+	// +optional
+	CSI *CSICertificate `json:"csi,omitempty"`
+}
+
+// CSICertificate is what the csi-driver asks its issuer for; the names are the operator's (the group's Service).
+type CSICertificate struct {
+	IssuerRef IssuerRef `json:"issuerRef"`
+	// Duration of a certificate, a Go duration ("720h"). Default: the csi-driver's (720h); it renews at two
+	// thirds.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(h|m|s))+$`
+	// +optional
+	Duration string `json:"duration,omitempty"`
+}
+
+// IssuerRef names a cert-manager issuer.
+type IssuerRef struct {
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Kind is Issuer (the namespace's, the default), ClusterIssuer, or an external issuer's kind.
+	// +optional
+	Kind string `json:"kind,omitempty"`
+	// Group is the issuer's API group: cert-manager.io, the default, or an external issuer's.
+	// +optional
+	Group string `json:"group,omitempty"`
 }
 
 // SecretRef names a Secret of the namespace.

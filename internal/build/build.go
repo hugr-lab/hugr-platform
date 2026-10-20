@@ -135,6 +135,10 @@ func Deployment(platform *v1alpha1.HugrPlatform, group *v1alpha1.HugrNodeGroup, 
 		federation = v1alpha1.DefaultFederationAudience
 	}
 	tempSize := size.Temp.Size.DeepCopy()
+	doors, err := DoorsCertificate(group)
+	if err != nil {
+		return nil, err
+	}
 	volumes := []corev1.Volume{
 		{Name: "tokens", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 			Sources: []corev1.VolumeProjection{
@@ -143,8 +147,7 @@ func Deployment(platform *v1alpha1.HugrPlatform, group *v1alpha1.HugrNodeGroup, 
 				{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 					Audience: federation, ExpirationSeconds: ptr(int64(TokenSeconds)), Path: IdentityFile}},
 			}}}},
-		{Name: "tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-			SecretName: group.Spec.TLS.SecretRef.Name, DefaultMode: ptr(int32(0o440))}}},
+		{Name: "tls", VolumeSource: doors},
 		{Name: "home", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr(resource.MustParse(HomeSize))}}},
 		{Name: "temp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &tempSize}}},
 	}
@@ -211,6 +214,43 @@ func Deployment(platform *v1alpha1.HugrPlatform, group *v1alpha1.HugrNodeGroup, 
 		},
 	}
 	return deployment, nil
+}
+
+// CSIDriver is cert-manager's csi-driver, which issues a doors' certificate into each pod (spec 005).
+const CSIDriver = "csi.cert-manager.io"
+
+// DoorsCertificate is the volume of the doors' pair, as the group names it: its Secret, or a certificate the
+// csi-driver issues into the pod for the group's Service - the key made on the pod's node, held in memory, never
+// written to a Secret (spec 005). The names are the operator's, never the group's editor's.
+func DoorsCertificate(group *v1alpha1.HugrNodeGroup) (corev1.VolumeSource, error) {
+	tls := group.Spec.TLS
+	switch {
+	case tls.SecretRef != nil && tls.CSI == nil:
+		return corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: tls.SecretRef.Name, DefaultMode: ptr(int32(0o440))}}, nil
+	case tls.CSI != nil && tls.SecretRef == nil:
+		service := Name(group) + "." + group.Namespace + ".svc"
+		attributes := map[string]string{
+			CSIDriver + "/issuer-name": tls.CSI.IssuerRef.Name,
+			CSIDriver + "/dns-names":   service + "," + service + ".cluster.local",
+			// the files are the node's group's: the pod's fsGroup reaches them too (csi-driver v0.16, measured), the
+			// attribute says so whatever a driver's version does by default
+			CSIDriver + "/fs-group": strconv.Itoa(NodeUID),
+		}
+		if tls.CSI.IssuerRef.Kind != "" {
+			attributes[CSIDriver+"/issuer-kind"] = tls.CSI.IssuerRef.Kind
+		}
+		if tls.CSI.IssuerRef.Group != "" {
+			attributes[CSIDriver+"/issuer-group"] = tls.CSI.IssuerRef.Group
+		}
+		if tls.CSI.Duration != "" {
+			attributes[CSIDriver+"/duration"] = tls.CSI.Duration
+		}
+		return corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{
+			Driver: CSIDriver, ReadOnly: ptr(true), VolumeAttributes: attributes}}, nil
+	}
+	return corev1.VolumeSource{}, fmt.Errorf("the group %q names exactly one doors' certificate: tls.secretRef or tls.csi",
+		group.Name)
 }
 
 // Service is the group's headless Service: its EndpointSlice is the front's node list (spec 002).
