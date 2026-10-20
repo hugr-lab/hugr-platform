@@ -7,9 +7,18 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
   - events
   verbs:
   - create
+  - get
+  - list
   - patch
 - apiGroups:
   - ""
@@ -73,6 +82,13 @@ rules:
   - list
   - watch
 - apiGroups:
+  - metrics.k8s.io
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
   - networking.k8s.io
   resources:
   - networkpolicies
@@ -87,10 +103,10 @@ rules:
   - platform.hugr.io
   resources:
   - hugrnodegroups
-  - hugrplatforms
   verbs:
   - get
   - list
+  - patch
   - watch
 - apiGroups:
   - platform.hugr.io
@@ -107,6 +123,14 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - platform.hugr.io
+  resources:
+  - hugrplatforms
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - policy
   resources:

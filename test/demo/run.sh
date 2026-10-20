@@ -7,6 +7,7 @@
 #   test/demo/run.sh kind                           CI: makes the cluster, runs everything, deletes it
 #   test/demo/run.sh aks [up | check | down | leftovers]   by hand: one run makes and deletes everything of Azure
 #   test/demo/run.sh <provider> diagnose            the cluster's state, through the run's redaction (CI's on a failure)
+#   test/demo/run.sh <kind | minikube> console      the console for a person's browser, after an up (lib/stand.sh)
 #
 # The IdP is Keycloak in the cluster on kind and minikube, Entra ID on AKS. The checks change the profile: they run
 # once per up (a run without a command does both).
@@ -28,7 +29,7 @@ COMMAND="${2:-all}"
 case "$PROVIDER" in
 kind | minikube | aks) ;;
 *)
-	sed -n '6,9p' "$0" >&2
+	sed -n '6,10p' "$0" >&2
 	exit 2
 	;;
 esac
@@ -43,6 +44,7 @@ trap 'stop_forwards' EXIT
 . "$HERE/lib/seed.sh"
 . "$HERE/lib/platform.sh"
 . "$HERE/lib/checks.sh"
+. "$HERE/lib/stand.sh"
 . "$HERE/lib/provider-$PROVIDER.sh"
 if [ "$PROVIDER" = aks ]; then
 	. "$HERE/lib/idp-entra.sh"
@@ -95,6 +97,10 @@ diagnose)
 	provider_context
 	diagnose
 	;;
+console)
+	provider_context
+	console_stand
+	;;
 leftovers)
 	[ "$PROVIDER" = aks ] || {
 		echo "leftovers is AKS's: kind and minikube keep nothing outside this machine" >&2
@@ -113,7 +119,7 @@ all)
 	fi
 	;;
 *)
-	echo "the command is up, check, down, diagnose, leftovers (aks) or nothing" >&2
+	echo "the command is up, check, down, diagnose, console, leftovers (aks) or nothing" >&2
 	exit 2
 	;;
 esac

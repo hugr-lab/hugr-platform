@@ -111,7 +111,8 @@ config:
       service: {claim: $TRESOR_SERVICE_CLAIM}
       service_flows: [client_credentials, private_key_jwt, federated]
   policy:
-    admins: [role:demo_seeder]
+    # the seeder (the first deployment), and the console stand's person (spec 003: tresor's console mounted)
+    admins: [role:demo_seeder, role:secrets_admin]
     # the nodes act for their sessions (ACT_FOR_SESSIONS); an actor is a service, client:<id>
     actors:
 $actors

@@ -29,3 +29,6 @@ provider_load() { kind load docker-image "$1" --name "$DEMO_CLUSTER" >/dev/null 
 provider_down() {
 	[ -n "${HUGR_DEMO_KEEP:-}" ] || kind delete cluster --name "$DEMO_CLUSTER" >/dev/null 2>&1 || true
 }
+
+# provider_metrics: kind has no metrics-server - the console says so
+provider_metrics() { :; }

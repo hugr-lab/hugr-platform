@@ -33,6 +33,9 @@ type HugrPlatformSpec struct {
 	// Front is the clients' one address for the nodes' doors (spec 002); without it the operator builds no front.
 	// +optional
 	Front *FrontSpec `json:"front,omitempty"`
+	// Console is the web console's sign-in (spec 003); without it the operator serves no console.
+	// +optional
+	Console *ConsoleSpec `json:"console,omitempty"`
 	// Sizes says what a group's size means in this cluster.
 	// +kubebuilder:validation:MinProperties=1
 	Sizes map[string]SizeSpec `json:"sizes"`
@@ -172,6 +175,52 @@ type FrontCertificateSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
+}
+
+// ConsoleSpec is the web console's sign-in (spec 003). The browser signs the person in at spec.idp.issuer with PKCE;
+// nothing here is a secret - the client is public.
+type ConsoleSpec struct {
+	// ClientID is the console's public client at the IdP.
+	// +kubebuilder:validation:MinLength=1
+	ClientID string `json:"clientID"`
+	// Audiences are what each token the browser asks for is meant for.
+	Audiences ConsoleAudiences `json:"audiences"`
+	// Scopes asked at sign-in besides openid and profile.
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+	// Links are the backends the console links out to - telemetry and lineage (spec 003 round 2); the console
+	// queries none of them.
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	Links []ConsoleLink `json:"links,omitempty"`
+}
+
+// ConsoleAudiences names a token's audience per service.
+type ConsoleAudiences struct {
+	// Nodes is the audience of the policy's client for the console: its API and every node-side action.
+	// +kubebuilder:validation:MinLength=1
+	Nodes string `json:"nodes"`
+	// Tresor is tresor-server's, for its mounted console.
+	// +optional
+	Tresor string `json:"tresor,omitempty"`
+	// Kista is kista's, for its mounted console.
+	// +optional
+	Kista string `json:"kista,omitempty"`
+}
+
+// ConsoleLink is a backend the console links out to.
+type ConsoleLink struct {
+	// Kind of backend.
+	// +kubebuilder:validation:Enum=telemetry;lineage
+	Kind string `json:"kind"`
+	// Name shown as "Open in <name>".
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Name string `json:"name"`
+	// URL template: https, no userinfo; {node}, {group}, {session} and {trace} are replaced, URL-escaped.
+	// +kubebuilder:validation:Pattern=`^https://[^@/\s]+(/[^\s]*)?$`
+	// +kubebuilder:validation:MaxLength=2048
+	URL string `json:"url"`
 }
 
 // SizeSpec is what one size means: the container's resources, where it runs, and its spill volume.

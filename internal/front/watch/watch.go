@@ -172,6 +172,7 @@ func View(slices, leases []any) *fleet.View {
 				QuackPort: quack, Ready: ready, Serving: serving}
 			if l := byName[e.TargetRef.Name]; l != nil && l.Spec.RenewTime != nil && l.Spec.LeaseDurationSeconds != nil {
 				n.Lease = &fleet.Lease{
+					Renewed: l.Spec.RenewTime.Time,
 					Until:   l.Spec.RenewTime.Add(time.Duration(*l.Spec.LeaseDurationSeconds) * time.Second),
 					Summary: nodeproto.ParseSummary(l.Annotations),
 				}

@@ -11,6 +11,7 @@
 #   HUGR_AUDIENCE, HUGR_ROLES_CLAIM         the principals' tokens for the nodes
 #   group_client_id <g>                     the group's identity.clientID
 #   principal_id <p>                        a principal's client id (p: seeder, analyst-a, analyst-b, admin)
+#   console_audience <aud>                  how the console's browser names an audience it asks a token for (spec 003)
 #   install_idp, idp_checker_up, token_flags   the install; the checker's way to the token endpoint
 KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.6.4}"
 IDP_NAME=Keycloak
@@ -32,6 +33,8 @@ KC_PORT=""
 # the assertion's sub there
 group_client_id() { echo "system:serviceaccount:hugr:hugr-node-$1"; }
 principal_id() { echo "demo-$1"; }
+# a Keycloak token carries its audiences by the client's mappers: the console's own token, named as it is
+console_audience() { echo "$1"; }
 
 idp_checker_up() { KC_PORT="$(forward idp svc/keycloak 8443)"; }
 token_flags() {
@@ -48,10 +51,13 @@ install_idp() {
 	sa_issuer="$(k get --raw /.well-known/openid-configuration | python3 -c 'import json,sys; print(json.load(sys.stdin)["issuer"])')"
 	local p
 	for p in seeder analyst-a analyst-b admin breakglass; do secret_file "principal-$p" openssl rand -hex 24 >/dev/null; done
+	# the console stand's person (spec 003: `run.sh <provider> console`) - a password made for the run, never printed
+	secret_file person-operator openssl rand -hex 16 >/dev/null
 	# the secrets are read from their files: neither an argument nor the environment carries one
-	python3 - "$WORK/realm.json" "$WORK/secrets" "$sa_issuer" "${GROUPS_[@]}" <<'PY'
+	python3 - "$WORK/realm.json" "$WORK/secrets" "$sa_issuer" "https://127.0.0.1:$STAND_CONSOLE_PORT" "${GROUPS_[@]}" <<'PY'
 import json, os, sys
-out, secrets, sa_issuer, groups = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+out, secrets, sa_issuer, console, groups = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
+# console: the console stand's forwarded origin (stand.sh)
 secret = lambda p: open(os.path.join(secrets, "principal-" + p)).read().strip()
 aud = lambda audience: {"name": "aud-" + audience, "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
                         "config": {"included.custom.audience": audience, "access.token.claim": "true"}}
@@ -78,7 +84,8 @@ for g in groups:
                        "groups": ["/hugr-nodes"]})
 realm = {
     "realm": "hugr", "enabled": True, "eventsEnabled": True, "enabledEventTypes": ["CLIENT_LOGIN", "CLIENT_LOGIN_ERROR"],
-    "roles": {"realm": [{"name": n} for n in ["analyst_a", "analyst_b", "platform_admin", "node_breakglass", "demo_seeder"]]},
+    "roles": {"realm": [{"name": n} for n in ["analyst_a", "analyst_b", "platform_admin", "node_breakglass", "demo_seeder",
+                                              "secrets_admin"]]},
     "groups": [{"name": "hugr-nodes", "path": "/hugr-nodes"}],
     # the cluster's ServiceAccount issuer: Keycloak reads its keys with its own ServiceAccount token
     "identityProviders": [{"alias": "k8s", "providerId": "kubernetes", "enabled": True, "config": {"issuer": sa_issuer}}],
@@ -88,13 +95,27 @@ realm = {
         caller("demo-analyst-b", secret("analyst-b"), "hugr"),
         caller("demo-admin", secret("admin"), "hugr"),
         caller("demo-breakglass", secret("breakglass"), "hugr"),
+        {"clientId": "hugr-console", "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
+         "redirectUris": [console + "/*"], "webOrigins": [console],
+         "attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": console + "/*"},
+         "protocolMappers": [aud("hugr"), aud("duckdb-secrets")]},
     ],
+    # the console's public client (spec 003): a browser signs a person in by PKCE on this machine's forwarded port; the
+    # token carries the nodes' audience and tresor's (Keycloak puts both in one token)
     "users": node_users + [
         {"username": "service-account-demo-seeder", "enabled": True, "serviceAccountClientId": "demo-seeder", "realmRoles": ["demo_seeder"]},
         {"username": "service-account-demo-analyst-a", "enabled": True, "serviceAccountClientId": "demo-analyst-a", "realmRoles": ["analyst_a"]},
         {"username": "service-account-demo-analyst-b", "enabled": True, "serviceAccountClientId": "demo-analyst-b", "realmRoles": ["analyst_b"]},
         {"username": "service-account-demo-admin", "enabled": True, "serviceAccountClientId": "demo-admin", "realmRoles": ["platform_admin"]},
         {"username": "service-account-demo-breakglass", "enabled": True, "serviceAccountClientId": "demo-breakglass", "realmRoles": ["node_breakglass"]},
+        # the platform's operator, a person: the cluster and policy bundles (the console's every page), an admin of
+        # tresor's by a role of its own (its console mounted; never the seeder's, which holds the first deployment's
+        # grants), offline_access for the console's refresh token
+        {"username": "operator", "enabled": True, "email": "operator@example.test", "emailVerified": True,
+         "firstName": "Platform", "lastName": "Operator",
+         "credentials": [{"type": "password", "value": open(os.path.join(secrets, "person-operator")).read().strip(),
+                          "temporary": False}],
+         "realmRoles": ["platform_admin", "secrets_admin", "offline_access"]},
     ],
 }
 json.dump(realm, open(out, "w"))

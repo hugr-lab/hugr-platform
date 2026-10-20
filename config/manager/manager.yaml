@@ -1,5 +1,5 @@
-# the operator: every replica answers HTTP (the node API on 8443, the webhook on 9443, the probes on 8081); the
-# leader reconciles
+# the operator: every replica answers HTTP (the node API on 8443, the webhook on 9443, the console on 8444 when its
+# certificate is mounted, the probes on 8081); the leader reconciles
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -41,6 +41,7 @@ spec:
         ports:
         - {name: node-api, containerPort: 8443}
         - {name: webhook, containerPort: 9443}
+        - {name: console, containerPort: 8444}
         - {name: probes, containerPort: 8081}
         readinessProbe:
           httpGet: {path: /readyz, port: probes}
@@ -56,10 +57,17 @@ spec:
             drop: [ALL]
         volumeMounts:
         - {name: tls, mountPath: /etc/hugr-platform/tls, readOnly: true}
+        - {name: console-tls, mountPath: /etc/hugr-console/tls, readOnly: true}
       volumes:
       - name: tls
         secret:
           secretName: hugr-platform-tls
+      # the console's public certificate (spec 003): the administrator's or a cert-manager Certificate's; without it
+      # the operator serves no console
+      - name: console-tls
+        secret:
+          secretName: hugr-console
+          optional: true
 ---
 apiVersion: v1
 kind: Service
@@ -75,3 +83,18 @@ spec:
   ports:
   - {name: node-api, port: 8443, targetPort: node-api}
   - {name: webhook, port: 443, targetPort: webhook}
+---
+# the console (spec 003): the installation's Ingress or load balancer points here
+apiVersion: v1
+kind: Service
+metadata:
+  name: hugr-platform-console
+  labels:
+    app.kubernetes.io/part-of: hugr-platform
+    app.kubernetes.io/component: console
+spec:
+  selector:
+    app.kubernetes.io/part-of: hugr-platform
+    app.kubernetes.io/component: operator
+  ports:
+  - {name: https, port: 443, targetPort: console}

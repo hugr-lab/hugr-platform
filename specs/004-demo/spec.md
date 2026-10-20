@@ -1,6 +1,7 @@
 # Spec 004: the platform in one cluster - the demo, end to end (kind in CI, minikube locally, AKS by hand)
 
-- **Status**: implemented for minikube and kind (the nine checks pass on both); the AKS provider is written and waits
+- **Status**: implemented for minikube and kind (the checks pass on both; 4c, the console, on minikube since
+  2026-10-20); the AKS provider is written and waits
   for its first live run until more of the platform is in (the owner, 2026-10-18). Accepted 2026-10-18: minikube
   locally, manual runs on AKS as tresor-server's and kista's, and nothing of Azure kept between runs
 - **Date**: 2026-10-18
@@ -40,8 +41,12 @@ It also closes the two items spec 001 left "to verify":
 
 ### What runs where
 
-`test/demo/run.sh <kind | minikube | aks> [up | check | down | diagnose | leftovers]` builds or loads the images,
-installs everything and runs the checks. A cluster's context lives in the run's own kubeconfig
+`test/demo/run.sh <kind | minikube | aks> [up | check | down | diagnose | console | leftovers]` builds or loads the
+images, installs everything and runs the checks. `console` (kind, minikube, after an up) serves the console to a
+person's browser (spec 003): Keycloak and the console forwarded to this machine on 8443 and 8444, the realm's person
+`operator` signing in there (the issuer's name, `keycloak.idp.svc`, resolved to 127.0.0.1 by a line of the person's
+`/etc/hosts`), metrics-server enabled on a minikube profile (the profile keeps it: a later check runs with a metrics
+API). A cluster's context lives in the run's own kubeconfig
 (`~/.cache/hugr-platform-demo/<provider>/kubeconfig`): the developer's `~/.kube/config` and current context are never
 touched, whatever happens to the run. `diagnose` prints the cluster's state through the run's redaction. **minikube is the main run** (the owner, 2026-10-18): every attempt runs there and costs
 nothing; AKS is for what only Azure can prove (Entra, the managed identities), run by hand when it is needed. The
@@ -112,6 +117,11 @@ The realm `hugr`:
   - `node_breakglass`: `passthrough`, writing nothing - the checks read a node's own state through `ACL NATIVE` as it
     (its settings, the profile's version, its attached databases).
   - `demo_seeder`: tresor's administrator for the run; the first deployment writes and grants the secrets as it.
+- **The console's sign-in** (spec 003): the realm's public client `hugr-console` (PKCE, the console stand's forwarded
+  origin, the audiences `hugr` and `duckdb-secrets` in one token) and one person, `operator`: `platform_admin` (the
+  console's every page) and `secrets_admin` - a tresor administrator's role of its own, so tresor's console is mounted
+  for the person, never the seeder's role with the first deployment's grants. Its password is made for the run like
+  the principals' secrets.
 
   Their secrets are made for the run and never leave its state (below). Keycloak's first admin is the run's too, from
   a Secret: without one, its welcome page would let any local process create it through the port-forward.
@@ -194,7 +204,7 @@ they run once per `up` (`all` does both).
 2. **The federation: a node holds no credential of its own.** On the live pods, as admitted: a Secret is mounted only
    as the doors' certificate, none reaches the environment (`env`, `envFrom`), a projected volume carries tokens,
    ConfigMaps and the downward API only, no image pull secret; no node runs a development identity (a key). The
-   platform's namespace holds the operator's and the doors' TLS Secrets and nothing else. With check 1's login to
+   platform's namespace holds the operator's, the console's and the doors' TLS Secrets and nothing else. With check 1's login to
    tresor, the node's ServiceAccount token is all it logged in with: its IdP client has no secret.
 3. **The engine against the pod.** The node's `memory_limit`, `threads` and `max_temp_directory_size` are the pod's
    80% / CPU / 90%. A plain duckdb in the same container, with an empty environment, shows what DuckDB chooses by itself
@@ -210,6 +220,17 @@ they run once per `up` (`all` does both).
    node; with `b`'s node drained, `analyst_b` is refused after the wait - `hugr: no node of group b can take a new
    session - retry` - and never seated on `a`. The checker keeps no cookie: its `DoGet` reaches the node by the label
    in its ticket. The front's logs are in check 12's scan.
+4c. **The console** (spec 003): the operator serves it with the run's certificate (Secret `hugr-console`), the platform
+   names it (`spec.console`); the checker calls its API through its Service with a principal's token (`-console`).
+   Its config answers before a sign-in; `analyst_a` is refused the fleet, a node's sessions, a drain and a scale (403);
+   `platform_admin` reads the fleet (every node admitting), a node's load report, pod, memory, extensions, log and
+   audit ring, and the cluster's page; `analyst_a`'s own session (the checker's `-hold`, a driver's cookie) is traced,
+   cleared and ended, ending it again a 404; `b`'s node is drained and resumed, every call with a new token of the
+   admin's; a scale of `a` to 4 is the webhook's refusal (422), one of `b` within the plan is the console's field
+   manager's, the admin named on the group; tresor's and kista's modules come through the mounts, and tresor's
+   `whoami` answers the seeder there (the demo's kista signs nobody in: the platform names no kista audience, so the
+   shell offers no Extensions page). The admin holds the `meta` and `environment` function categories (the engine's
+   memory and extensions are duckdb's own functions).
 5. **A hot item.** `ACL CLUSTER ATTACH … IN GROUP a`, written by `platform_admin` through a node of `a`:
    - every node of `a` applies it on its tick and reports `applied` at the new version;
    - group `a`'s status shows the target applied by all its nodes;
@@ -263,8 +284,8 @@ AKS is never run by CI: it costs, and it needs a tenant's rights.
 ## Security
 
 - **No credential at rest beyond the run's.**
-  - The demo's secrets (the principals' client secrets, the PostgreSQL logins, tresor's KEK, OpenBao's root token,
-    Keycloak's first admin) are made per run. They are kept in the run's state
+  - The demo's secrets (the principals' client secrets, the console person's password, the PostgreSQL logins, tresor's
+    KEK, OpenBao's root token, Keycloak's first admin) are made per run. They are kept in the run's state
     (`~/.cache/hugr-platform-demo/<provider>/secrets`, mode 0600) and in Kubernetes Secrets of the demo's cluster, and
     never written to the repository or logged. A Secret is made from its file and a password goes to psql on stdin:
     no secret is on a command line or in an environment.
@@ -321,5 +342,5 @@ From the minikube run (2026-10-18), recorded in spec 001's "Still to verify":
 
 - spec 002 (the front): the re-seat of a principal of another group joins check 4. Clients go through the front, not
   port-forwards.
-- spec 003 (the console): the demo's restart button is the console's.
+- spec 003 (the console): a group's restart through the console (check 6 sets `restartedAt` itself).
 - Packaging (the Helm chart, the Azure Managed Application): the demo is its first user.

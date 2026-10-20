@@ -1,0 +1,105 @@
+/* The Hugr Lab design system's tokens and fonts (spec 003): the same variables and values as tresor-server's and
+   kista's consoles. Fonts are bundled (SIL OFL), never from a CDN. */
+@import '@fontsource/manrope/400.css';
+@import '@fontsource/manrope/500.css';
+@import '@fontsource/manrope/600.css';
+@import '@fontsource/manrope/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface: #ffffff;
+  --surface-soft: #f2f7f7;
+  --ink: #0b1f2a;
+  --ink-muted: #4a5b64;
+  --border: #d3e1e2;
+  --brand: #338a86;
+  --brand-strong: #2a7470;
+  --on-brand: #ffffff;
+  --navy: #0a3146;
+  --navy-line: #1e4a60;
+  --navy-muted: #9cb1ba;
+  --focus: #2a7470;
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --surface: #061c28;
+  --surface-soft: #0a3146;
+  --ink: #e8f1f2;
+  --ink-muted: #9cb1ba;
+  --border: #1e4a60;
+  --brand: #5cbdb6;
+  --brand-strong: #5cbdb6;
+  --on-brand: #061c28;
+  --navy: #04131c;
+  --navy-line: #1e4a60;
+  --navy-muted: #9cb1ba;
+  --focus: #5cbdb6;
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+body {
+  font-family: Manrope, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 26px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+dialog::backdrop {
+  background: rgba(6, 28, 40, 0.5);
+}
+
+@layer components {
+  .eyebrow {
+    @apply text-[13px] font-semibold uppercase leading-5 tracking-[0.08em] text-ink-muted;
+  }
+  .mono {
+    @apply font-mono text-[13px];
+  }
+  .btn {
+    @apply inline-flex min-h-[44px] cursor-pointer items-center justify-center gap-2 rounded-full px-5 text-sm font-semibold transition-colors duration-150 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn border border-brand-strong bg-brand-strong text-brand-on hover:border-navy hover:bg-navy hover:text-white disabled:border-line disabled:bg-line disabled:text-ink-muted;
+  }
+  .btn-outline {
+    @apply btn border border-brand-strong bg-transparent text-brand-strong hover:bg-surface-soft;
+  }
+  .btn-quiet {
+    @apply btn min-h-[36px] border border-line bg-transparent px-3.5 text-ink hover:bg-surface-soft disabled:text-ink-muted;
+  }
+  .btn-dark {
+    @apply btn border border-navy-line bg-transparent text-[#5cbdb6] hover:bg-navy-line hover:text-white;
+  }
+  .pill {
+    @apply inline-flex items-center gap-2 rounded-full border border-line px-3 py-0.5 text-[13px] font-semibold leading-5;
+  }
+  .panel {
+    @apply rounded-lg bg-surface-soft p-6;
+  }
+  .th {
+    @apply bg-surface-soft px-6 py-3 text-left text-[13px] font-semibold uppercase leading-5 tracking-[0.08em] text-ink-muted;
+  }
+  .td {
+    @apply border-t border-line px-6 py-4 align-middle text-sm leading-[22px];
+  }
+  .link {
+    @apply font-semibold text-brand-strong hover:text-ink;
+  }
+}

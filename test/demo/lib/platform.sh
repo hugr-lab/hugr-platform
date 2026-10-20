@@ -8,6 +8,9 @@ install_operator() {
 	ca_cert operator hugr-platform.hugr.svc hugr-platform.hugr.svc.cluster.local
 	k -n hugr delete secret hugr-platform-tls --ignore-not-found >/dev/null
 	k -n hugr create secret tls hugr-platform-tls --cert "$WORK/operator.crt" --key "$WORK/operator.key" >/dev/null
+	# the console's (spec 003): mounted at the operator's start - without it the operator serves no console
+	ca_cert console hugr-platform-console.hugr.svc
+	tls_secret hugr hugr-console console >/dev/null
 	# the overlay names the image loaded into the cluster; on AKS it is the registry's, pulled
 	k kustomize "$HERE/overlay" | sed -e "s#image: hugr-platform:demo#image: $(img hugr-platform)#" \
 		-e "s#imagePullPolicy: Never#imagePullPolicy: $PULL#" | k apply -f - >"$WORK/operator-apply.log" 2>&1 || {
@@ -31,7 +34,7 @@ YAML
 		! grep -q 'failed calling webhook' "$WORK/webhook.err"
 	}
 	eventually 60 "the webhook answers" webhook_answers
-	ok "the operator serves: the node API on https://hugr-platform.hugr.svc:8443, the webhook"
+	ok "the operator serves: the node API on https://hugr-platform.hugr.svc:8443, the webhook, the console"
 }
 
 install_platform() {
@@ -58,6 +61,11 @@ spec:
   caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}}
   heartbeat: {intervalSeconds: 5}
   front: {replicas: 2, certificate: {secretName: hugr-front}}
+  # the console (spec 003): the realm's public client hugr-console - a browser signs the person operator in through
+  # the console stand (run.sh <provider> console); the checks call the API with a principal's token
+  console:
+    clientID: hugr-console
+    audiences: {nodes: "$(console_audience "$HUGR_AUDIENCE")", tresor: "$(console_audience "$TRESOR_AUDIENCE")"}
   sizes:
     small:
       resources: {requests: {cpu: "$NODE_CPU", memory: 1Gi}, limits: {memory: 2Gi}}

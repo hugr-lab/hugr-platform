@@ -32,9 +32,13 @@ import (
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
+	"github.com/hugr-lab/hugr-platform/internal/console"
 	"github.com/hugr-lab/hugr-platform/internal/controller"
+	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
+	"github.com/hugr-lab/hugr-platform/internal/front/watch"
 	"github.com/hugr-lab/hugr-platform/internal/nodeapi"
 	groupwebhook "github.com/hugr-lab/hugr-platform/internal/webhook"
+	webconsole "github.com/hugr-lab/hugr-platform/web/console"
 )
 
 func main() {
@@ -49,6 +53,9 @@ func main() {
 		webhooks        bool
 		frontImage      string
 		frontPull       string
+		consoleAddr     string
+		consoleCertDir  string
+		consolePlatform string
 	)
 	flag.StringVar(&namespace, "namespace", os.Getenv("POD_NAMESPACE"), "the namespace the operator serves")
 	flag.StringVar(&orchestratorURL, "orchestrator-url", "", "the operator's in-cluster https URL the nodes reach (HUGR_ORCHESTRATOR)")
@@ -60,6 +67,9 @@ func main() {
 	flag.BoolVar(&webhooks, "webhooks", true, "serve the validating webhook")
 	flag.StringVar(&frontImage, "front-image", os.Getenv("HUGR_FRONT_IMAGE"), "the image the front runs: the operator's own (spec 002)")
 	flag.StringVar(&frontPull, "front-image-pull-policy", os.Getenv("HUGR_FRONT_IMAGE_PULL_POLICY"), "the front's image pull policy")
+	flag.StringVar(&consoleAddr, "console-address", ":8444", "where the web console listens (https, spec 003)")
+	flag.StringVar(&consoleCertDir, "console-cert-dir", "/etc/hugr-console/tls", "the console's public certificate (tls.crt, tls.key); none: no console")
+	flag.StringVar(&consolePlatform, "console-platform", "", "the HugrPlatform the console serves (empty: the only one of the namespace)")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -136,6 +146,48 @@ func main() {
 	if err := mgr.Add(door); err != nil {
 		logger.Error(err, "no node API")
 		os.Exit(1)
+	}
+
+	// the console (spec 003): every replica serves it when its certificate is mounted
+	platforms := console.PlatformFinder{Reader: mgr.GetClient(), Namespace: namespace, Name: consolePlatform}
+	roots := &console.Roots{Platform: platforms.Find, Direct: mgr.GetAPIReader()}
+	pool := &console.Pool{Namespace: namespace, Roots: roots.Pool}
+	nodes := fleet.New()
+	web, err := webconsole.New(func() string {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if p, err := platforms.Find(ctx); err == nil {
+			return p.Spec.IdP.Issuer
+		}
+		return ""
+	}, nil)
+	if err != nil {
+		logger.Error(err, "no web console")
+		os.Exit(1)
+	}
+	if !web.Built() {
+		logger.Info("the web console is not built into this binary: its page says how to build it")
+	}
+	consoleDoor := &console.Door{
+		Addr:    consoleAddr,
+		CertDir: consoleCertDir,
+		Server: &console.Server{Platform: platforms.Find, Reader: mgr.GetClient(),
+			Groups: console.ApplyWriter{Client: mgr.GetClient()}, Fleet: nodes, Nodes: pool, Web: web,
+			Kube: console.KubeClient{Clientset: clientset, Namespace: namespace},
+			Mounts: []*console.Mount{console.TresorMount(platforms.Find, roots.Pool),
+				console.KistaMount(platforms.Find, roots.Pool)},
+			Log: logger.WithName("console")},
+		Pool:  pool,
+		Watch: watch.New(clientset, namespace, nodes, 15*time.Second).Run,
+	}
+	// the console waits for its certificate, and stops nothing else: not a readiness check of the operator's
+	if err := mgr.Add(consoleDoor); err != nil {
+		logger.Error(err, "no console")
+		os.Exit(1)
+	}
+	if !consoleDoor.Configured() {
+		logger.Info("the console has no certificate yet: it serves once the Secret hugr-console is mounted",
+			"dir", consoleCertDir)
 	}
 
 	utilruntime.Must(mgr.AddHealthzCheck("healthz", healthz.Ping))

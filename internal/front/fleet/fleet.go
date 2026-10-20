@@ -40,6 +40,7 @@ type Node struct {
 
 // Lease is what the node's Lease says.
 type Lease struct {
+	Renewed time.Time // renewTime: the node's last heartbeat
 	Until   time.Time // renewTime + leaseDurationSeconds
 	Summary nodeproto.Summary
 }
