@@ -88,6 +88,35 @@ key source. A password in values would also land in Helm's release Secret.
   person can already run a pod as a group's ServiceAccount. A group's editor picks only the issuer; the names are
   the operator's. cert-manager's approver-policy can narrow it further, as a follow-up.
 
+### Stage A: the spill volume, a group's resource (the owner, 2026-10-20)
+
+DuckDB spills to `temp_directory` when memory runs out, so the volume must be fast and big enough for the group's
+work: an ETL group's large and on local SSD, a BI group's small. Today only the platform's size names it
+(`sizes.<s>.temp: {medium: local, size}`), as an `emptyDir` with a `sizeLimit`, and that falls short in three ways:
+
+- **Its speed is the node's.** An `emptyDir` sits on the kubelet's disk, which in AKS is by default the network OS
+  disk. It is fast only on a pool with an ephemeral OS disk and `kubeletDiskType: Temporary`, on a SKU with a local
+  disk (the `d` series, E16ds_v5: 600 GiB; NVMe on the L series). That is the pool's configuration: stage B.
+- **Its size is not reserved.** A `sizeLimit` caps the volume, but the scheduler knows nothing of it, and a pod may land
+  where it cannot fit, to be evicted mid-query.
+- **There is no choice without a local disk**: a sovereign cluster, a pool of network disks only.
+
+The design:
+
+- **`HugrNodeGroup.spec.temp`** (`medium`, `size`, `storageClassName`) is the group's. The size's `temp` stays its
+  default, so a group written today keeps working.
+- **`medium: local`**: the `emptyDir`, plus an `ephemeral-storage` request of its size, so the scheduler places the
+  pod only where the disk fits.
+- **`medium: volume`**: a generic ephemeral volume, a PVC per pod from `storageClassName`, made with the pod and deleted
+  with it. Azure Premium SSD v2 or Ultra take an IOPS and throughput of their own; a sovereign cluster uses local PVs
+  (TopoLVM, OpenEBS LVM) or its cloud's fast SSD class.
+- **The directory**: the operator mounts the volume and tells the node `HUGR_TEMP_DIRECTORY` (spec 001). DuckDB's
+  `temp_directory` moves through the profile when needed (`ACL CLUSTER SET temp_directory … IN GROUP g`). The node keeps
+  `max_temp_directory_size` under the volume, so an overflow fails one query rather than evicting the pod.
+- **Stage B**: each of the plan's sizes names a SKU with a local disk, and a group's pool gets an ephemeral OS disk and
+  `kubeletDiskType: Temporary`. The Managed Application checks that a group's `local` temp fits the SKU's local disk,
+  and offers `volume` otherwise.
+
 ### Stage A: hugr_node on the node
 
 - **Today it is never installed.** hugr_node is linked into the image's duckdb (decision 1 of 2026-10-15; hugr-node's
