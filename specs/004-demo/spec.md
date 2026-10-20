@@ -41,8 +41,12 @@ It also closes the two items spec 001 left "to verify":
 
 ### What runs where
 
-`test/demo/run.sh <kind | minikube | aks> [up | check | down | diagnose | leftovers]` builds or loads the images,
-installs everything and runs the checks. A cluster's context lives in the run's own kubeconfig
+`test/demo/run.sh <kind | minikube | aks> [up | check | down | diagnose | console | leftovers]` builds or loads the
+images, installs everything and runs the checks. `console` (kind, minikube, after an up) serves the console to a
+person's browser (spec 003): Keycloak and the console forwarded to this machine on 8443 and 8444, the realm's person
+`operator` signing in there (the issuer's name, `keycloak.idp.svc`, resolved to 127.0.0.1 by a line of the person's
+`/etc/hosts`), metrics-server enabled on a minikube profile (the profile keeps it: a later check runs with a metrics
+API). A cluster's context lives in the run's own kubeconfig
 (`~/.cache/hugr-platform-demo/<provider>/kubeconfig`): the developer's `~/.kube/config` and current context are never
 touched, whatever happens to the run. `diagnose` prints the cluster's state through the run's redaction. **minikube is the main run** (the owner, 2026-10-18): every attempt runs there and costs
 nothing; AKS is for what only Azure can prove (Entra, the managed identities), run by hand when it is needed. The
@@ -113,6 +117,11 @@ The realm `hugr`:
   - `node_breakglass`: `passthrough`, writing nothing - the checks read a node's own state through `ACL NATIVE` as it
     (its settings, the profile's version, its attached databases).
   - `demo_seeder`: tresor's administrator for the run; the first deployment writes and grants the secrets as it.
+- **The console's sign-in** (spec 003): the realm's public client `hugr-console` (PKCE, the console stand's forwarded
+  origin, the audiences `hugr` and `duckdb-secrets` in one token) and one person, `operator`: `platform_admin` (the
+  console's every page) and `secrets_admin` - a tresor administrator's role of its own, so tresor's console is mounted
+  for the person, never the seeder's role with the first deployment's grants. Its password is made for the run like
+  the principals' secrets.
 
   Their secrets are made for the run and never leave its state (below). Keycloak's first admin is the run's too, from
   a Secret: without one, its welcome page would let any local process create it through the port-forward.
@@ -275,8 +284,8 @@ AKS is never run by CI: it costs, and it needs a tenant's rights.
 ## Security
 
 - **No credential at rest beyond the run's.**
-  - The demo's secrets (the principals' client secrets, the PostgreSQL logins, tresor's KEK, OpenBao's root token,
-    Keycloak's first admin) are made per run. They are kept in the run's state
+  - The demo's secrets (the principals' client secrets, the console person's password, the PostgreSQL logins, tresor's
+    KEK, OpenBao's root token, Keycloak's first admin) are made per run. They are kept in the run's state
     (`~/.cache/hugr-platform-demo/<provider>/secrets`, mode 0600) and in Kubernetes Secrets of the demo's cluster, and
     never written to the repository or logged. A Secret is made from its file and a password goes to psql on stdin:
     no secret is on a command line or in an environment.

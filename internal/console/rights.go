@@ -29,7 +29,8 @@ type Rights struct {
 	Tracing bool `json:"tracing"`
 	// Scale and restart a group: the infrastructure's right, the cluster bundle (spec 003 Q5).
 	Scale bool `json:"scale"`
-	// Infrastructure: the cluster's profile, drift and a node's logs (the cluster bundle, Q6).
+	// Infrastructure: a node's logs and Kubernetes' writes (the cluster bundle, Q6); the profile's views are the
+	// node's to name (Drift, Profile, Effective below).
 	Infrastructure bool `json:"infrastructure"`
 	// Events: a node's audit ring.
 	Events bool `json:"events"`
@@ -73,7 +74,7 @@ func (r Rights) noProfile() string {
 	if r.Deployment == "standalone" {
 		return "a standalone node keeps no cluster profile: its sources and settings are not read against one"
 	}
-	return "reading a node against the cluster's profile is the cluster bundle's"
+	return "your rights do not read this part of the cluster's profile (the cluster bundle reads it)"
 }
 
 // Any says whether the person may see anything of the console's own pages.

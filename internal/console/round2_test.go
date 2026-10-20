@@ -29,6 +29,11 @@ type fakeKube struct {
 }
 
 func (k *fakeKube) Pod(_ context.Context, name string) (*corev1.Pod, error) {
+	for i := range k.pods {
+		if k.pods[i].Name == name {
+			return k.pods[i].DeepCopy(), nil
+		}
+	}
 	if name != "hugr-node-etl-a" {
 		return nil, errors.New("not found")
 	}
@@ -68,6 +73,8 @@ func (k *fakeKube) GroupPods(context.Context) ([]corev1.Pod, error) { return k.p
 func (k *fakeKube) GroupDeployments(context.Context) ([]appsv1.Deployment, error) {
 	return k.deployments, nil
 }
+
+func (k *fakeKube) PodWarnings(context.Context) ([]corev1.Event, error) { return nil, nil }
 
 func (k *fakeKube) Usage(context.Context, string) (*Usage, error) {
 	if k.noUsage || k.unsampled {
@@ -330,5 +337,29 @@ func TestMemoryOfASilentNode(t *testing.T) {
 		if code != 200 || len(h.nodes.calls)-before != 1 {
 			t.Errorf("%s of a silent node: %d, %d reads, %v", path, code, len(h.nodes.calls)-before, out)
 		}
+	}
+}
+
+// A pod of the platform's group with no endpoint yet has its page: Kubernetes' parts answer, the node's own say it does
+// not answer. Another platform's pod has none.
+func TestPageOfAPodNotServing(t *testing.T) {
+	h := newHarness(t, clusterRights(), node("hugr-node-etl-a", "etl"))
+	made := func(name, group string) corev1.Pod {
+		return corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{"platform.hugr.io/group": group},
+			CreationTimestamp: metav1.NewTime(testNow.Add(-time.Minute))},
+			Status: corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{{Name: "hugr-node",
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}}}}}
+	}
+	h.server.Kube = &fakeKube{pods: []corev1.Pod{made("hugr-node-etl-new", "etl"), made("hugr-node-theirs-new", "theirs")}}
+	code, out, _ := h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-new", opsToken, "")
+	k, _ := out["kubernetes"].(map[string]any)
+	if code != 200 || out["loadError"] == nil || k == nil || k["pod"].(map[string]any)["state"] != "starting" {
+		t.Errorf("the page of a pod being made: %d %v", code, out)
+	}
+	if code, _, _ := h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-new/kubernetes", opsToken, ""); code != 200 {
+		t.Errorf("its pod and events: %d", code)
+	}
+	if code, _, _ := h.do(t, "GET", APIPrefix+"nodes/hugr-node-theirs-new", opsToken, ""); code != http.StatusNotFound {
+		t.Errorf("another platform's pod: %d", code)
 	}
 }

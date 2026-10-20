@@ -51,3 +51,10 @@ export function home(link: Link): string | undefined {
     return undefined
   }
 }
+
+/** a reason as a sentence: trimmed, capitalised, one full stop (none after a text that ends in one) */
+export function sentence(text: string): string {
+  const s = text.trim()
+  if (!s) return ''
+  return `${s.charAt(0).toUpperCase()}${s.slice(1)}${/[.!?]$/.test(s) ? '' : '.'}`
+}

@@ -39,6 +39,9 @@ func (s *Server) tryPart(ctx context.Context, n fleet.Node, token, statement str
 // unanswered is a read not made: the node did not answer an earlier one.
 var unanswered = Part{Rows: []map[string]any{}, Error: "the node does not answer"}
 
+// sampleWait is how long a new pod may go without a sample of the metrics API before that is no longer "not yet".
+const sampleWait = 3 * time.Minute
+
 // certificates is the pool's knowledge of a node's certificate (the Pool has it, a test's Caller may not).
 type certificates interface {
 	CertificateExpiry(label string) (time.Time, bool)
@@ -67,12 +70,18 @@ func (s *Server) kubernetes(w http.ResponseWriter, r *http.Request, _ string, _ 
 		out.UsageError = "the metrics API did not answer"
 	} else if usage != nil {
 		out.Usage = usage
-	} else if all, err := s.Kube.UsageAll(r.Context()); err == nil && all != nil {
+	} else if all, err := s.Kube.UsageAll(r.Context()); err != nil {
+		out.UsageError = "the metrics API did not answer"
+	} else if u, ok := all[n.Label]; ok {
+		out.Usage = &u // sampled between the two reads
+	} else if all == nil {
+		out.UsageError = "the cluster has no metrics API (metrics-server)"
+	} else if created := pod.CreationTimestamp.Time; created.IsZero() || s.now().Sub(created) < sampleWait {
 		// the API answers for the namespace, not yet for this pod: a new one, sampled within about a minute
 		out.UsageError = "no sample of this pod yet: the metrics API samples a pod about once a minute"
 		out.UsagePending = true
 	} else {
-		out.UsageError = "the cluster has no metrics API (metrics-server)"
+		out.UsageError = "the metrics API has no sample of this pod: metrics-server may not reach its kubelet"
 	}
 	if c, ok := s.Nodes.(certificates); ok {
 		if at, ok := c.CertificateExpiry(n.Label); ok {

@@ -52,6 +52,9 @@ func (f *fakeNodes) Query(_ context.Context, node fleet.Node, token, statement s
 	f.mu.Lock()
 	f.calls = append(f.calls, call{node.Label, token, statement})
 	f.mu.Unlock()
+	if node.FlightPort == 0 {
+		return nil, errUnreachable // as the Pool: a node with no door is dialled nowhere
+	}
 	return f.answer(node, statement)
 }
 

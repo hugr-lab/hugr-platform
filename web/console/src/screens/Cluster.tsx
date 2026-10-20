@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Header, Out, Problem, Refresh, Segmented, Status } from '../components/ui'
 import { useApp, useLoad } from '../lib/context'
-import { home, linksOf } from '../lib/format'
+import { home, linksOf, sentence } from '../lib/format'
 
 /** the cluster's settings, read only (spec 003 round 2, Q10): the profile, where telemetry and lineage go */
 export function Cluster() {
@@ -35,7 +35,7 @@ export function Cluster() {
             </div>
             {profile?.error ? (
               <p role="note" className="rounded-md border border-line px-6 py-4 text-sm">
-                {profile.error.charAt(0).toUpperCase() + profile.error.slice(1)}.
+                {sentence(profile.error)}
               </p>
             ) : (
               <div className="overflow-x-auto rounded-md border border-line">

@@ -4,14 +4,19 @@ import { Bar, Chip, Crumbs, Header, Problem, Refresh, Stat, Status, age } from '
 import { useApp, useLoad } from '../lib/context'
 import { bytes, share } from '../lib/format'
 import type { NodeInfo } from '../lib/types'
-import { groupState, podReason } from './Fleet'
+import { groupState, podReason, starting } from './Fleet'
 
 export function nodeState(n: NodeInfo): { mark: 'ok' | 'half' | 'off'; text: string; why?: string } {
   // the pod first: a node a scale made is in the group before it serves - starting, or not starting and why
   if (n.pod?.state === 'failing') return { mark: 'off', text: 'Not starting', why: podReason(n.pod) }
   if (n.pod?.state === 'stopping') return { mark: 'half', text: 'Stopping', why: n.draining ? 'draining its sessions' : undefined }
-  if (n.pod && !n.ready)
-    return { mark: 'half', text: 'Starting', why: n.pod.reason === 'NotReady' ? 'running, its doors not serving yet' : n.pod.reason }
+  if (starting(n)) {
+    const why = n.pod!.reason === 'NotReady' ? 'running, its doors not serving yet'
+      : n.pod!.reason === 'Unschedulable' ? `waiting for room: ${n.pod!.message ?? ''}` : n.pod!.reason
+    return { mark: 'half', text: 'Starting', why }
+  }
+  // it served, and its doors stopped answering (its readiness probe)
+  if (!n.ready && n.leaseAge !== null) return { mark: 'off', text: 'Not ready', why: 'its doors stopped answering' }
   if (!n.serving) return { mark: 'off', text: 'Gone' }
   if (!n.ready) return { mark: 'off', text: 'Not ready' }
   if (n.leaseAge !== null && !n.current) return { mark: 'half', text: 'Lease expired' }
@@ -44,7 +49,7 @@ export function Group() {
             <div role="alert" className="flex items-start gap-4 rounded-md border border-line px-6 py-4">
               <CircleAlert size={20} aria-hidden="true" className="mt-0.5 flex-none" />
               <div>
-                <div className="font-semibold">The group's pods are not made</div>
+                <div className="font-semibold">The group's Deployment reports a problem</div>
                 <div className="break-words text-sm text-ink-muted">{group.problem}</div>
               </div>
             </div>
@@ -84,11 +89,8 @@ export function Group() {
                     return (
                       <tr key={n.label} className={tone}>
                         <td className="td">
-                          {n.ready ? (
-                            <Link className="link mono break-all" to={`/nodes/${encodeURIComponent(n.label)}`}>{n.label}</Link>
-                          ) : (
-                            <span className="mono break-all">{n.label}</span>
-                          )}
+                          {/* every node has its page - one not starting too: its pod, its events, its previous log */}
+                          <Link className="link mono break-all" to={`/nodes/${encodeURIComponent(n.label)}`}>{n.label}</Link>
                           {n.needsRestart && <div className="text-ink-muted">restart pending</div>}
                         </td>
                         <td className="td">
@@ -112,12 +114,15 @@ export function Group() {
                     )
                   })}
                   {group.nodes.length === 0 && (
-                    <tr><td className="td text-ink-muted" colSpan={7}>No node runs: the group is stopped or starting.</td></tr>
+                    <tr><td className="td text-ink-muted" colSpan={7}>{group.problem ? 'No node runs: see the problem above.' : 'No node runs: the group is stopped or starting.'}</td></tr>
                   )}
-                  {group.nodes.length > 0 && group.nodes.length < group.replicas && (
+                  {group.nodes.length > 0 && group.nodes.filter((n) => n.pod?.state !== 'stopping').length < group.replicas && (
                     <tr className="bg-[var(--surface-soft)]">
                       <td className="td text-ink-muted" colSpan={7}>
-                        {group.replicas - group.nodes.length} more {group.replicas - group.nodes.length === 1 ? 'node is' : 'nodes are'} wanted and no pod is made yet{group.problem ? ': see above' : ''}.
+                        {(() => {
+                          const more = group.replicas - group.nodes.filter((n) => n.pod?.state !== 'stopping').length
+                          return `${more} more ${more === 1 ? 'node is' : 'nodes are'} wanted and no pod is made yet${group.problem ? ': see above' : ''}.`
+                        })()}
                       </td>
                     </tr>
                   )}

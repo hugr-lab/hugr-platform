@@ -113,6 +113,7 @@ type KubeState struct {
 	Usage       map[string]Usage
 	Pods        []corev1.Pod
 	Deployments []appsv1.Deployment
+	Warnings    []corev1.Event
 }
 
 // FleetOf the platform's groups and the fleet's view, at `now`. A group's nodes are the fleet's (an endpoint, a
@@ -123,6 +124,7 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 	if platform != nil {
 		answer.Plan = PlanAnswer{MaxNodes: platform.Spec.Plan.MaxNodes, Sizes: append([]string{}, platform.Spec.Plan.Sizes...)}
 	}
+	warnings := newestWarnings(kube.Warnings)
 	pods := map[string]*corev1.Pod{}
 	for i := range kube.Pods {
 		pods[kube.Pods[i].Name] = &kube.Pods[i]
@@ -136,7 +138,7 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 				a.Usage = &u
 			}
 			if p := pods[n.Label]; p != nil {
-				state := podState(p)
+				state := podState(p, now, warnings[p.Name])
 				a.Pod = &state
 			}
 			seen[n.Label] = true
@@ -147,7 +149,10 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 		if seen[p.Name] {
 			continue
 		}
-		state := podState(&p)
+		state := podState(&p, now, warnings[p.Name])
+		if state.State == "ended" {
+			continue // an eviction's leftover: its ReplicaSet made another; its events tell the history
+		}
 		byGroup[p.Labels[build.LabelGroup]] = append(byGroup[p.Labels[build.LabelGroup]],
 			NodeAnswer{Label: p.Name, SeatsLeft: -1, Pod: &state})
 	}

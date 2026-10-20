@@ -61,8 +61,8 @@ spec:
   caBundle: {configMapRef: {name: hugr-ca, key: ca.crt}}
   heartbeat: {intervalSeconds: 5}
   front: {replicas: 2, certificate: {secretName: hugr-front}}
-  # the console (spec 003): the browser's public client is the installation's; the demo signs no browser in (the
-  # console's own end to end does, test/console/e2e) - its checks call the API with a principal's token
+  # the console (spec 003): the realm's public client hugr-console - a browser signs the person operator in through
+  # the console stand (run.sh <provider> console); the checks call the API with a principal's token
   console:
     clientID: hugr-console
     audiences: {nodes: "$(console_audience "$HUGR_AUDIENCE")", tresor: "$(console_audience "$TRESOR_AUDIENCE")"}

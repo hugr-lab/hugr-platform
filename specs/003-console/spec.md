@@ -89,7 +89,9 @@ C3); the fleet's state comes from Kubernetes (C1). The policy is not edited here
   principal, door, opened, idle, groups) with "end session"; drain / resume.
 - **Secrets** - tresor-server's console, mounted. **Extensions** - kista's, mounted with the tenant the repository's
   prefix names.
-- A page reads when it opens and on the person's refresh; nothing polls in the background (tresor's rule).
+- A page reads when it opens and on the person's refresh; nothing polls in the background (tresor's rule) - but for
+  one read: a node's pod memory while the metrics API has not sampled a new pod (`usagePending`), every 20 s, six
+  times at most, then the person's Refresh.
 
 ### The console's API (the operator)
 
@@ -173,6 +175,9 @@ Under `/api/v1/console/`, the person's nodes-audience token as the bearer on eve
   right); the pool's per-person cookies; the proxy (no redirect, nothing added); the ops id's form.
 - **Web**: Vitest for the token per audience and the pages' gating; Playwright against the operator with a fake IdP
   and fake nodes.
+- **Stands for a person's look**: `E2E_SERVE=<dir> test/console/e2e/run.sh` keeps the end to end's stand up (a node,
+  Keycloak, three people: admin with passthrough, ops, analyst), and `test/demo/run.sh <kind | minikube> console`
+  serves the demo's cluster to a browser (spec 004).
 - **The demo** (spec 004): the console's API through the person's token - Fleet, a node's sessions, end a session,
   drain and resume, scale a group - and tresor's and kista's mounts shown.
 
@@ -429,9 +434,16 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
   fleet's (an endpoint, a Lease) and its pods that have none yet, each with its pod's state - starting (made, not
   serving: ContainerCreating, its doors not up), stopping (a drain, a scale down), failing (it will not start as it is:
   Unschedulable, ImagePullBackOff, CrashLoopBackOff with the last exit, Evicted - Kubernetes' own words beside the
-  reason); the group carries its Deployment's refusal to make a pod (ReplicaFailure: a quota, an admission policy) or a
-  roll that made no progress. The group's page highlights a starting row and marks a failing one; the fleet's row counts
-  serving, starting and the rest, and says which node does not start and why.
+  reason); the group carries its Deployment's refusal to make a pod (ReplicaFailure: a quota, an admission policy) or
+  pods not available within its deadline. The group's page highlights a starting row and marks a failing one; the
+  fleet's row counts serving, starting and the rest, and says which node does not start and why. As the review of it
+  made it: a pod in a terminal phase (an eviction's leftover, replaced) is history, not a node; a pod waiting for room
+  (Unschedulable - a cluster that adds a node takes minutes) or being made (ContainerCreating) is starting for
+  10 minutes, failing after, and failing at once when a Warning event says it will not be made (FailedMount - a Secret
+  missing -, FailedCreatePodSandBox - no address); a node that served and lost its readiness is "Not ready", not
+  starting; a node that does not start weighs on the group by the count (short of it: off; a roll's extra pod: half);
+  a scale down shows its stopping node; every node has its page, one with no endpoint yet too (its pod, events and
+  previous log; the node's own parts say it does not answer).
 
 - **Stage 4, as built:**
   - tresor-server's and kista's consoles are mounted at `/tresor` and `/kista` (their `/ui/mfe/` module and their
@@ -448,7 +460,7 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
     administrator's roles hold the `meta` and `environment` categories there - the operator's grant, as Q7 says.
   - What a node drained by somebody else does to the console: it seats nobody new, so a person without a session
     there reads its page as refused ("draining") and cannot resume it; restarting the group or the pod ends that
-    drain. Whether an `operate` holder should be seated on a draining node is duckdb-acl's question (a follow-up).
+    drain. Seating the drain's own right on a draining node is decided (the follow-ups: duckdb-acl, an addendum to 066).
 
 **Q12. An administrator and the resource groups** (taken as recommended while the owner has not said otherwise,
 2026-10-19). *Recommendation:* the policy grants an administrator's role every

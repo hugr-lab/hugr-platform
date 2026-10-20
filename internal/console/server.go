@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
+	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 )
 
@@ -82,6 +83,21 @@ func (s *Server) platformView(ctx context.Context) (*fleet.View, error) {
 	if v == nil {
 		return nil, nil
 	}
+	mine, err := s.platformGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var nodes []fleet.Node
+	for _, n := range v.Nodes() {
+		if mine[groupOf(n)] {
+			nodes = append(nodes, *n)
+		}
+	}
+	return fleet.NewView(nodes), nil
+}
+
+// platformGroups are the names of this platform's groups.
+func (s *Server) platformGroups(ctx context.Context) (map[string]bool, error) {
 	platform, err := s.Platform(ctx)
 	if err != nil {
 		return nil, err
@@ -96,13 +112,7 @@ func (s *Server) platformView(ctx context.Context) (*fleet.View, error) {
 			mine[g.Name] = true
 		}
 	}
-	var nodes []fleet.Node
-	for _, n := range v.Nodes() {
-		if mine[groupOf(n)] {
-			nodes = append(nodes, *n)
-		}
-	}
-	return fleet.NewView(nodes), nil
+	return mine, nil
 }
 
 // Handler of the console: the API, then the web build.
@@ -328,6 +338,9 @@ func (s *Server) groups(w http.ResponseWriter, r *http.Request, _ string, _ *per
 		if kube.Deployments, err = s.Kube.GroupDeployments(r.Context()); err != nil {
 			s.Log.Info("the groups' Deployments not read", "error", err.Error())
 		}
+		if kube.Warnings, err = s.Kube.PodWarnings(r.Context()); err != nil {
+			s.Log.Info("the pods' warnings not read", "error", err.Error())
+		}
 	}
 	view, err := s.platformView(r.Context())
 	if err != nil {
@@ -414,11 +427,20 @@ func (s *Server) nodeOf(w http.ResponseWriter, r *http.Request) (*fleet.Node, bo
 		return nil, false
 	}
 	label := r.PathValue("label")
-	if v == nil || v.Node(label) == nil {
-		problem(w, http.StatusNotFound, "not_found", "no such node")
-		return nil, false
+	if v != nil && v.Node(label) != nil {
+		return v.Node(label), true
 	}
-	return v.Node(label), true
+	// a pod of the platform's group with no endpoint yet (being made, not starting) has its page too: Kubernetes'
+	// parts answer, the node's own say it does not answer
+	if s.Kube != nil {
+		if pod, err := s.Kube.Pod(r.Context(), label); err == nil && pod.Labels[build.LabelGroup] != "" {
+			if mine, err := s.platformGroups(r.Context()); err == nil && mine[pod.Labels[build.LabelGroup]] {
+				return &fleet.Node{Label: label, Service: build.NodeName + "-" + pod.Labels[build.LabelGroup]}, true
+			}
+		}
+	}
+	problem(w, http.StatusNotFound, "not_found", "no such node")
+	return nil, false
 }
 
 // NodeAnswerFull is `GET nodes/{label}`: Kubernetes' part always, the node's own when it answers.
@@ -435,6 +457,12 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request, token string, _ *p
 		return
 	}
 	out := NodeAnswerFull{Kubernetes: nodeAnswer(n, s.now()), Group: groupOf(n)}
+	if s.Kube != nil {
+		if pod, err := s.Kube.Pod(r.Context(), n.Label); err == nil {
+			state := podState(pod, s.now(), nil)
+			out.Kubernetes.Pod = &state
+		}
+	}
 	result, err := s.Nodes.Query(r.Context(), *n, token, stmtLoad)
 	switch {
 	case err != nil:

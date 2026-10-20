@@ -47,6 +47,8 @@ type Kube interface {
 	GroupPods(ctx context.Context) ([]corev1.Pod, error)
 	// GroupDeployments are the groups' Deployments: a pod their ReplicaSet cannot make says so there.
 	GroupDeployments(ctx context.Context) ([]appsv1.Deployment, error)
+	// PodWarnings are the namespace's Warning events of pods: a pod being made that will not be says so there first.
+	PodWarnings(ctx context.Context) ([]corev1.Event, error)
 }
 
 // Usage of a pod, by the metrics API.
@@ -87,6 +89,17 @@ func (k KubeClient) GroupPods(ctx context.Context) ([]corev1.Pod, error) {
 	return list.Items, nil
 }
 
+// PodWarnings by their type.
+func (k KubeClient) PodWarnings(ctx context.Context) ([]corev1.Event, error) {
+	list, err := k.Clientset.CoreV1().Events(k.Namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fields.AndSelectors(fields.OneTermEqualSelector("involvedObject.kind", "Pod"),
+			fields.OneTermEqualSelector("type", corev1.EventTypeWarning)).String()})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
 // GroupDeployments by the group label.
 func (k KubeClient) GroupDeployments(ctx context.Context) ([]appsv1.Deployment, error) {
 	list, err := k.Clientset.AppsV1().Deployments(k.Namespace).List(ctx, metav1.ListOptions{LabelSelector: build.LabelGroup})
@@ -97,8 +110,9 @@ func (k KubeClient) GroupDeployments(ctx context.Context) ([]appsv1.Deployment, 
 }
 
 // PodState is how far a node's pod has got, as Kubernetes says it: starting (made, not serving yet), running,
-// stopping (going away: a drain, a scale down) or failing - it will not start as it is (the reason and Kubernetes' own
-// message say why).
+// stopping (going away: a drain, a scale down), failing - it will not start as it is (the reason and Kubernetes' own
+// message say why) - or ended (a terminal phase: an eviction's leftover, replaced by its ReplicaSet; history, not a
+// node).
 type PodState struct {
 	State    string     `json:"state"`
 	Phase    string     `json:"phase"`
@@ -113,12 +127,23 @@ var waitingFails = map[string]bool{"CrashLoopBackOff": true, "ImagePullBackOff":
 	"CreateContainerConfigError": true, "CreateContainerError": true, "InvalidImageName": true,
 	"RunContainerError": true, "PreCreateHookError": true, "PostStartHookError": true}
 
-// podState of a node's pod.
-func podState(p *corev1.Pod) PodState {
+// madeFails are the warnings a pod being made does not get past by itself: a Secret or a ConfigMap it mounts is
+// missing, the network has no address for it.
+var madeFails = map[string]bool{"FailedMount": true, "FailedAttachVolume": true, "FailedCreatePodSandBox": true,
+	"FailedCreatePodContainer": true}
+
+// stuckAfter is how long a pod may wait to be placed or made before it is called failing: a cluster that adds a node
+// for it (an autoscaler) takes minutes.
+const stuckAfter = 10 * time.Minute
+
+// podState of a node's pod at `now`; warning is the newest Warning event of the pod, if any.
+func podState(p *corev1.Pod, now time.Time, warning *corev1.Event) PodState {
 	out := PodState{Phase: string(p.Status.Phase)}
+	var age time.Duration
 	if !p.CreationTimestamp.IsZero() {
 		t := p.CreationTimestamp.Time
 		out.Created = &t
+		age = now.Sub(t)
 	}
 	statuses := append(append([]corev1.ContainerStatus{}, p.Status.InitContainerStatuses...), p.Status.ContainerStatuses...)
 	for _, c := range statuses {
@@ -129,7 +154,7 @@ func podState(p *corev1.Pod) PodState {
 		out.State, out.Reason = "stopping", "Terminating"
 		return out
 	case p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodSucceeded:
-		out.State, out.Reason, out.Message = "failing", p.Status.Reason, p.Status.Message
+		out.State, out.Reason, out.Message = "ended", p.Status.Reason, p.Status.Message
 		if out.Reason == "" {
 			out.Reason = string(p.Status.Phase)
 		}
@@ -139,15 +164,21 @@ func podState(p *corev1.Pod) PodState {
 		if w := c.State.Waiting; w != nil && waitingFails[w.Reason] {
 			out.State, out.Reason, out.Message = "failing", w.Reason, w.Message
 			if t := c.LastTerminationState.Terminated; t != nil && w.Reason == "CrashLoopBackOff" {
-				out.Message = fmt.Sprintf("the container exited with %d (%s)", t.ExitCode, t.Reason)
+				out.Message = fmt.Sprintf("the container exited with %d", t.ExitCode)
+				if t.Reason != "" {
+					out.Message += " (" + t.Reason + ")"
+				}
 			}
 			return out
 		}
 	}
 	for _, c := range p.Status.Conditions {
 		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse {
-			// no node of the cluster takes it now: a full cluster, a size it cannot fit
-			out.State, out.Reason, out.Message = "failing", c.Reason, c.Message
+			// no node of the cluster takes it now: a full cluster, a size it cannot fit - or not yet, while a node joins
+			out.State, out.Reason, out.Message = "starting", c.Reason, c.Message
+			if age >= stuckAfter {
+				out.State = "failing"
+			}
 			return out
 		}
 	}
@@ -161,17 +192,47 @@ func podState(p *corev1.Pod) PodState {
 	for _, c := range statuses {
 		if w := c.State.Waiting; w != nil {
 			out.Reason = w.Reason // ContainerCreating, PodInitializing
-			return out
+			break
 		}
 	}
-	if p.Status.Phase == corev1.PodRunning {
+	if out.Reason == "" && p.Status.Phase == corev1.PodRunning {
 		out.Reason = "NotReady" // its readiness probe: the node bootstraps, then its doors serve
+	}
+	switch {
+	case warning != nil && madeFails[warning.Reason]:
+		out.State, out.Reason, out.Message = "failing", warning.Reason, warning.Message
+	case p.Status.Phase == corev1.PodPending && age >= stuckAfter:
+		out.State, out.Message = "failing", "not made in "+stuckAfter.String()+": the pod's events say why"
+	}
+	return out
+}
+
+// newestWarnings are the pods' newest Warning events, by pod name.
+func newestWarnings(events []corev1.Event) map[string]*corev1.Event {
+	at := func(e *corev1.Event) time.Time {
+		switch {
+		case !e.LastTimestamp.IsZero():
+			return e.LastTimestamp.Time
+		case !e.EventTime.IsZero():
+			return e.EventTime.Time
+		}
+		return e.CreationTimestamp.Time
+	}
+	out := map[string]*corev1.Event{}
+	for i := range events {
+		e := &events[i]
+		if e.Type != corev1.EventTypeWarning || e.InvolvedObject.Kind != "Pod" {
+			continue
+		}
+		if held := out[e.InvolvedObject.Name]; held == nil || at(e).After(at(held)) {
+			out[e.InvolvedObject.Name] = e
+		}
 	}
 	return out
 }
 
 // deploymentProblem is what a group's Deployment says stops its pods: the ReplicaSet cannot make one (a quota, an
-// admission policy), or a roll made no progress within its deadline.
+// admission policy), or its pods are not available within its deadline (a roll's, a scale's).
 func deploymentProblem(d *appsv1.Deployment) string {
 	for _, c := range d.Status.Conditions {
 		if c.Type == appsv1.DeploymentReplicaFailure && c.Status == corev1.ConditionTrue {
@@ -180,7 +241,7 @@ func deploymentProblem(d *appsv1.Deployment) string {
 	}
 	for _, c := range d.Status.Conditions {
 		if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse {
-			return "the roll made no progress: " + c.Message
+			return "the group's pods are not available within its deadline: " + c.Message
 		}
 	}
 	return ""

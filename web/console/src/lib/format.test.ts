@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bytes, fill, home, share, traceOf } from './format'
+import { bytes, fill, home, sentence, share, traceOf } from './format'
 
 const link = { kind: 'telemetry' as const, name: 'Grafana', url: 'https://grafana.example.org/explore?node={node}&s={session}' }
 
@@ -34,5 +34,13 @@ describe('numbers a person reads', () => {
     expect(share(5, 10)).toBe(50)
     expect(share(20, 10)).toBe(100)
     expect(share(1, 0)).toBe(0)
+  })
+})
+
+describe('a reason as a sentence', () => {
+  it('trims, capitalises, ends once', () => {
+    expect(sentence('a standalone node keeps no cluster profile')).toBe('A standalone node keeps no cluster profile.')
+    expect(sentence('Catalog "x" does not exist!\n')).toBe('Catalog "x" does not exist!')
+    expect(sentence('  ')).toBe('')
   })
 })

@@ -156,10 +156,19 @@ func TestPodState(t *testing.T) {
 		pod                    corev1.Pod
 		state, reason, message string
 	}{
-		"placed nowhere": {pod: corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{
-			{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable",
-				Message: "0/1 nodes are available: 1 Insufficient cpu."}}}},
+		"placed nowhere": {pod: corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(testNow.Add(-stuckAfter))},
+			Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable",
+					Message: "0/1 nodes are available: 1 Insufficient cpu."}}}},
 			state: "failing", reason: "Unschedulable", message: "0/1 nodes are available: 1 Insufficient cpu."},
+		// a node may be joining for it (an autoscaler): waiting, not failing, for a while
+		"placed nowhere yet": {pod: corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(testNow.Add(-time.Minute))},
+			Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable", Message: "no room"}}}},
+			state: "starting", reason: "Unschedulable", message: "no room"},
+		"made for too long": {pod: corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(testNow.Add(-stuckAfter))},
+			Status: corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{waiting("ContainerCreating")}}},
+			state: "failing", reason: "ContainerCreating"},
 		"being made": {pod: corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending,
 			ContainerStatuses: []corev1.ContainerStatus{waiting("ContainerCreating")}}}, state: "starting", reason: "ContainerCreating"},
 		"no image": {pod: corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending,
@@ -173,15 +182,33 @@ func TestPodState(t *testing.T) {
 		"going": {pod: corev1.Pod{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
 			Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{ready}}}, state: "stopping", reason: "Terminating"},
 		"evicted": {pod: corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted",
-			Message: "The node was low on resource: memory."}}, state: "failing", reason: "Evicted", message: "The node was low on resource: memory."},
+			Message: "The node was low on resource: memory."}}, state: "ended", reason: "Evicted", message: "The node was low on resource: memory."},
 	} {
-		got := podState(&c.pod)
+		got := podState(&c.pod, testNow, nil)
 		if got.State != c.state || got.Reason != c.reason || (c.message != "" && got.Message != c.message) {
 			t.Errorf("%s: %+v", name, got)
 		}
 	}
-	if got := podState(&corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{crash}}}); got.Restarts != 4 {
+	if got := podState(&corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{crash}}}, testNow, nil); got.Restarts != 4 {
 		t.Errorf("the restarts counted: %+v", got)
+	}
+	// a crash with no reason of the kernel's: the exit code alone
+	bare := waiting("CrashLoopBackOff")
+	bare.LastTerminationState.Terminated = &corev1.ContainerStateTerminated{ExitCode: 2}
+	if got := podState(&corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{bare}}}, testNow, nil); got.Message != "the container exited with 2" {
+		t.Errorf("a bare exit: %q", got.Message)
+	}
+	// a pod being made that a warning says will not be: failing at once, the warning's words
+	mount := &corev1.Event{Type: corev1.EventTypeWarning, Reason: "FailedMount",
+		Message: `MountVolume.SetUp failed for volume "tls" : secret "hugr-node-x-tls" not found`}
+	made := corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending,
+		ContainerStatuses: []corev1.ContainerStatus{waiting("ContainerCreating")}}}
+	if got := podState(&made, testNow, mount); got.State != "failing" || got.Reason != "FailedMount" {
+		t.Errorf("a mount that will not come: %+v", got)
+	}
+	unhealthy := &corev1.Event{Type: corev1.EventTypeWarning, Reason: "Unhealthy", Message: "Readiness probe failed"}
+	if got := podState(&corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning}}, testNow, unhealthy); got.State != "starting" {
+		t.Errorf("a readiness probe failing while a node bootstraps is no failure: %+v", got)
 	}
 }
 
@@ -192,8 +219,8 @@ func TestFleetOfAScale(t *testing.T) {
 	groups := []v1alpha1.HugrNodeGroup{{ObjectMeta: metav1.ObjectMeta{Name: "etl"},
 		Spec: v1alpha1.HugrNodeGroupSpec{Platform: "hugr", Replicas: 3}, Status: v1alpha1.HugrNodeGroupStatus{ReadyReplicas: 1}}}
 	pod := func(name string, status corev1.PodStatus) corev1.Pod {
-		return corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{"platform.hugr.io/group": "etl"}},
-			Status: status}
+		return corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{"platform.hugr.io/group": "etl"},
+			CreationTimestamp: metav1.NewTime(testNow.Add(-time.Hour))}, Status: status}
 	}
 	kube := KubeState{
 		Pods: []corev1.Pod{
@@ -201,6 +228,7 @@ func TestFleetOfAScale(t *testing.T) {
 				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}),
 			pod("hugr-node-etl-new", corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{
 				{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable", Message: "no room"}}}),
+			pod("hugr-node-etl-evicted", corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted"}),
 		},
 		Deployments: []appsv1.Deployment{{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl",
 			Labels: map[string]string{"platform.hugr.io/group": "etl"}}, Status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{
@@ -215,6 +243,11 @@ func TestFleetOfAScale(t *testing.T) {
 	if n := etl.Nodes[1]; n.Label != "hugr-node-etl-new" || n.Ready || n.LeaseAge != nil || n.Pod == nil ||
 		n.Pod.State != "failing" || n.Pod.Message != "no room" {
 		t.Errorf("the scale's pod, not placed: %+v %+v", n, n.Pod)
+	}
+	for _, n := range etl.Nodes {
+		if n.Label == "hugr-node-etl-evicted" {
+			t.Errorf("an eviction's leftover is history, not a node: %+v", n.Pod)
+		}
 	}
 	if etl.Problem != `a pod cannot be made: pods "hugr-node-etl-x" is forbidden: exceeded quota` {
 		t.Errorf("the Deployment's failure on the group: %q", etl.Problem)

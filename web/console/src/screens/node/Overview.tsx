@@ -96,7 +96,11 @@ export function Overview() {
                           <div><dt className="eyebrow">CPU</dt><dd className="font-semibold">{p.usage ? `${(p.usage.cpuMilli / 1000).toFixed(1)} of ${(p.requests.cpuMilli / 1000).toFixed(1)} cores requested` : '-'}</dd></div>
                         </dl>
                       </div>
-                      {p.usageError && <p className="text-sm text-ink-muted">{p.usageError}</p>}
+                      {p.usageError && (
+                        <p className="text-sm text-ink-muted">
+                          {p.usageError}{p.usagePending && asked.current >= samplesAsked ? '. Refresh to read it again.' : ''}
+                        </p>
+                      )}
                       <p className="text-sm text-ink-muted">
                         Restarted {p.restarts} {p.restarts === 1 ? 'time' : 'times'}
                         {p.lastTermination && <>, last <span className="font-semibold text-ink">{p.lastTermination.reason}</span> (exit {p.lastTermination.exitCode})</>}

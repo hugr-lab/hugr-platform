@@ -163,26 +163,40 @@ curl -sf --cacert "$WORK/ca.crt" "$REALM/protocol/openid-connect/token" -d grant
 "$WORK/probe" -keep -node "etl=127.0.0.1:$NODE_PORT" -ca "$WORK/ca.crt" -token-file "$WORK/analyst.token" \
 	"SELECT * FROM c.t" "SELECT * FROM c.t" >"$WORK/probe.json" || fail "the analyst's session"
 
+# leaked: a bearer token (a JWT) or a password of this run in the console's or the node's log
+leaked() {
+	local log
+	for log in "$WORK/console.log" "$WORK/node.log"; do
+		if grep -qF -e "$OPS_PW" -e "$ANALYST_PW" -e "$ADMIN_PW" -e "$KC_ADMIN_PW" "$log" ||
+			grep -qE 'eyJ[A-Za-z0-9_-]{8,}\.eyJ' "$log"; then
+			echo "$(basename "$log")"
+		fi
+	done
+}
+
 if [ -n "${E2E_SERVE:-}" ]; then
-	mkdir -p "$E2E_SERVE" && chmod 700 "$E2E_SERVE"
+	# a directory of the stand's own: one that is there already keeps its mode, the sign-in file is 0600 anyway
+	[ -d "$E2E_SERVE" ] || mkdir -m 700 "$E2E_SERVE"
+	trap 'rm -f "$E2E_SERVE/sign-in"; l="$(leaked)"; [ -z "$l" ] || echo "FAIL: a token or a password reached $l" >&2; cleanup' EXIT
 	cp "$WORK/ca.crt" "$E2E_SERVE/ca.crt"
 	(umask 077 && printf 'console  %s\nadmin    %s\nops      %s\nanalyst  %s\n' "$CONSOLE" "$ADMIN_PW" "$OPS_PW" \
 		"$ANALYST_PW" >"$E2E_SERVE/sign-in")
 	echo "e2e: the stand serves: $CONSOLE (Keycloak $KC); the sign-in in $E2E_SERVE/sign-in, the CA in $E2E_SERVE/ca.crt"
-	trap 'rm -f "$E2E_SERVE/sign-in"; cleanup' EXIT
-	wait "${PIDS[@]}"
-	exit 0
+	# until stopped, or until the node or the console ends (said, not waited on forever)
+	while true; do
+		for p in "${PIDS[@]}"; do
+			kill -0 "$p" 2>/dev/null || fail "the stand's $( [ "$p" = "${PIDS[0]}" ] && echo node || echo console) ended"
+		done
+		sleep 2
+	done
 fi
 
 echo "e2e: Playwright"
 status=0
 (cd "$WEB" && E2E_CONSOLE_URL="$CONSOLE" E2E_OPS_PW="$OPS_PW" E2E_ANALYST_PW="$ANALYST_PW" E2E_SHOTS="${E2E_SHOTS:-}" \
 	npx playwright test) || status=$?
-# nothing secret in the logs: a bearer token (a JWT), a password of this run
-for log in "$WORK/console.log" "$WORK/node.log"; do
-	if grep -qF -e "$OPS_PW" -e "$ANALYST_PW" -e "$ADMIN_PW" -e "$KC_ADMIN_PW" "$log" || grep -qE 'eyJ[A-Za-z0-9_-]{8,}\.eyJ' "$log"; then
-		fail "a token or a password reached $(basename "$log")"
-	fi
-done
+# nothing secret in the logs
+l="$(leaked)"
+[ -z "$l" ] || fail "a token or a password reached $l"
 [ "$status" -eq 0 ] || fail "Playwright"
 echo "PASS: the console end to end"

@@ -61,7 +61,7 @@ export interface NodeInfo {
 
 /** a node's pod as Kubernetes says it: made and not serving yet, serving, going away, or not starting as it is */
 export interface PodState {
-  state: 'starting' | 'running' | 'stopping' | 'failing'
+  state: 'starting' | 'running' | 'stopping' | 'failing' | 'ended'
   phase: string
   reason?: string
   message?: string

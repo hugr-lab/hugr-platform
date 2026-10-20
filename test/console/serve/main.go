@@ -162,6 +162,8 @@ func (k madeUpKube) GroupPods(ctx context.Context) ([]corev1.Pod, error) {
 
 func (madeUpKube) GroupDeployments(context.Context) ([]appsv1.Deployment, error) { return nil, nil }
 
+func (madeUpKube) PodWarnings(context.Context) ([]corev1.Event, error) { return nil, nil }
+
 // the pod's usage as the metrics API would answer it: made up, as the pod is
 var madeUpUsage = console.Usage{CPUMilli: 120, MemoryBytes: 900 << 20}
 

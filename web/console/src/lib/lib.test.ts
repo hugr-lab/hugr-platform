@@ -84,6 +84,8 @@ describe('the fleet', () => {
     expect(groupState(group({ readyReplicas: 1 })).note).toBe('1 of 2 nodes ready: the operator makes the rest')
     expect(groupState(group({ readyReplicas: 3 })).text).toBe('Scaling down')
     expect(groupState(group({ readyReplicas: 1, problem: 'a pod cannot be made: exceeded quota' })).text).toBe('Not starting')
+    // at its count, a roll's extra pod that is not made is a new node waiting, not the group down
+    expect(groupState(group({ problem: 'a pod cannot be made: exceeded quota' })).mark).toBe('half')
     const node = (label: string, ready: boolean, state: 'starting' | 'running' | 'failing', reason?: string, message?: string) => ({
       label, ready, serving: ready, leaseAge: null, current: false, sessions: 0, seatsLeft: -1, admitting: ready, draining: false,
       target: 0, applied: 0, needsRestart: false, usage: null, pod: { state, phase: 'Pending', reason, message, restarts: 0 } })
@@ -91,6 +93,12 @@ describe('the fleet', () => {
       node('c', false, 'failing', 'Unschedulable', '0/1 nodes are available')] })
     expect(groupState(scaled)).toEqual({ mark: 'off', text: 'A node does not start', note: 'c: Unschedulable - 0/1 nodes are available' })
     expect(wanted(scaled)).toEqual(['ok', 'half', 'off'])
+    // a node that served and went unready is no starting one
+    const served = group({ replicas: 2, readyReplicas: 1, nodes: [node('a', true, 'running'), { ...node('b', false, 'starting', 'NotReady'), leaseAge: 4 }] })
+    expect(wanted(served)).toEqual(['ok', 'off'])
+    // a drain of a scale down: one stopping while the ready count already meets the ask
+    const down = group({ replicas: 1, readyReplicas: 1, nodes: [node('a', true, 'running'), { ...node('b', true, 'running'), pod: { state: 'stopping' as const, phase: 'Running', restarts: 0 } }] })
+    expect(groupState(down)).toEqual({ mark: 'half', text: 'Scaling down', note: 'b drains, then goes' })
     expect(groupState(group({ replicas: 0, readyReplicas: 0, scaling: { mode: 'auto', min: 0, max: 3 } })).note)
       .toBe('Starts on the first client')
     expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: ['n'] } })).text).toBe('Restart pending')

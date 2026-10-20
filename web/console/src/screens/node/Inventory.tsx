@@ -1,4 +1,5 @@
 import { useParams } from 'react-router-dom'
+import { sentence } from '../../lib/format'
 import { Problem, Status, type Mark } from '../../components/ui'
 import { useApp, useLoad } from '../../lib/context'
 import type { Part } from '../../lib/types'
@@ -53,9 +54,6 @@ function Table({ id, title, lead, part, columns }: { id: string; title: string; 
     </section>
   )
 }
-
-/** a reason as a sentence: capitalised, a full stop */
-const sentence = (s: string) => `${s.charAt(0).toUpperCase()}${s.slice(1)}${/[.!?]$/.test(s) ? '' : '.'}`
 
 export function Inventory() {
   const { label = '' } = useParams()
