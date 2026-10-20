@@ -139,34 +139,53 @@ The design:
 
   A loadable is built for one duckdb version, so a new duckdb still means a new hugr_node.
 
-### Stage A: the first deployment
+### Stage A: the first deployment, by itself (the owner, 2026-10-20: "everything installs itself, as far as it can")
 
-The order is one `helm install` plus one action of the installer in tresor:
+One mechanism everywhere: the chart's install Job `hugr-init`, under a ServiceAccount of its own. It is no group's, so
+the admission policies leave it alone. Then the first node writes the first policy.
 
-1. **Prerequisites**: cert-manager with its csi-driver, the databases, and the IdP's registrations (Keycloak by hand;
-   Entra in stage B).
-2. **`helm install hugr`**: tresor, kista, the operator, the platform, the first groups. The nodes start, find no
-   catalog login in tresor and exit. Kubernetes restarts them with backoff, and the console shows them `failing` with
-   the reason.
-3. **The installer writes the catalog's login into tresor** as `hugr_policy_catalog` and grants it to the nodes'
-   principal, with tresor's console or CLI. It is a credential, so it is never written into the chart, its values or
-   a Job.
-4. **The first policy is the node's** (the owner, 2026-10-20). It replaces an install Job run as the first group's
-   ServiceAccount, which the admission policies refuse: only a group's ReplicaSet may run as the group.
-   - **What it is:** `HugrPlatform.spec.firstPolicy`, structured fields, never SQL:
-     - the issuer's name, URL and audiences, and the roles claim;
+1. **The database.** `hugr-init` makes the policy catalog's database and its login:
+   - on Azure SQL, Entra users for the groups' identities, with no password;
+   - elsewhere, a login with a generated password, written straight into tresor and nowhere else.
+2. **tresor.** It writes `hugr_policy_catalog` and grants it to the groups' identities.
+3. **kista.** It makes the tenant and the channel, and the upstreams: DuckDB's core and community repositories, our
+   public channel, and the organisation's Enterest tenant when the form names one. Subscribing to Enterest and granting
+   the in-cluster kista there stays manual, as a matter between the organisation and Enterest.
+4. **The nodes** start, and the first one writes the first policy. The administrator signs into the console. The
+   first policy:
+   - **what it is:** `HugrPlatform.spec.firstPolicy`, structured fields, never SQL:
+     - the issuer's name, URL, audiences and roles claim;
      - the clients whose tokens count. The console's is always there (`console.clientID`); a tool's may join it;
      - the roles-claim value of the administrators;
      - the default group. The resource groups themselves are the namespace's `HugrNodeGroup`s, which a marketplace's
-       deployment form chooses (groups, node counts, sizes) as the chart's values.
-   - **How it travels:** in each node's bootstrap document, from the operator.
-   - **Where it is applied:** a node that attaches a catalog with no issuer writes it once, in one transaction, in its
-     own process before it serves. It writes the issuer, its client, the role `platform_admin` with the `cluster` and
-     `policy` bundles, and the mapping of the administrators' claim to that role.
-   - **Never overwrites:** a catalog that has an issuer is left alone, and nodes starting together race to one write.
-   - **The specs:** hugr-node spec 015 (the document's field, the write) and this one (the field, the document).
+       deployment form chooses (groups, node counts, sizes) as the chart's values;
+   - **how it travels:** in each node's bootstrap document, from the operator;
+   - **where it is applied:** a node that attaches a catalog with no issuer writes it once, in one transaction, in its
+     own process before it serves. It writes the issuer, its clients, the role `platform_admin` with the `cluster` and
+     `policy` bundles and the administrators' mapping, and a resource group per group granted to that role. A node
+     whose group the policy lacks refuses everyone and drains (duckdb-acl spec 096), so the groups are part of it;
+   - **never overwrites:** a catalog that has an issuer is left alone, and nodes that start together race to one
+     write;
+   - **the specs:** hugr-node spec 015 (the document's field, the write) and this one (the field, the document).
 
-   The nodes come up. The administrator signs into the console and does the rest there.
+Where `hugr-init`'s rights come from:
+
+- **Azure** (the Managed Application): its ServiceAccount is federated with a managed identity the Managed Application
+  makes. That identity is the database server's Entra administrator and a tresor administrator.
+- **IONOS, OTC, Hetzner** (a catalog's form):
+  - **The database**, the form's choice: the provider's managed database, whose administrator credential the form
+    hands over once, in a Secret that `hugr-init` deletes after use (the owner: acceptable where needed); or one in
+    the cluster, CloudNativePG as a dependency of the umbrella.
+  - **tresor** trusts the cluster's own ServiceAccount issuer, and `hugr-init` logs in with its projected token
+    (`FLOW 'token'`: a short Job needs no renewal). This is to verify live: tresor-server takes any OIDC issuer with
+    discovery.
+  - **The nodes** log in to tresor as today, by `federated`: the organisation's IdP trusts the cluster's issuer once.
+    Without that, the tresor extension would need a login by a token file it re-reads per request: a product gap.
+- **Product gaps**, for their sessions:
+  - kista: its first setup by API or by declarative values (today `kista admin` in the pod), `namespaceOverride` in
+    its chart, and a first release with the chart;
+  - tresor-server: `namespaceOverride` in its chart, and the token-file login above if the nodes are to skip the
+    IdP.
 
 ### Stage A: the operator's release
 
