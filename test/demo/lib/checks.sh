@@ -263,6 +263,10 @@ session_of() {
 	done
 	return 1
 }
+# no_admin_session <pod>: the node holds no session of platform_admin's - the console's calls are the admin's
+no_admin_session() {
+	[ "$(as breakglass "$1" "SELECT count(*) FROM platform.sessions WHERE list_contains(roles, 'platform_admin')")" = 0 ]
+}
 # tracing_is <pod> <id> <python condition over the session s>
 tracing_is() {
 	local out
@@ -338,8 +342,8 @@ check_console() {
 	grep -q 'answered 404' "$WORK/console.err" || fail "ending a session gone: $(cat "$WORK/console.err")"
 	ok "analyst_a's session on $pod traced (audit all, profile sampled - the operator's), cleared, ended; ending it again is a 404"
 
-	# a drain and its resume, each call with a new token of the admin: the console's session on the node goes on (a
-	# draining node seats nobody new)
+	# a drain and its resume, each call a session of its own with a new token of the admin's: a draining node seats nobody
+	# new but the call of who may resume it (duckdb-acl spec 066's addendum)
 	console_api admin POST "nodes/$b/drain" >/dev/null || fail "DRAIN NODE through the console"
 	eventually 30 "$b reports draining" lease_is "$b" draining true
 	out="$(console_api admin GET "nodes/$b")" || fail "node $b's page while it drains"
@@ -368,6 +372,13 @@ check_console() {
 	out="$(console_api seeder GET /tresor/v1/whoami "" "$TRESOR_SCOPE")" || fail "tresor's whoami through the console's mount"
 	json_true "$out" "'role:demo_seeder' in r['roles']" || fail "tresor's whoami of the seeder names no demo_seeder"
 	ok "tresor's console mounted (its module, its API answered the seeder through the mount); kista's module served through its mount"
+
+	# the console holds no session on any node: each of its calls was one of its own, ended with it (spec 003) - on the
+	# call's way out, which may trail its last batch by a moment
+	for pod in $(pods a) $(pods b); do
+		eventually 10 "the console left no session of the admin's on $pod" no_admin_session "$pod"
+	done
+	ok "the console left no session on any node: each of its calls was a session of its own"
 }
 
 check_hot() {

@@ -363,3 +363,19 @@ func TestPageOfAPodNotServing(t *testing.T) {
 		t.Errorf("another platform's pod: %d", code)
 	}
 }
+
+// A pod being stopped drains itself as it goes: the console refuses its drain and resume, not only hides them.
+func TestNoActionOnAStoppingPod(t *testing.T) {
+	h := newHarness(t, clusterRights(), node("hugr-node-etl-a", "etl"))
+	gone := metav1.NewTime(testNow)
+	h.server.Kube = &fakeKube{pods: []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-a",
+		Labels: map[string]string{"platform.hugr.io/group": "etl"}, DeletionTimestamp: &gone}}}}
+	for _, action := range []string{"drain", "resume"} {
+		before := h.nodes.statements(stmtResume) + h.nodes.statements(stmtDrain)
+		code, out, _ := h.do(t, "POST", APIPrefix+"nodes/hugr-node-etl-a/"+action, opsToken, "")
+		if code != http.StatusConflict || out["error"] != "stopping" ||
+			h.nodes.statements(stmtResume)+h.nodes.statements(stmtDrain) != before {
+			t.Errorf("%s on a stopping pod: %d %v", action, code, out)
+		}
+	}
+}

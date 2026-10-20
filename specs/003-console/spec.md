@@ -118,17 +118,20 @@ Under `/api/v1/console/`, the person's nodes-audience token as the bearer on eve
 
 - **Flight SQL, directly to the node** a page names (the console's calls are about one node), over the group's TLS
   name and the platform's CA bundle (the front's dialing, spec 002).
-- **One gRPC channel per node; one session cookie per node and person**: the first call opens the person's session,
-  later ones reuse it (duckdb-acl spec 050). Each call carries the person's bearer, and `traceparent`.
-  - As built: per node and person, the person being the token's `iss` and `sub` as the token states them (hashed). The
-    first build kept it per *token*, and the demo found why that is wrong: a draining node seats nobody new
-    (duckdb-acl spec 066), so a person whose token was renewed after a drain had no session there and could not resume
-    the node. A node keeps a cookie's session for a new bearer of the same principal (its fingerprint: subject, roles,
-    claims) and verifies every call's token before the cookie counts, so a token naming somebody else's subject is
-    refused there and that person's session is untouched; a token without both claims is kept by its own hash.
-- **Sign-out** ends the person's sessions on every node holding one; otherwise the node's idle timeout does. It is
-  judged like every route (a token a node verified, the rights cached by the token's hash), never by the bearer
-  alone: the pool's sessions are found by the subject a token names.
+- **One gRPC channel per node, and no session kept on any** (the owner, 2026-10-20: "не остаются зависших соединений
+  консоли на нодах"): every call carries the person's bearer and no cookie, so the node seats a session for that call
+  alone and closes it on the call's way out (duckdb-acl spec 050), and the cookie it sets is never sent back. The
+  console occupies a node's seats only while it asks and leaves nothing to idle out (a node's `acl_drain()` count, a
+  group's roll); a draining node seats the call of a person who may resume it (duckdb-acl spec 066's addendum) and
+  nobody else's, so the rights are asked of a serving node first and of a draining one only when none serves.
+  - The way there: the first build kept a session per node and token, then per node and person (a renewed token lost
+    the drained node's session); the reviews of the 066 addendum showed what any kept session costs - a console's
+    reads left sessions on every draining node and held its drain until the deadline. A call per session costs one
+    token verification (cached keys) and the session events of `all`.
+- **Sign-out** forgets the rights the console read for the token; there is no node session to end.
+- A node's listings and counts leave the console's own call out (duckdb-acl spec 066's addendum): `platform.sessions`,
+  the load report and `acl_drain()`'s answer say who is connected, never the read that asks. A pod being stopped is
+  refused drain and resume by the server (409), not only hidden on its page: it drains itself as it goes.
 - Statements are fixed texts; an id from the browser (a session's ops id) is bound as a constant only after it
   matches the ops id's form - never SQL from the browser.
 
@@ -411,7 +414,7 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
   - the fleet is this platform's groups' nodes only (the watch sees the namespace's; `--console-platform` allows
     several platforms in one): rights, a node's pages and the Cluster page reach no other platform's node;
   - the pool keeps a node's cookie only from an answer (the door sets one on every cookie-less call, refused or not)
-    and at most 4096 sessions; a channel replaced by a new CA bundle lingers a minute for the calls on it; a bundle
+    and at most 4096 sessions (since the 2026-10-20 change it keeps none: a call is its own session); a channel replaced by a new CA bundle lingers a minute for the calls on it; a bundle
     edited without a new certificate keeps the pool, a failed read keeps the last good one, a failed first read is
     answered from memory for 5 s;
   - the console waits for a certificate it can serve with and is not a readiness check of the operator's: a missing or
@@ -458,9 +461,9 @@ CLUSTER ...` statements under the person's token, judged by the node. Alternativ
     a 404), a node drained and resumed with each call's new token, a scale past the plan refused by the webhook (422)
     and one within it named on the group, the mounted modules and tresor's `whoami` through the mount. The
     administrator's roles hold the `meta` and `environment` categories there - the operator's grant, as Q7 says.
-  - What a node drained by somebody else does to the console: it seats nobody new, so a person without a session
-    there reads its page as refused ("draining") and cannot resume it; restarting the group or the pod ends that
-    drain. Seating the drain's own right on a draining node is decided (the follow-ups: duckdb-acl, an addendum to 066).
+  - A node drained by somebody else: the console's calls are sessions of their own, and a draining node seats the
+    call of a person who may resume it (duckdb-acl spec 066's addendum) - its page answers, its Resume works. Not
+    on a pod being stopped: it drains itself as it goes, so the page offers neither drain nor resume there.
 
 **Q12. An administrator and the resource groups** (taken as recommended while the owner has not said otherwise,
 2026-10-19). *Recommendation:* the policy grants an administrator's role every
@@ -477,11 +480,10 @@ spec that does not place a session whose principal holds an administrative bundl
   Azure; acl_otel speaks OTLP, so whether it goes straight in or through a collector is that spec's question), one
   deployed with the platform (an OTel Collector and Grafana; for lineage to be decided), or none; later perhaps the
   platform's own DuckLake as the telemetry store. It also gives the console its links.
-- duckdb-acl, decided (the owner, 2026-10-20): a cluster's operator resumes from the console a node somebody else
-  drained - a draining node seats a session for a principal who may call `platform.resume` (an addendum to spec 066),
-  everyone else refused as now.
-- duckdb-acl: a drain waits for every live session up to the group's deadline (300 s by default), an idle one too - a
-  console's (it keeps a person's session per node for 15 minutes) or an idle driver's; whether a drain should not wait
+- Done: a cluster's operator resumes from the console a node somebody else drained (duckdb-acl spec 066's addendum:
+  one cookie-less call of a principal who may call `platform.resume` is seated; the console makes only such calls).
+- duckdb-acl: a drain waits for every live session up to the group's deadline (300 s by default), an idle driver's
+  too (the console keeps none since the 2026-10-20 change); whether a drain should not wait
   for an idle session with nothing pinned (it moves to another node silently, spec 135) is that spec's question.
 - **The console as the cluster's place of work** (the owner, 2026-10-20 - an outline, specs of their own; v1 stays as
   it is): it does as well as shows.

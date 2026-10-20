@@ -17,6 +17,8 @@ export function NodeFrame({ label, children, alsoReload }: { label: string; chil
   const k = page.data?.kubernetes
   const load = page.data?.load
   const draining = load?.draining === true
+  // a pod going away drains itself as it stops: a drain or a resume of it would be undone within the second
+  const stopping = k?.pod?.state === 'stopping'
   const act = async (run: () => Promise<unknown>) => {
     setError(undefined)
     try {
@@ -56,12 +58,12 @@ export function NodeFrame({ label, children, alsoReload }: { label: string; chil
         <div className="flex flex-wrap items-center gap-2">
           {telemetry.map((l) => <Out key={l.name} href={l.href}>Open in {l.name}</Out>)}
           <Refresh at={page.at} loading={page.loading} onClick={() => { page.reload(); alsoReload?.() }} />
-          {load && !draining && rights.drain && (
+          {load && !stopping && !draining && rights.drain && (
             <button type="button" className="btn-outline" onClick={() => setAsking(true)}>
               <CirclePause size={18} aria-hidden="true" /> Drain
             </button>
           )}
-          {load && draining && rights.resume && (
+          {load && !stopping && draining && rights.resume && (
             <button type="button" className="btn-primary" onClick={() => act(() => api.resume(label))}>
               <Play size={18} aria-hidden="true" /> Resume
             </button>
