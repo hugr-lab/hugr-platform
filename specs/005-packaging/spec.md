@@ -153,15 +153,18 @@ The order is one `helm install` plus one action of the installer in tresor:
    a Job.
 4. **The first policy is the node's** (the owner, 2026-10-20). It replaces an install Job run as the first group's
    ServiceAccount, which the admission policies refuse: only a group's ReplicaSet may run as the group.
-   - **What it is:** `HugrPlatform.spec.firstPolicy`, structured fields, never SQL: the issuer's URL, its audiences, the
-     roles claim, and the claim value of the administrators.
+   - **What it is:** `HugrPlatform.spec.firstPolicy`, structured fields, never SQL:
+     - the issuer's name, URL and audiences, and the roles claim;
+     - the clients whose tokens count. The console's is always there (`console.clientID`); a tool's may join it;
+     - the roles-claim value of the administrators;
+     - the default group. The resource groups themselves are the namespace's `HugrNodeGroup`s, which a marketplace's
+       deployment form chooses (groups, node counts, sizes) as the chart's values.
    - **How it travels:** in each node's bootstrap document, from the operator.
    - **Where it is applied:** a node that attaches a catalog with no issuer writes it once, in one transaction, in its
      own process before it serves. It writes the issuer, its client, the role `platform_admin` with the `cluster` and
      `policy` bundles, and the mapping of the administrators' claim to that role.
    - **Never overwrites:** a catalog that has an issuer is left alone, and nodes starting together race to one write.
-   - **The specs:** a small spec in hugr-node (the document's field, the write) and one in this repository (the field
-     and the document).
+   - **The specs:** hugr-node spec 015 (the document's field, the write) and this one (the field, the document).
 
    The nodes come up. The administrator signs into the console and does the rest there.
 
