@@ -199,18 +199,22 @@ The order is one `helm install` plus one action of the installer in tresor:
     Azure Database for PostgreSQL, Key Vault for kista's signing key, and the chart;
   - `createUiDefinition`: the plan becomes the groups;
   - the publisher's access is just-in-time, never standing (spec 001).
-- **The databases** (the owner, 2026-10-20): the Managed Application offers two engines, Azure SQL or Azure Database
-  for PostgreSQL. One server holds three databases: `tresor`, `kista` and `hugr` (the policy catalog). The server is
-  Entra-only.
+- **The databases** (the owner, 2026-10-20): the Managed Application offers two managed engines, Azure SQL Database or
+  Azure Database for PostgreSQL Flexible Server. One server holds three databases: `tresor`, `kista` and `hugr` (the
+  policy catalog). The goal is that each of the three logs in by its managed identity, with no password, on either
+  engine. The server is Entra-only.
   - **tresor and kista** log in by their managed identity's Entra token, with no password (tresor's `auth: entra`,
     kista's `store.login.kind: entra`). The deployment script creates their database users for the identities
     (`CREATE USER … FROM EXTERNAL PROVIDER`, `pgaadauth_create_principal`).
   - **The policy catalog on Azure SQL**: a node logs in by its group's Entra token through mssql and the linked `azure`
     extension (mssql reads a token per connection), so `hugr_policy_catalog` in tresor names the host and the
     database only. Still to verify: the group's workload identity reaching the `azure` extension's credential chain.
-  - **The policy catalog on PostgreSQL**, phase 1: a password login. postgres_scanner does not re-read a token as a
-    password yet (decision 5 of 2026-10-15, later). The deployment script makes the login and writes it straight into
-    tresor, so no person and no file ever holds it. The server then admits a password for that one login.
+  - **The policy catalog on PostgreSQL** has one gap. An Entra token lives about an hour, and postgres_scanner takes
+    its password once, so a new connection after that fails. Two ways close it: postgres_scanner re-reading a token as
+    the password per connection (a patch of ours), or a dynamic secret in tresor that hands out a fresh token ("CREATE
+    DYNAMIC SECRET", decision 5 of 2026-10-15). Until one lands, the catalog on PostgreSQL logs in by a password that
+    only tresor holds: the deployment script makes it and writes it straight into tresor, and the server admits a
+    password for that one login. Which comes first is the owner's open question.
   - **The first deployment is automatic.** The deployment script creates the server, the databases and the users,
     writes `hugr_policy_catalog` into tresor and grants it to the groups' identities. The first node writes the first
     policy (`firstPolicy`, decision 4 of stage A).
