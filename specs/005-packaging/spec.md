@@ -214,7 +214,9 @@ The order is one `helm install` plus one action of the installer in tresor:
     the password per connection (a patch of ours), or a dynamic secret in tresor that hands out a fresh token ("CREATE
     DYNAMIC SECRET", decision 5 of 2026-10-15). Until one lands, the catalog on PostgreSQL logs in by a password that
     only tresor holds: the deployment script makes it and writes it straight into tresor, and the server admits a
-    password for that one login. Which comes first is the owner's open question.
+    password for that one login.
+  - **The order** (the owner, 2026-10-20): SQL Server first, with no password anywhere. The PostgreSQL catalog's Entra
+    login waits for upstream postgres_scanner to support a refreshed token. No patch of ours.
   - **The first deployment is automatic.** The deployment script creates the server, the databases and the users,
     writes `hugr_policy_catalog` into tresor and grants it to the groups' identities. The first node writes the first
     policy (`firstPolicy`, decision 4 of stage A).
