@@ -42,6 +42,52 @@ func TestDocumentValidate(t *testing.T) {
 	}
 }
 
+func validFirstPolicy() *FirstPolicy {
+	return &FirstPolicy{
+		Issuer: FirstPolicyIssuer{Name: "corp", URL: "https://login.example/t/v2.0", Audiences: []string{"api://hugr"},
+			RolesClaim: "roles"},
+		Clients:        []FirstPolicyClient{{Name: "console", ClientID: "console-app"}, {Name: "dbeaver", ClientID: "dbeaver-app"}},
+		Administrators: "hugr-admins",
+		ResourceGroups: []FirstPolicyGroup{{Name: "bi"}, {Name: "etl", Default: true}},
+	}
+}
+
+// TestFirstPolicyValidate: the orchestrator never serves a first policy the node would refuse (hugr-node spec 015)
+func TestFirstPolicyValidate(t *testing.T) {
+	d := validDocument()
+	d.FirstPolicy = validFirstPolicy()
+	if err := d.Validate(); err != nil {
+		t.Fatalf("a complete first policy is refused: %v", err)
+	}
+	cases := map[string]func(*FirstPolicy){
+		"an issuer name with a dot":    func(p *FirstPolicy) { p.Issuer.Name = "corp.x" },
+		"an issuer over http":          func(p *FirstPolicy) { p.Issuer.URL = "http://login.example" },
+		"an issuer's userinfo":         func(p *FirstPolicy) { p.Issuer.URL = "https://u:p@login.example" },
+		"no roles claim":               func(p *FirstPolicy) { p.Issuer.RolesClaim = "" },
+		"no audience":                  func(p *FirstPolicy) { p.Issuer.Audiences = nil },
+		"an empty audience":            func(p *FirstPolicy) { p.Issuer.Audiences = append(p.Issuer.Audiences, "") },
+		"no client":                    func(p *FirstPolicy) { p.Clients = nil },
+		"a client without its id":      func(p *FirstPolicy) { p.Clients[1].ClientID = "" },
+		"a client named twice":         func(p *FirstPolicy) { p.Clients[1].Name = "console" },
+		"an application twice":         func(p *FirstPolicy) { p.Clients[1].ClientID = "console-app" },
+		"a client name with a quote":   func(p *FirstPolicy) { p.Clients[1].Name = `db"x` },
+		"no administrators":            func(p *FirstPolicy) { p.Administrators = "" },
+		"two defaults":                 func(p *FirstPolicy) { p.ResourceGroups[0].Default = true },
+		"a group twice":                func(p *FirstPolicy) { p.ResourceGroups[0].Name = "etl" },
+		"a group name with a space":    func(p *FirstPolicy) { p.ResourceGroups[0].Name = "b i" },
+		"not the node's own group":     func(p *FirstPolicy) { p.ResourceGroups = p.ResourceGroups[:1] },
+		"the node's group by its case": func(p *FirstPolicy) { p.ResourceGroups[1].Name = "ETL" },
+	}
+	for name, change := range cases {
+		d := validDocument()
+		d.FirstPolicy = validFirstPolicy()
+		change(d.FirstPolicy)
+		if err := d.Validate(); err == nil {
+			t.Errorf("%s: served although the node would refuse it", name)
+		}
+	}
+}
+
 const report = `{"node_id": "hugr-node-etl-a", "image": "v0.1.0", "duckdb": "f8f3f4d", "unknown": [1, 2],
  "config": {"target": 12, "applied": 11, "needs_restart": true,
             "pending": [{"kind": "setting", "name": "memory_limit", "class": "restart", "error": ""}]},

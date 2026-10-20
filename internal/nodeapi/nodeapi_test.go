@@ -142,6 +142,46 @@ func TestBootstrapAnswersTheGroupsPod(t *testing.T) {
 	}
 }
 
+// TestBootstrapFirstPolicy: the platform's first policy travels in every node's document, naming the namespace's
+// groups (spec 005, hugr-node spec 015); one the node could not write is not served
+func TestBootstrapFirstPolicy(t *testing.T) {
+	w := newWorld(t)
+	var platform v1alpha1.HugrPlatform
+	if err := w.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: "hugr"}, &platform); err != nil {
+		t.Fatal(err)
+	}
+	platform.Spec.Console = &v1alpha1.ConsoleSpec{ClientID: "console-app", Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr"}}
+	platform.Spec.FirstPolicy = &v1alpha1.FirstPolicySpec{
+		Issuer:         v1alpha1.FirstPolicyIssuer{Name: "corp", RolesClaim: "roles"},
+		Administrators: "hugr-admins", DefaultGroup: "bi",
+	}
+	if err := w.client.Update(context.Background(), &platform); err != nil {
+		t.Fatal(err)
+	}
+	rec := w.call(http.MethodGet, "/v1/bootstrap", etlToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var doc nodeproto.Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	policy := doc.FirstPolicy
+	if policy == nil || policy.Issuer.URL != "https://login.example/t/v2.0" || len(policy.Clients) != 1 ||
+		policy.Clients[0].ClientID != "console-app" || len(policy.ResourceGroups) != 2 ||
+		policy.ResourceGroups[0] != (nodeproto.FirstPolicyGroup{Name: "bi", Default: true}) ||
+		policy.ResourceGroups[1] != (nodeproto.FirstPolicyGroup{Name: "etl"}) {
+		t.Errorf("the first policy is not the platform's: %+v", policy)
+	}
+	platform.Spec.FirstPolicy.DefaultGroup = "missing"
+	if err := w.client.Update(context.Background(), &platform); err != nil {
+		t.Fatal(err)
+	}
+	if rec := w.call(http.MethodGet, "/v1/bootstrap", etlToken, ""); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("a default group no group serves: status %d, want 503", rec.Code)
+	}
+}
+
 // TestTokenReviewRefusals: every answer but a bound token of a group's own pod is a 403.
 func TestTokenReviewRefusals(t *testing.T) {
 	w := newWorld(t)

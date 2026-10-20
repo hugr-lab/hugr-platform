@@ -8,6 +8,7 @@ import (
 
 // HugrPlatformSpec is the installation's: the pointers every node needs, the sizes and the plan's bounds. No field
 // holds a credential (spec 001).
+// +kubebuilder:validation:XValidation:rule="!has(self.firstPolicy) || has(self.console)",message="firstPolicy needs console: the console's client is how the administrator gets in"
 type HugrPlatformSpec struct {
 	// Node is what every node runs.
 	Node NodeSpec `json:"node"`
@@ -36,6 +37,11 @@ type HugrPlatformSpec struct {
 	// Console is the web console's sign-in (spec 003); without it the operator serves no console.
 	// +optional
 	Console *ConsoleSpec `json:"console,omitempty"`
+	// FirstPolicy is what the first node writes into a policy catalog nobody administers yet (spec 005, hugr-node
+	// spec 015): the IdP, the applications whose tokens count, the administrators, the default group. Names only,
+	// never SQL nor a secret; a catalog that has its policy is never written again, whatever this says later.
+	// +optional
+	FirstPolicy *FirstPolicySpec `json:"firstPolicy,omitempty"`
 	// Sizes says what a group's size means in this cluster.
 	// +kubebuilder:validation:MinProperties=1
 	Sizes map[string]SizeSpec `json:"sizes"`
@@ -221,6 +227,55 @@ type ConsoleLink struct {
 	// +kubebuilder:validation:Pattern=`^https://[^@/\s]+(/[^\s]*)?$`
 	// +kubebuilder:validation:MaxLength=2048
 	URL string `json:"url"`
+}
+
+// FirstPolicySpec is the platform's first policy. The console's client (console.clientID, its tokens for
+// console.audiences.nodes) is always one of its clients, and its resource groups are the namespace's groups'.
+type FirstPolicySpec struct {
+	// Issuer is the IdP the people's tokens come from.
+	Issuer FirstPolicyIssuer `json:"issuer"`
+	// Clients are applications besides the console whose tokens count: a tool's registration (DBeaver, a driver).
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	Clients []FirstPolicyClient `json:"clients,omitempty"`
+	// Administrators is the roles claim's value that makes a person the platform's administrator.
+	// +kubebuilder:validation:MinLength=1
+	Administrators string `json:"administrators"`
+	// DefaultGroup is the resource group of a principal bound to none: one of the namespace's groups' resource
+	// groups. Without it, a principal is served only by the groups the administrator binds it to.
+	// +optional
+	DefaultGroup string `json:"defaultGroup,omitempty"`
+}
+
+// FirstPolicyIssuer is the first policy's IdP.
+type FirstPolicyIssuer struct {
+	// Name of the issuer in the policy.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,63}$`
+	Name string `json:"name"`
+	// URL is the issuer of the people's tokens (their iss); its keys are read from it by discovery. Default:
+	// spec.idp.issuer.
+	// +kubebuilder:validation:Pattern=`^https://[^@]+$`
+	// +optional
+	URL string `json:"url,omitempty"`
+	// Audiences the people's tokens may carry besides the console's (console.audiences.nodes).
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +optional
+	Audiences []string `json:"audiences,omitempty"`
+	// RolesClaim is the claim that carries a person's roles: roles for Entra ID, realm_access.roles for Keycloak.
+	// +kubebuilder:validation:MinLength=1
+	RolesClaim string `json:"rolesClaim"`
+}
+
+// FirstPolicyClient is an application whose tokens count.
+// +kubebuilder:validation:XValidation:rule="self.name != 'console'",message="console is the console's own client, made from console.clientID"
+type FirstPolicyClient struct {
+	// Name of the client in the policy.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,63}$`
+	Name string `json:"name"`
+	// ClientID is the application's id at the IdP: its tokens' azp.
+	// +kubebuilder:validation:MinLength=1
+	ClientID string `json:"clientID"`
 }
 
 // SizeSpec is what one size means: the container's resources, where it runs, and its spill volume.

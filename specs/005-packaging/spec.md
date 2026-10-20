@@ -154,18 +154,23 @@ the admission policies leave it alone. Then the first node writes the first poli
 4. **The nodes** start, and the first one writes the first policy. The administrator signs into the console. The
    first policy:
    - **what it is:** `HugrPlatform.spec.firstPolicy`, structured fields, never SQL:
-     - the issuer's name, URL, audiences and roles claim;
-     - the clients whose tokens count. The console's is always there (`console.clientID`); a tool's may join it;
+     - the issuer: its name, its URL (default `idp.issuer`), the audiences besides the console's, and the roles claim;
+     - the clients whose tokens count. The console's is always there (`console.clientID`, its tokens for
+       `console.audiences.nodes`), so `firstPolicy` needs `console`; a tool's may join it;
      - the roles-claim value of the administrators;
-     - the default group. The resource groups themselves are the namespace's `HugrNodeGroup`s, which a marketplace's
-       deployment form chooses (groups, node counts, sizes) as the chart's values;
-   - **how it travels:** in each node's bootstrap document, from the operator;
-   - **where it is applied:** a node that attaches a catalog with no issuer writes it once, in one transaction, in its
-     own process before it serves. It writes the issuer, its clients, the role `platform_admin` with the `cluster` and
-     `policy` bundles and the administrators' mapping, and a resource group per group granted to that role. A node
-     whose group the policy lacks refuses everyone and drains (duckdb-acl spec 096), so the groups are part of it;
-   - **never overwrites:** a catalog that has an issuer is left alone, and nodes that start together race to one
-     write;
+     - the default group (optional). The resource groups themselves are the namespace's `HugrNodeGroup`s', which a
+       marketplace's deployment form chooses (groups, node counts, sizes) as the chart's values;
+   - **how it travels:** in each node's bootstrap document, as `first_policy`, which the operator builds per request
+     from the platform and the namespace's groups. A platform whose first policy the node would refuse (a default group
+     no group serves, say) gets no document: the node waits, and the operator logs why;
+   - **where it is applied:** in the node's own process, before it serves, into a catalog nobody administers yet: one
+     with no role mapping and no issuer but the first policy's own (an empty database gets its schema first). It writes
+     the role `platform_admin` with the `cluster` and `policy` bundles, a resource group per group bound to that role,
+     the issuer, its clients, and last the administrators' mapping. A node whose group the policy lacks refuses
+     everyone and drains (duckdb-acl spec 096), so the groups are part of it;
+   - **never overwrites:** the mappings come last, so a write that stopped part-way is completed by the next start,
+     and a catalog with a mapping is left alone. Nodes that start together race to the same policy;
+   - **what `platform_admin` cannot do:** hand out administration, which is `passthrough`'s alone in duckdb-acl;
    - **the specs:** hugr-node spec 015 (the document's field, the write) and this one (the field, the document).
 
 Where `hugr-init`'s rights come from:

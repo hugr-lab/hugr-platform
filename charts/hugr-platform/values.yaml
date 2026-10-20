@@ -66,6 +66,14 @@ platform:
     repository:
       prefix: "" # required: the nodes' extension repository (the in-cluster kista)
     front: {}
+    # The policy the first node writes into a catalog nobody administers yet (spec 005, hugr-node spec 015) - names
+    # only, never SQL nor a secret. It needs console: the console's client (console.clientID, for
+    # console.audiences.nodes) is always one of its clients, and its resource groups are the groups'.
+    #   firstPolicy:
+    #     issuer: {name: corp, rolesClaim: roles}   # url: default idp.issuer; audiences: besides the console's
+    #     clients: [{name: dbeaver, clientID: "..."}] # optional: tools' applications besides the console
+    #     administrators: hugr-admins                 # the roles claim's value of the platform's administrators
+    #     defaultGroup: etl                           # optional: the resource group of a principal bound to none
     sizes: {}
     plan:
       maxNodes: 0

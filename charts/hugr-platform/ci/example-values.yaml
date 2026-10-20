@@ -21,6 +21,10 @@ platform:
     console:
       clientID: hugr-console
       audiences: {nodes: api://hugr, tresor: api://tresor}
+    firstPolicy:
+      issuer: {name: corp, rolesClaim: roles}
+      administrators: hugr-admins
+      defaultGroup: etl
     sizes:
       large:
         resources:

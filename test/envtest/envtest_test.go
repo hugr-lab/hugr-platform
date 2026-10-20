@@ -392,6 +392,40 @@ func TestOperator(t *testing.T) {
 // TestDoorsCertificate (spec 005): the API server itself refuses a group that names both doors' certificates or
 // neither (the CRD's rule, whatever the webhook does), and a group whose certificate the csi-driver issues gets a
 // Deployment that mounts no Secret.
+// TestFirstPolicyFields: the CRD refuses a first policy without the console, and a client named as the console's
+func TestFirstPolicyFields(t *testing.T) {
+	c := start(t)
+	ctx := context.Background()
+	first := func() *v1alpha1.HugrPlatform {
+		p := platform()
+		p.Name = "first"
+		p.Spec.Console = &v1alpha1.ConsoleSpec{ClientID: "console-app", Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr"}}
+		p.Spec.FirstPolicy = &v1alpha1.FirstPolicySpec{
+			Issuer:         v1alpha1.FirstPolicyIssuer{Name: "corp", RolesClaim: "roles"},
+			Administrators: "hugr-admins",
+		}
+		return p
+	}
+	must(t, c.client.Create(ctx, first(), client.DryRunAll))
+	noConsole := first()
+	noConsole.Spec.Console = nil
+	asConsole := first()
+	asConsole.Spec.FirstPolicy.Clients = []v1alpha1.FirstPolicyClient{{Name: "console", ClientID: "x"}}
+	badName := first()
+	badName.Spec.FirstPolicy.Issuer.Name = "corp.x"
+	overHTTP := first()
+	overHTTP.Spec.FirstPolicy.Issuer.URL = "http://login.example"
+	emptyAudience := first()
+	emptyAudience.Spec.FirstPolicy.Issuer.Audiences = []string{""}
+	for name, p := range map[string]*v1alpha1.HugrPlatform{"without the console": noConsole,
+		"a client named console": asConsole, "an issuer name with a dot": badName, "an issuer over http": overHTTP,
+		"an empty audience": emptyAudience} {
+		if err := c.client.Create(ctx, p, client.DryRunAll); err == nil {
+			t.Errorf("%s: accepted, want the CRD's refusal", name)
+		}
+	}
+}
+
 func TestDoorsCertificate(t *testing.T) {
 	c := start(t)
 	ctx := context.Background()

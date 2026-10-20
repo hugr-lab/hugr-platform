@@ -5,6 +5,7 @@ package build
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -322,6 +323,60 @@ func Document(platform *v1alpha1.HugrPlatform, group *v1alpha1.HugrNodeGroup, po
 		Catalog:    nodeproto.Catalog{Secret: secret, Schema: schema},
 		Heartbeat:  nodeproto.Heartbeat{IntervalSeconds: int(interval)},
 	}
+}
+
+// ConsoleClient is the first policy's client for the console (hugr-node spec 015).
+const ConsoleClient = "console"
+
+// FirstPolicy is the first policy a node of the platform gets in its document (spec 005, hugr-node spec 015), or nil
+// when the platform names none. The console's client is always one, its audience always counts, and the resource
+// groups are the platform's groups', one of them the default when the platform says which. An error is a platform
+// the node could not write the policy of.
+func FirstPolicy(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup) (*nodeproto.FirstPolicy, error) {
+	spec := platform.Spec.FirstPolicy
+	if spec == nil {
+		return nil, nil
+	}
+	console := platform.Spec.Console
+	if console == nil {
+		return nil, fmt.Errorf("firstPolicy needs console: the console's client is how the administrator gets in")
+	}
+	url := spec.Issuer.URL
+	if url == "" {
+		url = platform.Spec.IdP.Issuer
+	}
+	audiences := []string{console.Audiences.Nodes}
+	for _, audience := range spec.Issuer.Audiences {
+		if !slices.Contains(audiences, audience) {
+			audiences = append(audiences, audience)
+		}
+	}
+	clients := []nodeproto.FirstPolicyClient{{Name: ConsoleClient, ClientID: console.ClientID}}
+	for _, client := range spec.Clients {
+		clients = append(clients, nodeproto.FirstPolicyClient{Name: client.Name, ClientID: client.ClientID})
+	}
+	var names []string
+	for i := range groups {
+		if groups[i].Spec.Platform != platform.Name {
+			continue
+		}
+		if name := groups[i].EffectiveResourceGroup(); !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	if spec.DefaultGroup != "" && !slices.Contains(names, spec.DefaultGroup) {
+		return nil, fmt.Errorf("firstPolicy's defaultGroup %q is no group's resource group", spec.DefaultGroup)
+	}
+	resourceGroups := make([]nodeproto.FirstPolicyGroup, 0, len(names))
+	for _, name := range names {
+		resourceGroups = append(resourceGroups, nodeproto.FirstPolicyGroup{Name: name, Default: name == spec.DefaultGroup})
+	}
+	return &nodeproto.FirstPolicy{
+		Issuer: nodeproto.FirstPolicyIssuer{Name: spec.Issuer.Name, URL: url, Audiences: audiences,
+			RolesClaim: spec.Issuer.RolesClaim},
+		Clients: clients, Administrators: spec.Administrators, ResourceGroups: resourceGroups,
+	}, nil
 }
 
 func ptr[T any](v T) *T {
