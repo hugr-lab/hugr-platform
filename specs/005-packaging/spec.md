@@ -46,7 +46,7 @@ It builds on two decisions of 2026-10-20 (the phase-1 doc):
 | the operator | the CRDs as templates (`helm.sh/resource-policy: keep`, so an upgrade applies them and an uninstall leaves the groups), RBAC as spec 001 states it, the Deployment, its Service, the webhook with cert-manager's CA injection, the NetworkPolicy; the ValidatingAdmissionPolicies of `config/policy` optional | on |
 | `HugrPlatform` | rendered from `platform.*` values: node image, IdP, tresor, repository, CA bundle, front, console, sizes, plan | on |
 | the first groups | `groups[]` values, created at install only: rendered only when `lookup` finds no such group, and kept on uninstall. After that the console and kubectl change them, and `helm upgrade` never resets a scale | one group |
-| certificates | cert-manager is required. The platform's internal CA is a self-signed root, an Issuer the chart makes. It issues the operator's serving and webhook certificate and the doors' (csi-driver, below), and its root goes into the `caBundle` ConfigMap. The front's and the console's public certificates come from the organisation's Issuer for their names, or from Secrets the installer brings | on |
+| certificates | cert-manager is required. The platform's internal CA is a self-signed root, an Issuer the chart makes. It issues the operator's serving and webhook certificate and the doors' (csi-driver, below). trust-manager's `Bundle` writes the `caBundle` ConfigMap: the internal CA beside the default public roots, since `HUGR_CA_FILE` replaces a node's system roots for httpfs. The front reads the same ConfigMap to verify the nodes. The front's and the console's public certificates come from the organisation's Issuer for their names, or from Secrets the installer brings | on |
 | kista | a subchart: kista's own chart, `oci://ghcr.io/hugr-lab/charts/kista`. It is the nodes' only repository, and `repository.prefix` defaults to it. Its store (PostgreSQL) and its key source come from values. Its upstreams: DuckDB's core and community repositories, plus our channel or the organisation's hosted tenant, the latter as a private upstream by kista's ServiceAccount token (kista spec 0009, phase 3) | on |
 | tresor-server | a subchart: `oci://ghcr.io/hugr-lab/charts/tresor-server` (v0.6.0 is out), its store from values; `tresor.enabled: false` + `platform.tresor.host` for one the organisation already runs | on |
 
@@ -54,7 +54,7 @@ The chart leaves out:
 
 - the IdP;
 - PostgreSQL (the catalog's, kista's and tresor's databases: the organisation's own, or the cloud's managed one);
-- cert-manager and its csi-driver, which are prerequisites of the cluster;
+- cert-manager, its csi-driver and trust-manager, which are prerequisites of the cluster;
 - an OpenTelemetry collector. Telemetry stays an endpoint value (`platform.telemetry`) until the integrations spec.
 
 **Values** hold no credential: a database login lives in tresor (decision 4 of 2026-10-15), and a key lives in its
@@ -114,7 +114,7 @@ key source. A password in values would also land in Helm's release Secret.
 
 The order is one `helm install` plus one action of the installer in tresor:
 
-1. **Prerequisites**: cert-manager with its csi-driver, the databases, and the IdP's registrations (Keycloak by hand;
+1. **Prerequisites**: cert-manager with its csi-driver, trust-manager, the databases, and the IdP's registrations (Keycloak by hand;
    Entra in stage B).
 2. **`helm install hugr`**: tresor, kista, the operator, the platform, the first groups. The nodes start, find no
    catalog login in tresor and exit. Kubernetes restarts them with backoff, and the console shows them `failing` with
@@ -145,8 +145,8 @@ The order is one `helm install` plus one action of the installer in tresor:
 
 - **Install**: `install_operator` and `install_platform` become one `helm upgrade --install` with
   `test/demo/values/<provider>.yaml`.
-- **Certificates**: the run's own door certificates go. The demo installs cert-manager and its csi-driver at pinned
-  versions.
+- **Certificates**: the run's own door certificates go. The demo installs cert-manager, its csi-driver and
+  trust-manager at pinned versions.
 - **tresor and kista**: subcharts packaged from their source at the dependency's version into the chart's `charts/`.
   The demo runs their main, as it does today.
 - **Keycloak, PostgreSQL and OpenBao** stay the demo's own.
@@ -203,7 +203,14 @@ The order is one `helm install` plus one action of the installer in tresor:
 2. **kista**: the demo packages it from source until kista's first release. That release is the product's decision.
 3. **The first groups are created at install only** (`lookup` + keep). After that, the console and kubectl own them.
 4. **duckdb-acl's certificate reload is part of stage A**, as a precondition of decision 6.
-5. **hugr_node** stays in the image until `v2.0.0`. Its path after that is the proposal in "hugr_node on the node",
+5. **The CA bundle** comes from trust-manager, the second prerequisite after cert-manager. A node appending its
+   image's roots itself was the alternative: it would change what `HUGR_CA_FILE` means, and the front would still need
+   the CA.
+6. **Several platforms in one cluster** are isolated by namespace: one platform per namespace (spec 001's boundary).
+   The cluster-scoped objects (ClusterRole, ClusterRoleBinding, the webhook's configuration) are named after the
+   namespace. The CRDs are the one thing they share, at one version: one release installs them (`crds.install`, on
+   by default), and the others set it off.
+7. **hugr_node** stays in the image until `v2.0.0`. Its path after that is the proposal in "hugr_node on the node",
    to be confirmed.
 
 ## Follow-ups
