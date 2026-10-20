@@ -29,4 +29,6 @@ spec:
   size: large
   identity: {clientID: "<the group's workload identity>"}
   doors: {quack: true}
+  # the doors' certificate: a TLS Secret named hugr-node-…, or - with cert-manager's csi-driver - one issued into each
+  # pod, its key never in a Secret (spec 005):  tls: {csi: {issuerRef: {name: hugr-internal}, duration: 720h}}
   tls: {secretRef: {name: hugr-node-etl-tls}}

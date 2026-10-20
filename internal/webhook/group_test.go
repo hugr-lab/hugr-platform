@@ -39,7 +39,15 @@ func validator(t *testing.T, objs ...client.Object) *GroupValidator {
 func group(name, size string, replicas int32) *v1alpha1.HugrNodeGroup {
 	return &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "hugr"},
 		Spec: v1alpha1.HugrNodeGroupSpec{Platform: "hugr", Size: size, Replicas: replicas,
-			TLS: v1alpha1.TLSSpec{SecretRef: v1alpha1.SecretRef{Name: "hugr-node-" + name + "-tls"}}}}
+			TLS: v1alpha1.TLSSpec{SecretRef: &v1alpha1.SecretRef{Name: "hugr-node-" + name + "-tls"}}}}
+}
+
+// csi is a group whose doors' certificate the csi-driver issues, from the namespace's Issuer hugr-internal.
+func csi(name, duration string) *v1alpha1.HugrNodeGroup {
+	g := group(name, "large", 1)
+	g.Spec.TLS = v1alpha1.TLSSpec{CSI: &v1alpha1.CSICertificate{
+		IssuerRef: v1alpha1.IssuerRef{Name: "hugr-internal"}, Duration: duration}}
+	return g
 }
 
 func TestWebhook(t *testing.T) {
@@ -61,6 +69,19 @@ func TestWebhook(t *testing.T) {
 			g.Spec.TLS.SecretRef.Name = "hugr-platform-tls"
 			return g
 		}(), "a group mounts no other Secret"},
+		{"a certificate the csi-driver issues", csi("etl", ""), ""},
+		{"a csi certificate of a day", csi("etl", "24h"), ""},
+		{"a csi certificate shorter than an hour", csi("etl", "30m"), "at least 1h"},
+		{"both a Secret and the csi-driver", func() *v1alpha1.HugrNodeGroup {
+			g := csi("etl", "")
+			g.Spec.TLS.SecretRef = &v1alpha1.SecretRef{Name: "hugr-node-etl-tls"}
+			return g
+		}(), "exactly one"},
+		{"no certificate at all", func() *v1alpha1.HugrNodeGroup {
+			g := group("etl", "large", 1)
+			g.Spec.TLS.SecretRef = nil
+			return g
+		}(), "exactly one"},
 		{"a platform that is not there", func() *v1alpha1.HugrNodeGroup { g := group("etl", "large", 1); g.Spec.Platform = "x"; return g }(), "is not in the namespace"},
 	}
 	for _, c := range cases {

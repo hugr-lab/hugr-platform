@@ -97,7 +97,7 @@ func group(name string, replicas int32, created time.Time) *v1alpha1.HugrNodeGro
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "hugr", UID: types.UID("uid-" + name),
 			CreationTimestamp: metav1.NewTime(created)},
 		Spec: v1alpha1.HugrNodeGroupSpec{Platform: "hugr", Replicas: replicas, Size: "small",
-			Identity: v1alpha1.WorkloadIdentity{ClientID: name}, TLS: v1alpha1.TLSSpec{SecretRef: v1alpha1.SecretRef{Name: name + "-tls"}}},
+			Identity: v1alpha1.WorkloadIdentity{ClientID: name}, TLS: v1alpha1.TLSSpec{SecretRef: &v1alpha1.SecretRef{Name: name + "-tls"}}},
 	}
 }
 

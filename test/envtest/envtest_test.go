@@ -155,7 +155,7 @@ func group(name string, replicas int32) *v1alpha1.HugrNodeGroup {
 	return &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec: v1alpha1.HugrNodeGroupSpec{Platform: "hugr", Replicas: replicas, Size: "small",
 			Identity: v1alpha1.WorkloadIdentity{ClientID: name + "-app"},
-			TLS:      v1alpha1.TLSSpec{SecretRef: v1alpha1.SecretRef{Name: "hugr-node-" + name + "-tls"}}}}
+			TLS:      v1alpha1.TLSSpec{SecretRef: &v1alpha1.SecretRef{Name: "hugr-node-" + name + "-tls"}}}}
 }
 
 func must(t *testing.T, err error) {
@@ -387,4 +387,40 @@ func TestOperator(t *testing.T) {
 	unrelated := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: ns},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "busybox"}}}}
 	must(t, c.client.Create(ctx, unrelated))
+}
+
+// TestDoorsCertificate (spec 005): the API server itself refuses a group that names both doors' certificates or
+// neither (the CRD's rule, whatever the webhook does), and a group whose certificate the csi-driver issues gets a
+// Deployment that mounts no Secret.
+func TestDoorsCertificate(t *testing.T) {
+	c := start(t)
+	ctx := context.Background()
+	csi := &v1alpha1.CSICertificate{IssuerRef: v1alpha1.IssuerRef{Name: "hugr-internal"}, Duration: "720h"}
+
+	both := group("both", 1)
+	both.Spec.TLS.CSI = csi
+	neither := group("neither", 1)
+	neither.Spec.TLS = v1alpha1.TLSSpec{}
+	for _, g := range []*v1alpha1.HugrNodeGroup{both, neither} {
+		err := c.client.Create(ctx, g)
+		if err == nil || !strings.Contains(err.Error(), "exactly one of secretRef and csi") {
+			t.Errorf("group %s: %v, want the CRD's refusal", g.Name, err)
+		}
+	}
+
+	issued := group("issued", 1)
+	issued.Spec.TLS = v1alpha1.TLSSpec{CSI: csi}
+	must(t, c.client.Create(ctx, issued))
+	var deployment appsv1.Deployment
+	eventually(t, 15*time.Second, "the csi group's Deployment", func() bool {
+		return c.client.Get(ctx, key("hugr-node-issued"), &deployment) == nil
+	})
+	for _, v := range deployment.Spec.Template.Spec.Volumes {
+		if v.Secret != nil {
+			t.Errorf("the csi group's pods mount the Secret %q", v.Secret.SecretName)
+		}
+		if v.Name == "tls" && (v.CSI == nil || v.CSI.Driver != build.CSIDriver) {
+			t.Errorf("the doors' volume is not the csi-driver's: %+v", v.VolumeSource)
+		}
+	}
 }
