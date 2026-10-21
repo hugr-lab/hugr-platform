@@ -39,6 +39,11 @@ renders "a private IdP's CA is tresor's for that issuer" 'ca_file: /var/run/tres
 	--set-string global.idp.caCert=PEM
 renders "the IdP's groups claim reaches tresor" 'groups_claim: groups' --set global.idp.tresorGroupsClaim=groups
 renders "the private CAs reach the platform's bundle" 'hugr-private-cas/idp.crt'
+# the databases Job (not the platform's hugr-init) runs on every upgrade, after the catalog phase deleted the Secret
+render --show-only templates/databases.yaml >"$OUT" || fail "the databases Job: the render failed"
+grep -A1 -- '- name: db-admin' "$OUT" | grep -q 'optional: true' ||
+	fail "the databases Job mounts the administrator's Secret as required: an upgrade's run never starts"
+echo "ok: the databases Job runs without the administrator's Secret (an upgrade)"
 refuses "an admins list without hugr-init" "must keep hugr-init's entry" --set 'tresor.config.policy.admins={role:x}'
 refuses "a tresor namespace other than global's" "tresor.namespaceOverride must be global.namespaces.tresor" \
 	--set tresor.namespaceOverride=elsewhere

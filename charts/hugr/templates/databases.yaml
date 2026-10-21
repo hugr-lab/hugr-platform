@@ -129,5 +129,7 @@ spec:
           configMap: {name: hugr-init-db}
         - name: ca
           configMap: {name: hugr-private-cas}
+        # optional: the catalog phase deletes it after the first install, and an upgrade's run finds the services'
+        # Secrets there and needs no administrator
         - name: db-admin
-          secret: {secretName: {{ $g.database.adminSecret | quote }}}
+          secret: {secretName: {{ $g.database.adminSecret | quote }}, optional: true}
