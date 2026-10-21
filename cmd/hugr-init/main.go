@@ -1,6 +1,8 @@
 // hugr-init is the platform's install Job (spec 005): the policy catalog's database and login, the login into tresor
 // as the catalog's secret, its grants to the groups' identities, then the database administrator's Secret deleted.
 // --phase databases (a Job of the umbrella, before the services start) makes their (tresor's, kista's) databases first.
+// --phase openbao (the umbrella's internal key store) initialises OpenBao once and gives it the services' keys,
+// policies and roles on every run.
 package main
 
 import (
@@ -21,7 +23,8 @@ import (
 
 func main() {
 	config := flag.String("config", "/etc/hugr-init/config.yaml", "the Job's configuration")
-	phase := flag.String("phase", "catalog", "catalog (the catalog's secret, its grants) or databases (the services')")
+	phase := flag.String("phase", "catalog",
+		"catalog (the catalog's secret, its grants), databases (the services') or openbao (the internal key store)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(*config, *phase, log); err != nil {
@@ -32,6 +35,9 @@ func main() {
 }
 
 func run(path, phase string, log *slog.Logger) error {
+	if phase == "openbao" {
+		return runOpenBao(path, log)
+	}
 	c, err := initjob.Load(path)
 	if err != nil {
 		return err
@@ -50,7 +56,7 @@ func run(path, phase string, log *slog.Logger) error {
 		return initjob.RunDatabases(ctx, c, newDatabase, initjob.KubeServiceSecrets{Client: client}, log)
 	case "catalog":
 	default:
-		return fmt.Errorf("hugr-init: --phase is catalog or databases, not %q", phase)
+		return fmt.Errorf("hugr-init: --phase is catalog, databases or openbao, not %q", phase)
 	}
 	tresor, err := initjob.NewTresor(c.Tresor.URL, c.Tresor.TokenFile, c.Tresor.CAFile)
 	if err != nil {
@@ -73,6 +79,27 @@ func run(path, phase string, log *slog.Logger) error {
 		admin = initjob.KubeSecret{Client: client, Namespace: namespace, Name: c.Catalog.Admin.SecretName}
 	}
 	return initjob.Run(ctx, c, tresor, newDatabase, admin, log)
+}
+
+func runOpenBao(path string, log *slog.Logger) error {
+	c, err := initjob.LoadOpenBao(path)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	bao, err := initjob.NewOpenBao(c.URL, c.CAFile)
+	if err != nil {
+		return err
+	}
+	client, err := kubeClient()
+	if err != nil {
+		return err
+	}
+	return initjob.RunOpenBao(ctx, c, bao, initjob.KubeRecovery{Client: client, Namespace: c.Namespace,
+		Name: c.RecoverySecret}, log)
 }
 
 func kubeClient() (kubernetes.Interface, error) {

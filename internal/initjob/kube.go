@@ -57,3 +57,41 @@ func (k KubeSecret) Delete(ctx context.Context) error {
 	}
 	return err
 }
+
+// KubeRecovery keeps OpenBao's recovery key in a Secret of OpenBao's namespace. The Job's Role there may get and update
+// that name only, and create (which cannot be narrowed to a name).
+type KubeRecovery struct {
+	Client    kubernetes.Interface
+	Namespace string
+	Name      string
+}
+
+// Present says whether the Secret is there; its data is not read.
+func (k KubeRecovery) Present(ctx context.Context) (bool, error) {
+	_, err := k.Client.CoreV1().Secrets(k.Namespace).Get(ctx, k.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// Put keeps the key: a new Secret, or the one an OpenBao made before (its database dropped) replaced.
+func (k KubeRecovery) Put(ctx context.Context, key string) error {
+	secrets := k.Client.CoreV1().Secrets(k.Namespace)
+	current, err := secrets.Get(ctx, k.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = secrets.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: k.Name, Namespace: k.Namespace,
+				Labels: map[string]string{"app.kubernetes.io/managed-by": "hugr-init", "app.kubernetes.io/part-of": "hugr"}},
+			Type: corev1.SecretTypeOpaque,
+			Data: map[string][]byte{"key": []byte(key)},
+		}, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	current.Data = map[string][]byte{"key": []byte(key)}
+	_, err = secrets.Update(ctx, current, metav1.UpdateOptions{})
+	return err
+}

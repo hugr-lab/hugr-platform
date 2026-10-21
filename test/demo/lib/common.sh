@@ -84,6 +84,9 @@ diagnose() {
 			echo "== $ns"
 			k -n "$ns" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix
 		done
+		echo "== hugr-openbao"
+		k -n hugr-openbao logs -l app.kubernetes.io/name=openbao --tail 40 --prefix
+		k -n hugr-openbao logs -l app.kubernetes.io/component=init --tail 40 --prefix
 		local pod
 		for pod in $(k -n hugr get pods -l platform.hugr.io/group -o jsonpath='{.items[*].metadata.name}'); do
 			echo "== $pod"

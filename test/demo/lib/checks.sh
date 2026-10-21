@@ -544,7 +544,9 @@ check_no_secrets() {
 		k -n hugr logs -l app.kubernetes.io/component=init --tail -1 --prefix
 		# the stack's services; OpenBao's dev mode prints its own root token, on purpose (spec 004): its namespace is
 		# not read
-		for ns in idp "$TRESOR_NS" "$KISTA_NS" db; do
+		# the internal OpenBao's (its server prints no token outside dev mode) and its Job
+		k -n "$OPENBAO_NS" logs -l app.kubernetes.io/component=init --tail -1 --prefix 2>/dev/null || true
+		for ns in idp "$TRESOR_NS" "$KISTA_NS" "$OPENBAO_NS" db; do
 			for pod in $(k -n "$ns" get pods -o jsonpath='{.items[*].metadata.name}'); do
 				k -n "$ns" logs "$pod" --all-containers 2>/dev/null || true
 			done

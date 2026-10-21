@@ -1,0 +1,178 @@
+{{/* The internal key store (keys.mode internal, spec 005 step 2; the owner's Q6 of spec 008): OpenBao in its own
+namespace, its storage a database of the platform's PostgreSQL server (made by the databases Job), HA - one active,
+the others standby, a standby forwarding every request (disable_standby_reads: read-after-write holds for the Job's
+configuration). It opens itself by a static key made once at install and kept (the cluster's etcd is the root of
+trust, OpenBao's own docs ask for one). hugr-init's openbao phase initialises it once and gives it the services' keys,
+policies and roles on every release (openbao-init.yaml). */}}
+{{- if eq .Values.global.keys.mode "internal" }}
+{{- $ns := .Values.global.namespaces.openbao }}
+{{- $g := .Values.global }}
+{{- $bao := .Values.openbao }}
+{{- $labels := dict "app.kubernetes.io/name" "openbao" "app.kubernetes.io/instance" .Release.Name }}
+{{- $seal := lookup "v1" "Secret" $ns "openbao-seal" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openbao-seal
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+  annotations:
+    # a new key opens nothing OpenBao stored: never made again
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  {{- if and $seal $seal.data }}
+  key: {{ index $seal.data "key" }}
+  {{- else }}
+  # 32 random bytes: the static seal's AES-256 key
+  key: {{ randBytes 32 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+---
+# OpenBao reviews the services' ServiceAccount tokens (its Kubernetes auth)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-openbao-tokenreview
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:auth-delegator}
+subjects:
+  - {kind: ServiceAccount, name: openbao, namespace: {{ $ns }}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-config
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+data:
+  bao.hcl: |
+    {{- include "hugr.umbrella.openbaoConfig" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openbao
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  replicas: {{ $bao.replicas }}
+  # one at a time: a standby comes up before an old pod goes, and an active one hands its lock over at SIGTERM
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 1, maxUnavailable: 0}}
+  selector:
+    matchLabels:
+      {{- toYaml $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml $labels | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "hugr.umbrella.openbaoConfig" . | sha256sum }}
+    spec:
+      serviceAccountName: openbao
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- toYaml $labels | nindent 20 }}
+      containers:
+        - name: openbao
+          image: {{ printf "%s:%s" $bao.image.repository $bao.image.tag }}
+          imagePullPolicy: {{ $bao.image.pullPolicy }}
+          args: [server, -config=/openbao/config/bao.hcl]
+          env:
+            - {name: SKIP_SETCAP, value: "true"}
+            - name: POD_IP
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - {name: BAO_API_ADDR, value: "https://$(POD_IP):8200"}
+            - {name: BAO_CLUSTER_ADDR, value: "https://$(POD_IP):8201"}
+            - name: BAO_PG_CONNECTION_URL
+              value: >-
+                postgres://openbao@{{ $g.database.host }}:{{ $g.database.port }}/openbao?sslmode={{ $g.database.sslmode }}{{ if $g.database.caCert }}&sslrootcert=/openbao/cas/database.crt{{ end }}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: openbao-db, key: password}}
+          ports:
+            - {name: api, containerPort: 8200}
+            - {name: cluster, containerPort: 8201}
+          # ready while it can answer: a standby too, and an OpenBao not yet initialised (hugr-init reaches it through the
+          # Service); a sealed one is not
+          readinessProbe:
+            httpGet: {path: "/v1/sys/health?standbyok=true&uninitcode=204", port: 8200, scheme: HTTPS}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: 8200}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml $bao.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /openbao/config, readOnly: true}
+            - {name: seal, mountPath: /openbao/seal, readOnly: true}
+            - {name: tls, mountPath: /openbao/tls, readOnly: true}
+            - {name: cas, mountPath: /openbao/cas, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap: {name: openbao-config}
+        - name: seal
+          secret: {secretName: openbao-seal, defaultMode: 0440}
+        - name: tls
+          secret: {secretName: openbao-tls, defaultMode: 0440}
+        # the database's private CA (database.crt)
+        - name: cas
+          secret: {secretName: hugr-cas}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbao
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- toYaml $labels | nindent 4 }}
+  ports:
+    - {name: api, port: 8200, targetPort: api}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: openbao
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- toYaml $labels | nindent 6 }}
+{{- end }}
