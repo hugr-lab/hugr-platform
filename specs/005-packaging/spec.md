@@ -213,7 +213,7 @@ password was set by a run that failed before its write is set again by the next 
 **Product gaps** (relayed 2026-10-20, both closed the same day): kista v0.1.0 (spec 0024: `bootstrap.upstreams`,
 `namespaceOverride`, its first release); tresor-server v0.7.0 (spec 026: `namespaceOverride`, the cluster's issuer).
 
-### Stage A: the umbrella chart `hugr` (design, 2026-10-21 - for the owner's acceptance)
+### Stage A: the umbrella chart `hugr` (accepted by the owner, 2026-10-21)
 
 The catalog's one chart (decision 1 of this spec). It lives here (`charts/hugr`) and ships with the operator, at the
 same version.
@@ -247,6 +247,9 @@ same version.
     - **The first setup**: an init Job initialises OpenBao once and keeps its recovery keys in a Secret of that
       namespace. With the root token it enables Transit, makes the two keys and the Kubernetes-auth roles for kista's
       and tresor's ServiceAccounts, then revokes the token.
+  - **`secret`**: kista's channel key and tresor's KEK as Secrets of their own namespaces, made once at install. It
+    is the lightest of the three and is an explicit choice. tresor takes a KEK from a Secret today; kista refuses a key
+    from a Secret on purpose, so this mode waits for kista's opt-in (a product gap, relayed 2026-10-21).
   - **Azure** (stage B): Azure Key Vault for both, by workload identity.
 - **The wiring** the umbrella writes into its dependencies' values. Each item is a value the form fills or a
   default:
@@ -259,24 +262,31 @@ same version.
     channel, and an Enterest tenant when the form names one) - its store on the external PostgreSQL, and its channel
     key from the key store.
   - hugr-platform: tresor's host, kista's prefix, `hugrInit`, `firstPolicy`, and the groups from the form.
-- **The databases: one external PostgreSQL** (the owner, 2026-10-21). The form names the server: the provider's managed
-  one, or the organisation's. On it, the policy catalog, tresor's state and kista's store each get a database and a
-  login of their own.
+- **The databases: one PostgreSQL, external or internal** (the owner, 2026-10-21). On it, the policy catalog, tresor's
+  state and kista's store each get a database and a login of their own.
+  - `database.mode: external`: the form names the server, the provider's managed one or the organisation's.
+  - `database.mode: internal`, for the catalogs of the clouds other than Azure (OTC, Hetzner, IONOS, STACKIT): the
+    umbrella runs PostgreSQL in the cluster, by CloudNativePG (Apache 2.0, the operator a dependency, the cluster in a
+    namespace of its own). Its superuser Secret is `hugr-init`'s administrator credential.
   - `hugr-init` makes all three with the administrator's one-time Secret, which it then deletes.
   - The catalog's login goes to tresor only, as today.
   - tresor and kista cannot read their own login from tresor: each password is a generated value in a Secret of that
     service's namespace (tresor's `password_ref`, kista's `password_file`), which its chart reads on every new
-    connection. These two passwords are the only ones at rest, each in its own service's namespace. On Azure (stage B)
-    both log in with Entra and hold no password.
+    connection. These two passwords are the only ones at rest, each in its own service's namespace. For PostgreSQL
+    outside a cloud's IAM this is the only way for now (the owner, 2026-10-21). On Azure (stage B) both log in with
+    Entra and hold no password. Later, tresor and kista read their database passwords from the key store (a Vault),
+    a product gap of each.
   - Order: tresor's and kista's databases must exist before their pods are ready, while `hugr-init`'s write into
     tresor needs tresor up. So `hugr-init` runs twice: as a `pre-install` hook (the three databases, and the two
     services' Secrets, by a Role in each of their namespaces), then as today (the catalog's secret, the grants, the
     administrator's Secret deleted).
 - **Steps:**
-  1. the chart with `keys.mode: external` and the per-service CAs. The demo installs through it, its OpenBao as the
-     external store.
-  2. `keys.mode: internal`.
-  3. the release publishes the umbrella beside `hugr-platform`.
+  1. the chart with `keys.mode: external`, `database.mode: external` and the per-service CAs. The demo installs through
+     it, its OpenBao and its PostgreSQL as the external ones.
+  2. `keys.mode: internal` (OpenBao).
+  3. `database.mode: internal` (CloudNativePG).
+  4. `keys.mode: secret`, once kista takes a key from a Secret.
+  5. the release publishes the umbrella beside `hugr-platform`.
 
 ### Stage A: the operator's release
 
