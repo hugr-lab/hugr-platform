@@ -232,6 +232,13 @@ password was set by a run that failed before its write is set again by the next 
 - **tresor and kista**: subcharts packaged from their source at the dependency's version into the chart's `charts/`.
   The demo runs their main, as it does today.
 - **Keycloak, PostgreSQL and OpenBao** stay the demo's own.
+- **The first deployment installs itself** (built 2026-10-21):
+  - the chart's `hugr-init` makes the catalog's database, login and secret;
+  - tresor trusts the cluster's issuer for it;
+  - the platform carries `firstPolicy`, and a first node writes it - check 1 asserts it;
+  - the demo's own data (the source, the analysts, the catalog `demo`) is written after the platform, through the
+    secret `hugr-init` made;
+  - a run again drops the catalog, its login and its secret first.
 - **Check 2** gets stronger: no door Secret is left in the namespace, and each node's certificate comes from its own
   pod.
 
