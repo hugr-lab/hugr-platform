@@ -231,7 +231,7 @@ same version.
 
 - **Its dependencies:**
   - `hugr-platform`, this repository's chart, packaged together;
-  - `tresor-server` 0.7.2 and `kista` 0.1.2, from `oci://ghcr.io/hugr-lab/charts`, both signed. Both render their
+  - `tresor-server` 0.7.3 and `kista` 0.1.2, from `oci://ghcr.io/hugr-lab/charts`, both signed. Both render their
     `config` through `tpl` (`configTemplate: true`; their specs 028 and 0025), so the umbrella's values name its
     global facts there;
   - optionally `openbao`, below.
@@ -275,8 +275,10 @@ same version.
         who reads the namespace's Secrets (the seal and the recovery key) is: OpenBao's namespace is its boundary.
         Nothing is removed; a key of another type is refused, never changed.
       - **TLS**: the serving certificate from the umbrella's OpenBao CA, read again when cert-manager renews it
-        (`tls_auto_reload`). tresor-server reads its certificate once at start (`ServeTLS`), so a renewed one reaches it
-        only with a restart - a product gap to relay (kista reloads its own).
+        (`tls_auto_reload`). tresor-server read its certificate once at start (`ServeTLS`), so a renewed one reached it
+        only with a restart. The gap was relayed (the owner, 2026-10-21) and closed: tresor-server 0.7.3 (its spec 029)
+        re-reads the pair every 30 s, keeps the old one while a new pair does not check, and the umbrella pins it. kista
+        reloads its own.
       - **Break-glass**: OpenBao 2.5.3 turned the unauthenticated `sys/generate-root` off, and its successor
         `sys/generate-root-token` wants a token. The pod therefore has a second listener on its own loopback with the
         legacy endpoints on: `kubectl exec` and the recovery key make a root token when no other is left.
