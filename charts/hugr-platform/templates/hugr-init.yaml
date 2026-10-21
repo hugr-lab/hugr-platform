@@ -1,0 +1,148 @@
+{{/* hugr-init, the install Job (spec 005): the policy catalog's database and its login, the login into tresor as the
+catalog's secret, its grants to the groups' identities; then the database administrator's one-time Secret deleted. A
+hook ahead of the first groups (post-install, post-upgrade: a run again only grants), under a ServiceAccount of its own
+- no group's, so the admission policies leave it alone. tresor takes its projected token (tresor-server 0.7.0: the
+cluster's issuer, client:system:serviceaccount:<namespace>:hugr-init among its administrators). */}}
+{{- if .Values.hugrInit.enabled }}
+{{- $init := .Values.hugrInit }}
+{{- $secret := default "hugr_policy_catalog" (.Values.platform.spec.catalog).secret }}
+{{- if not $init.tresor.grants }}
+{{- fail "hugrInit.tresor.grants names the groups' identities in tresor (role:... or group:...)" }}
+{{- end }}
+{{- $hook := dict "helm.sh/hook" "post-install,post-upgrade" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hugr-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: init
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
+---
+# the one-time Secret, by its name only: what the Job deletes after use
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hugr-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ $init.catalog.adminSecret | quote }}]
+    verbs: [delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hugr-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: hugr-init}
+subjects:
+  - {kind: ServiceAccount, name: hugr-init, namespace: {{ .Release.Namespace }}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hugr-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
+data:
+  config.yaml: |
+    tresor:
+      url: {{ required "hugrInit.tresor.url is required" $init.tresor.url | quote }}
+      tokenFile: /var/run/secrets/hugr-init/tresor/token
+      caFile: /etc/hugr-ca/ca.crt
+      grants: {{ $init.tresor.grants | toJson }}
+    catalog:
+      secret: {{ $secret | quote }}
+      engine: {{ $init.catalog.engine | quote }}
+      host: {{ required "hugrInit.catalog.host is required" $init.catalog.host | quote }}
+      port: {{ $init.catalog.port }}
+      database: {{ $init.catalog.database | quote }}
+      login: {{ $init.catalog.login | quote }}
+      sslmode: {{ $init.catalog.sslmode | quote }}
+      # where a node finds the platform's CA bundle (its HUGR_CA_FILE): the secret's sslrootcert, verified
+      nodeCAFile: {{ printf "/etc/hugr/ca/%s" (default "ca.crt" ((.Values.platform.spec.caBundle).configMapRef).key) | quote }}
+      admin:
+        secretName: {{ $init.catalog.adminSecret | quote }}
+        dir: /var/run/secrets/hugr-init/db-admin
+        database: {{ $init.catalog.adminDatabase | quote }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hugr-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: init
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-10"
+spec:
+  backoffLimit: {{ $init.backoffLimit }}
+  activeDeadlineSeconds: {{ $init.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "hugr.labels" . | nindent 8 }}
+        app.kubernetes.io/component: init
+    spec:
+      serviceAccountName: hugr-init
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: hugr-init
+          image: {{ include "hugr.operatorImage" . }}
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          command: [/hugr-init, --config, /etc/hugr-init/config.yaml]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            {{- toYaml $init.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/hugr-init, readOnly: true}
+            - {name: ca, mountPath: /etc/hugr-ca, readOnly: true}
+            - {name: tresor-token, mountPath: /var/run/secrets/hugr-init/tresor, readOnly: true}
+            - {name: db-admin, mountPath: /var/run/secrets/hugr-init/db-admin, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: hugr-init}
+        # the platform's CA bundle (the operator writes it): tresor's certificate and the database's
+        - name: ca
+          configMap: {name: {{ include "hugr.bundleName" . }}}
+        - name: tresor-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ $init.tresor.audience | quote }}
+                  expirationSeconds: 600
+        # optional: deleted by the first run that made the login, absent at a run again
+        - name: db-admin
+          secret: {secretName: {{ $init.catalog.adminSecret | quote }}, optional: true}
+{{- end }}

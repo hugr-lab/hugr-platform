@@ -9,7 +9,7 @@ GROUPS_=(a b)
 NODE_CPU="${HUGR_DEMO_NODE_CPU:-1}"
 
 install_db() {
-	step "PostgreSQL: the policy catalog (hugr) and a source (sales)"
+	step "PostgreSQL: the server, and a source (sales); the policy catalog is hugr-init's"
 	namespace db
 	k -n db delete secret pg --ignore-not-found >/dev/null
 	k -n db create secret generic pg --from-file=password="$(secret_file pg openssl rand -hex 24)" >/dev/null
@@ -43,25 +43,25 @@ YAML
 	rollout db pg
 	pg_answers() { k -n db exec deploy/pg -- psql -h 127.0.0.1 -qU postgres -c "SELECT 1"; }
 	eventually 60 "PostgreSQL answers" pg_answers
-	# the policy catalog is the demo's own: made again by every run's first deployment
+	# the policy catalog is made again by every run: hugr-init (the platform's install Job, spec 005) makes its database
+	# and its login with a password it writes into tresor only; the run's are dropped here (reset_catalog drops the
+	# tresor secret, which names the login)
 	k -n db exec deploy/pg -- psql -qU postgres -c "DROP DATABASE IF EXISTS hugr WITH (FORCE)" >/dev/null ||
 		fail "dropping the catalog's database"
-	k -n db exec deploy/pg -- psql -qU postgres -c "CREATE DATABASE hugr" >/dev/null || fail "the catalog's database"
+	k -n db exec deploy/pg -- psql -qU postgres -c "DROP ROLE IF EXISTS hugr_catalog" >/dev/null ||
+		fail "dropping the catalog's login"
 	k -n db exec deploy/pg -- sh -c 'psql -qU postgres -tc "SELECT 1 FROM pg_database WHERE datname = '"'"'sales'"'"'" |
 		grep -q 1 || psql -qU postgres -c "CREATE DATABASE sales"' >/dev/null || fail "the source's database"
 	k -n db exec deploy/pg -- psql -qU postgres -v ON_ERROR_STOP=1 -d sales -c "CREATE TABLE IF NOT EXISTS orders (id int
 		PRIMARY KEY, region text, amount numeric); INSERT INTO orders VALUES (1, 'north', 10), (2, 'south', 20),
 		(3, 'north', 30) ON CONFLICT DO NOTHING" >/dev/null || fail "the source's table"
-	# two logins, neither the superuser: the catalog's owner, and a reader of the source's one table. The passwords go
-	# on stdin, never on a command line.
+	# the source's login, not the superuser: a reader of its one table. The password goes on stdin, never on a command
+	# line.
 	k -n db exec -i deploy/pg -- psql -qU postgres -v ON_ERROR_STOP=1 >/dev/null <<SQL || fail "PostgreSQL's logins"
 DO \$\$ BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'hugr_catalog') THEN CREATE ROLE hugr_catalog LOGIN; END IF;
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sales_reader') THEN CREATE ROLE sales_reader LOGIN; END IF;
 END \$\$;
-ALTER ROLE hugr_catalog PASSWORD '$(secret_value pg-catalog)';
 ALTER ROLE sales_reader PASSWORD '$(secret_value pg-sales)';
-ALTER DATABASE hugr OWNER TO hugr_catalog;
 REVOKE ALL ON DATABASE sales FROM PUBLIC;
 GRANT CONNECT ON DATABASE sales TO sales_reader;
 \\c sales
@@ -69,7 +69,7 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO sales_reader;
 GRANT SELECT ON orders TO sales_reader;
 SQL
-	ok "PostgreSQL in db: the catalog's database (its owner hugr_catalog) and the source sales.orders (sales_reader)"
+	ok "PostgreSQL in db: the source sales.orders (sales_reader); the catalog's database and login are hugr-init's"
 }
 
 # --- tresor-server: the nodes' secrets, the seeder its admin ---------------------------------------------------------
@@ -90,6 +90,27 @@ install_tresor() {
 "
 	done
 	[ -z "$TRESOR_GROUPS_CLAIM" ] || groups_claim="groups_claim: $TRESOR_GROUPS_CLAIM"
+	# the cluster's ServiceAccount issuer (tresor-server 0.7.0, its spec 026): hugr-init, the platform's install Job,
+	# logs in with its projected token. A private one (kind, minikube) is read with tresor's own token, by the cluster's
+	# CA; a public one (AKS) as any OIDC issuer
+	local cluster_issuer cluster_files="" cluster_values=""
+	cluster_issuer="$(k get --raw /.well-known/openid-configuration |
+		python3 -c 'import json, sys; print(json.load(sys.stdin)["issuer"])')" || fail "the cluster's ServiceAccount issuer"
+	case "$cluster_issuer" in
+	https://kubernetes.default.svc*)
+		cluster_values="clusterIssuer: {enabled: true}"
+		cluster_files="
+      ca_file: /var/run/tresor/cluster/ca.crt
+      discovery_token_file: /var/run/tresor/cluster/token"
+		k apply -f - >/dev/null <<YAML || fail "tresor's right to the cluster's issuer discovery"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: hugr-demo-tresor-issuer-discovery}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:service-account-issuer-discovery}
+subjects: [{kind: ServiceAccount, name: tresor, namespace: tresor}]
+YAML
+		;;
+	esac
 	cat >"$WORK/tresor.yaml" <<YAML
 fullnameOverride: tresor
 image: {repository: "$(img_repo tresor-server)", tag: demo, pullPolicy: $PULL}
@@ -101,6 +122,7 @@ extraVolumes: [{name: ca, configMap: {name: ca}}]
 extraVolumeMounts: [{name: ca, mountPath: /etc/tresor-ca, readOnly: true}]
 resources: {requests: {cpu: 10m, memory: 32Mi}}
 service: {port: 443}
+$cluster_values
 config:
   public_url: https://$TRESOR_HOST
   issuers:
@@ -110,9 +132,13 @@ config:
       $groups_claim
       service: {claim: $TRESOR_SERVICE_CLAIM}
       service_flows: [client_credentials, private_key_jwt, federated]
+    - issuer: $cluster_issuer
+      audience: duckdb-secrets$cluster_files
+      service: {claim: kubernetes.io, client_claim: sub}
   policy:
-    # the seeder (the first deployment), and the console stand's person (spec 003: tresor's console mounted)
-    admins: [role:demo_seeder, role:secrets_admin]
+    # the seeder (the demo's data), the console stand's person (spec 003: tresor's console mounted), and hugr-init -
+    # by its subject: beside another issuer, a client: name could be that issuer's client of the same name
+    admins: [role:demo_seeder, role:secrets_admin, "subject:$cluster_issuer|system:serviceaccount:hugr:hugr-init"]
     # the nodes act for their sessions (ACT_FOR_SESSIONS); an actor is a service, client:<id>
     actors:
 $actors

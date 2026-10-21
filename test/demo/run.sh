@@ -18,7 +18,7 @@
 #   NODE_IMAGE        a published hugr-node image instead of the dry run's (the extensions still come from the dry run
 #                     or HUGR_NODE_DIST: they must be the image's duckdb's)
 #   TRESOR_SERVER_DIR, KISTA_DIR, HUGR_NODE_DIR   checkouts instead of each one's main
-#   HUGR_DEMO_ONLY    up to a step: images, db, idp, tresor, kista, seed, operator, platform (for working on one)
+#   HUGR_DEMO_ONLY    up to a step: images, db, idp, tresor, kista, operator, platform, seed (for working on one)
 #   HUGR_DEMO_NODE_CPU  a node's CPU request (1; CI's 4-core runner: 250m - the node rounds it up to 1 thread)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -78,12 +78,13 @@ up() {
 	stage tresor || return 0
 	install_kista
 	stage kista || return 0
-	seed
-	stage seed || return 0
+	reset_catalog
 	install_operator
 	stage operator || return 0
 	install_platform
 	stage platform || return 0
+	seed
+	stage seed || return 0
 }
 
 case "$COMMAND" in

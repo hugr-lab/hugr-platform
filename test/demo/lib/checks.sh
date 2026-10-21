@@ -109,7 +109,18 @@ check_entry() {
 			[ "$(k -n hugr get lease "$pod" -o jsonpath='{.spec.holderIdentity}')" = "$pod" ] || fail "no Lease of $pod"
 		done
 	done
-	ok "every node fetched its document from the operator, logged in to tresor, attached the catalog; each holds its Lease"
+	# spec 005: the platform installed itself - hugr-init made the catalog and its secret, a first node wrote the first
+	# policy into it (nodes that start together may both write it; one that comes after writes nothing)
+	local writers=0
+	for g in "${GROUPS_[@]}"; do
+		for pod in $(pods "$g"); do
+			grep -q 'step 5 first policy: written' "$WORK/logs/$pod.log" && writers=$((writers + 1))
+			grep -q 'step 5 first policy: \(written\|the catalog holds its policy\)' "$WORK/logs/$pod.log" ||
+				fail "node $pod's log shows no first-policy decision"
+		done
+	done
+	[ "$writers" -ge 1 ] || fail "no node wrote the first policy"
+	ok "every node fetched its document from the operator, logged in to tresor, attached the catalog hugr-init made ($writers wrote the first policy); each holds its Lease"
 }
 
 check_federation() {

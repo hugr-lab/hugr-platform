@@ -35,3 +35,10 @@ platform:
 groups:
   - name: etl
     spec: {replicas: 2, size: large, identity: {clientID: 00000000-0000-0000-0000-000000000001}, doors: {quack: true}}
+hugrInit:
+  enabled: true
+  tresor:
+    url: https://tresor.tresor.svc
+    grants: [role:hugr_node]
+  catalog:
+    host: hugr-catalog.postgres.database.azure.com
