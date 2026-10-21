@@ -142,6 +142,8 @@ their volumes). It pins their charts (tresor-server 0.7.3, kista 0.1.2) and wire
   whose URL `kubectl get --raw /.well-known/openid-configuration` gives.
 - **kista's bootstrap**: the tenant `hugr`, the signed channel `platform` for the node's DuckDB (`global.duckdbVersion`:
   a release `vX.Y.Z`, or a commit's dev version) and its key.
+- **The node**: the chart pins `hugr-node:v0.2.0`, whose DuckDB is v2.0.0 (`global.duckdbVersion`'s default). The two
+  change together.
 
 ```sh
 helm dependency build charts/hugr

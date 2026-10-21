@@ -3,7 +3,7 @@ kind: HugrPlatform
 metadata: {name: hugr, namespace: hugr}
 spec:
   node:
-    image: ghcr.io/hugr-lab/hugr-node:v0.1.0
+    image: ghcr.io/hugr-lab/hugr-node:v0.2.0
   idp:
     issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
   tresor: {host: "tresor.example:443", scope: "api://tresor/.default"}

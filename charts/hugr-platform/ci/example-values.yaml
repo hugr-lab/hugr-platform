@@ -8,7 +8,7 @@ admissionPolicies:
 platform:
   spec:
     node:
-      image: ghcr.io/hugr-lab/hugr-node:v0.1.0
+      image: ghcr.io/hugr-lab/hugr-node:v0.2.0
     idp:
       issuer: https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0
     tresor:
