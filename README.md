@@ -117,7 +117,7 @@ seated it by the label the node wrote into its cookie or connection id.
 
 `charts/hugr` (spec 005) installs the platform together with tresor-server, kista and its key store, each in a
 namespace of its own (`hugr-tresor`, `hugr-kista`, `hugr-openbao`; made by the release and kept when it goes, with
-their volumes). It pins their charts (tresor-server 0.7.2, kista 0.1.2) and wires them from one set of facts under
+their volumes). It pins their charts (tresor-server 0.7.3, kista 0.1.2) and wires them from one set of facts under
 `global`:
 
 - **TLS**: each service gets a CA of its own, made once in its namespace; cert-manager issues its serving certificate

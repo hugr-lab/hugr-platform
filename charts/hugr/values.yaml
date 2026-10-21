@@ -123,7 +123,8 @@ openbao:
 
 # --- tresor-server (its values; config rendered through tpl) -------------------------------------------------------
 tresor:
-  # tresor-server 0.7.2 (its spec 028): config rendered through tpl - a literal {{ there is written {{ "{{" }}
+  # tresor-server 0.7.3: config rendered through tpl (its spec 028) - a literal {{ there is written {{ "{{" }}; the
+  # certificate cert-manager renews read again in service (its spec 029)
   configTemplate: true
   namespaceOverride: hugr-tresor # = global.namespaces.tresor (checked)
   fullnameOverride: tresor
