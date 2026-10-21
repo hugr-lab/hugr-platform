@@ -11,3 +11,4 @@ rewrite history.
 | [003](003-console/spec.md) | the console: one place to run the platform | accepted |
 | [004](004-demo/spec.md) | the demo: the platform in one cluster (kind, minikube, AKS by hand) | implemented |
 | [005](005-packaging/spec.md) | packaging: one Helm chart, then the Azure Managed Application | accepted |
+| [008](008-upgrades/spec.md) | upgrades: the platform, release by release - the services by Helm, the nodes by the operator in order | accepted |
