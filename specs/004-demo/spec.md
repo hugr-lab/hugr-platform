@@ -65,25 +65,31 @@ provider is the only difference between the clusters:
 | namespace | what | how it is made |
 | --- | --- | --- |
 | `idp` | Keycloak 26.6, TLS by the run's CA | a Deployment and a realm import (below) |
-| `tresor` | tresor-server, its Kubernetes store | tresor-server's Helm chart, its image built from a checkout |
-| `kista` | kista: the tenant `hugr`, its signed channel `demo` for the node's duckdb, the node's extensions as its releases; OpenBao beside it | kista's Helm chart, its image built from a checkout; every asset added by `kista admin` (one it holds answers so). Its profile is `dev`: SQLite with the blobs beside it, where another profile needs a store and a blob domain configured; signing is as strict (`software_keys`, the key in OpenBao). The channel's signing key is in OpenBao Transit (kubernetes auth for kista's ServiceAccount): kista refuses a key from a mounted file by design, and its own kind test does the same. OpenBao runs in dev mode, in memory: a restarted one has a new key, so kista's state starts anew then |
-| `db` | PostgreSQL: the policy catalog's database `hugr` (made anew on every `up`) and a source database `sales` | a Deployment, plain TCP inside the throwaway cluster. Two logins, neither the superuser: `hugr_catalog` owns the catalog's database, `sales_reader` may only read `sales.orders` - so the source's login, which every node may use, cannot touch the catalog |
-| `hugr` | the operator, `HugrPlatform`, the groups `a` and `b` | `test/demo/overlay` (below), the image built here |
+| `openbao` | OpenBao, standing in for the organisation's vault: the Transit keys `hugr-channel` (kista's channel) and `hugr-tresor` (tresor's KEK), a Kubernetes-auth role for each service's ServiceAccount | a Deployment in dev mode, in memory, TLS by the run's CA. A restarted one has new keys, which is why every `up` installs the services afresh |
+| `hugr-tresor` | tresor-server: its state on PostgreSQL, its KEK in OpenBao | the umbrella chart `charts/hugr` (spec 005), the pinned release's image |
+| `hugr-kista` | kista: the tenant `hugr`, its signed channel `platform` for the node's duckdb, the node's extensions as its releases | the umbrella chart, the pinned release's image. Its bootstrap makes the tenant, the channel, the version and the key; every asset is added by `kista admin` (one it holds answers so). Its store is on PostgreSQL, its blobs on a volume. The channel's key is in OpenBao Transit: kista refuses a key from a mounted file by design |
+| `db` | PostgreSQL 18: the databases `hugr` (the policy catalog), `tresor` and `kista`, each with its login, all made by `hugr-init` on every `up`; and a source database `sales` | a Deployment, TLS by the run's CA (everyone connects with `verify-full`). `sales_reader` may only read `sales.orders`, so the source's login, which every node may use, cannot touch the catalog |
+| `hugr` | the operator, `HugrPlatform`, the groups `a` and `b`, `hugr-init` | the umbrella chart, the operator's image built here |
 
-Every https server has a certificate of a CA made for the run (30 days, made again two days before its end; a
-certificate is kept while it has a day left, and a service whose certificate changed is restarted). The platform's
-`caBundle` holds the system roots, read from the node's image in the cluster, plus that CA: `HUGR_CA_FILE` replaces the
-node's roots (hugr-node spec 006).
+Every `up` installs the umbrella afresh. It first deletes the groups, the release, the platform's and the services'
+namespaces, and the three databases and logins. The cluster, Keycloak, OpenBao, PostgreSQL and the images stay.
+
+Every https server of the demo's own (Keycloak, OpenBao, PostgreSQL) has a certificate of a CA made for the run. The
+CA lasts 30 days and is made again two days before its end. A certificate is kept while it has a day left and names
+what is asked, and a service whose certificate changed is restarted. The run's CA is also the platform's internal CA.
+tresor and kista get their certificates from the umbrella's CA of each. The operator writes the platform's bundle:
+the system roots, the internal CA, the services' CAs and the private ones (the database's, Keycloak's).
+`HUGR_CA_FILE` replaces the node's roots (hugr-node spec 006).
 
 ### The images
 
 - **The operator** is built from this checkout and loaded into the cluster (or its registry, on AKS).
-- **On AKS** every image is built here for `linux/amd64` and pushed to the run's registry. tresor-server and kista
-  cross-compile (BuildKit's platform arguments); the operator's and the node's images build emulated on an arm64
-  machine. The push's token (`az acr login --expose-token`) goes into a docker config in the run's state, written so
+- **On AKS** every image is built here for `linux/amd64` and pushed to the run's registry. The operator's
+  cross-compiles (BuildKit's platform arguments); the node's builds emulated on an arm64 machine. The push's token (`az acr login --expose-token`) goes into a docker config in the run's state, written so
   that docker keeps it in that file and never in the developer's keychain, and dies with the registry.
-- **tresor-server and kista** are built from a checkout each (`TRESOR_SERVER_DIR`, `KISTA_DIR`; otherwise their main
-  is cloned), as hugr-node's bootstrap e2e builds them.
+- **tresor-server and kista** are the releases the umbrella chart pins: their charts and their published images.
+- **On minikube** an image goes in by `docker save | docker load`, judged by its build time. `minikube image load
+  --overwrite` kept the old image under the tag, and runs before 2026-10-21 tested a stale operator and node.
 - **hugr-node** is built from the assets of a hugr-node release dry run, so nothing new is published.
   - The release workflow's dry run builds the node and its extensions for both platforms and keeps them as an
     artifact (`dist-linux_<arch>`, spec 008 there).
@@ -258,10 +264,9 @@ Then the secrets scan (Security).
 
 ### The overlay
 
-`test/demo/overlay` is `config/default` without cert-manager, with one replica and the image loaded into the cluster
-(`imagePullPolicy: Never`). The script makes the operator's certificate (SAN `hugr-platform.hugr.svc`) and puts it in
-the Secret `hugr-platform-tls`. It writes the run's CA into the webhook's `caBundle`, and waits until the webhook
-answers a server-side dry run. Everything else is the shipped install.
+`test/demo/overlay` was the operator's install before the chart (spec 005): `config/default` without cert-manager,
+with one replica. The demo installs through the umbrella chart now, and a run on a kept cluster deletes what the
+overlay installed there. After the install it still waits until the webhook answers a server-side dry run.
 
 ### CI
 
@@ -280,7 +285,7 @@ AKS is never run by CI: it costs, and it needs a tenant's rights.
   backgrounded shell function kept a `$(...)` pipe open under bash 5 (macOS's bash 3.2 does not), so the background
   processes are kubectl itself.
 - A run that finds no such artifact fails and says so; it never skips silently.
-- tresor-server and kista are built from their main: the run breaks when theirs does.
+- tresor-server and kista are the releases the umbrella pins: a new release of either is a pin bump here.
 
 ## Security
 

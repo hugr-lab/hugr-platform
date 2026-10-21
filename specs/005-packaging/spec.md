@@ -239,7 +239,7 @@ same version.
   namespace of their own (their charts' `namespaceOverride`): `<prefix>-tresor`, `<prefix>-kista`, `<prefix>-openbao`.
   - The umbrella makes these namespaces, annotated `helm.sh/resource-policy: keep`, so an uninstall leaves their PVCs.
   - Their names are values with defaults, because a subchart's values cannot be computed from the release. The
-    services' addresses follow from them: `tresor.<ns>.svc`, `kista.<ns>.svc`.
+    services' addresses follow from them: `tresor.<ns>.svc`, `<release>-kista.<ns>.svc`.
 - **TLS: each service has its own CA** (the owner, 2026-10-21):
   - In tresor's and kista's namespaces, a CA is made once at install and kept across upgrades (Helm's `lookup`).
     cert-manager issues and renews the service's serving certificate from a CA Issuer of that namespace.
@@ -285,8 +285,7 @@ same version.
   - `hugr-init` makes all three with the administrator's one-time Secret, which it then deletes.
   - The catalog's login goes to tresor only, as today.
   - tresor and kista cannot read their own login from tresor: each password is a generated value in a Secret of that
-    service's namespace (tresor's `password_ref`, kista's `password_file`), which its chart reads on every new
-    connection. These two passwords are the only ones at rest, each in its own service's namespace. For PostgreSQL
+    service's namespace, mounted as the service's `password_file`. These two passwords are the only ones at rest, each in its own service's namespace. For PostgreSQL
     outside a cloud's IAM this is the only way for now (the owner, 2026-10-21). On Azure (stage B) both log in with
     Entra and hold no password. Later, tresor and kista read their database passwords from the key store (a Vault),
     a product gap of each.
