@@ -1,0 +1,48 @@
+# The example the umbrella is linted and rendered with: one platform, its services, an external PostgreSQL and Vault
+global:
+  database:
+    host: hugr-pg.example.net
+  idp:
+    issuer: https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0
+    audience: api://hugr
+    tresorAudience: api://tresor
+    tresorScope: api://tresor/.default
+  clusterIssuer:
+    url: https://kubernetes.default.svc.cluster.local
+  keys:
+    vault:
+      address: https://vault.example.net:8200
+  duckdbVersion: v2.0.0
+hugr-platform:
+  console:
+    dnsNames: [console.hugr.example]
+  front:
+    dnsNames: [hugr.example]
+  platform:
+    spec:
+      node: {image: ghcr.io/hugr-lab/hugr-node:v0.1.0}
+      front: {replicas: 2}
+      console:
+        clientID: hugr-console
+        audiences: {nodes: api://hugr, tresor: api://tresor}
+      firstPolicy:
+        issuer: {name: corp, rolesClaim: roles}
+        administrators: hugr-admins
+      sizes:
+        large:
+          resources:
+            requests: {cpu: "8", memory: 32Gi}
+            limits: {memory: 32Gi}
+          temp: {medium: local, size: 200Gi}
+      plan: {maxNodes: 6, sizes: [large]}
+  hugrInit:
+    tresor:
+      grants: [role:hugr_node]
+  groups:
+    - name: etl
+      spec: {replicas: 2, size: large, identity: {clientID: 00000000-0000-0000-0000-000000000001}}
+tresor:
+  config:
+    policy:
+      actors:
+        - {principal: "client:00000000-0000-0000-0000-000000000001", verbs: [use]}

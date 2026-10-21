@@ -1,0 +1,32 @@
+{{/* What the services' values must agree on with global (a subchart's values cannot be computed from the parent's,
+so they are written twice there - checked here), and the install's required facts. */}}
+{{- $g := .Values.global }}
+{{- if ne .Values.tresor.namespaceOverride $g.namespaces.tresor }}
+{{- fail "tresor.namespaceOverride must be global.namespaces.tresor" }}
+{{- end }}
+{{- if ne .Values.kista.namespaceOverride $g.namespaces.kista }}
+{{- fail "kista.namespaceOverride must be global.namespaces.kista" }}
+{{- end }}
+{{- if ne (toString .Values.tresor.clusterIssuer.enabled) (toString $g.clusterIssuer.private) }}
+{{- fail "tresor.clusterIssuer.enabled must be global.clusterIssuer.private" }}
+{{- end }}
+{{- if ne (index .Values.kista.projectedTokens 0).audience $g.keys.vault.audience }}
+{{- fail "kista.projectedTokens[0].audience must be global.keys.vault.audience" }}
+{{- end }}
+{{- if ne .Values.tresor.vaultToken.audience $g.keys.vault.audience }}
+{{- fail "tresor.vaultToken.audience must be global.keys.vault.audience" }}
+{{- end }}
+{{- $_ := required "global.database.host is required (a PostgreSQL 18 server)" $g.database.host }}
+{{- if not (hasPrefix "https://" $g.idp.issuer) }}
+{{- fail "global.idp.issuer is the organisation IdP's https URL" }}
+{{- end }}
+{{- if not (hasPrefix "https://" $g.clusterIssuer.url) }}
+{{- fail "global.clusterIssuer.url is the cluster's ServiceAccount issuer (kubectl get --raw /.well-known/openid-configuration)" }}
+{{- end }}
+{{- if ne $g.keys.mode "external" }}
+{{- fail "global.keys.mode: external is the one built so far (internal and secret follow, spec 005)" }}
+{{- end }}
+{{- if not (hasPrefix "https://" $g.keys.vault.address) }}
+{{- fail "global.keys.vault.address is the vault's https URL" }}
+{{- end }}
+{{- $_ := required "global.duckdbVersion is required: the node's DuckDB version, kista's channel serves it" $g.duckdbVersion }}

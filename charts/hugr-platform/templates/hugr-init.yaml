@@ -66,18 +66,18 @@ metadata:
 data:
   config.yaml: |
     tresor:
-      url: {{ required "hugrInit.tresor.url is required" $init.tresor.url | quote }}
+      url: {{ required "hugrInit.tresor.url is required" (tpl $init.tresor.url .) | quote }}
       tokenFile: /var/run/secrets/hugr-init/tresor/token
       caFile: /etc/hugr-ca/ca.crt
       grants: {{ $init.tresor.grants | toJson }}
     catalog:
       secret: {{ $secret | quote }}
       engine: {{ $init.catalog.engine | quote }}
-      host: {{ required "hugrInit.catalog.host is required" $init.catalog.host | quote }}
+      host: {{ required "hugrInit.catalog.host is required" (tpl $init.catalog.host .) | quote }}
       port: {{ $init.catalog.port }}
       database: {{ $init.catalog.database | quote }}
       login: {{ $init.catalog.login | quote }}
-      sslmode: {{ $init.catalog.sslmode | quote }}
+      sslmode: {{ tpl $init.catalog.sslmode . | quote }}
       # where a node finds the platform's CA bundle (its HUGR_CA_FILE): the secret's sslrootcert, verified
       nodeCAFile: {{ printf "/etc/hugr/ca/%s" (default "ca.crt" ((.Values.platform.spec.caBundle).configMapRef).key) | quote }}
       admin:
