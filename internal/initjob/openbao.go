@@ -140,8 +140,9 @@ func servicePolicy(mount string, s OpenBaoService) string {
 	return b.String()
 }
 
-// initPolicy is the Job's own: what the configuration needs, each path by name - it may write the services' policies
-// and roles, never another policy or role, and it reads no key's material.
+// initPolicy is the Job's own: what the configuration needs, each path by name, and no key's material. It includes its
+// own policy (a release that adds a service widens it), so the role administers OpenBao in effect - as whoever reads
+// OpenBao's namespace's Secrets (the seal and the recovery key) does: that namespace is OpenBao's boundary.
 func initPolicy(c *OpenBaoConfig) string {
 	paths := map[string][]string{
 		"sys/mounts":                                   {"read"},
@@ -215,8 +216,10 @@ func RunOpenBao(ctx context.Context, c *OpenBaoConfig, bao *OpenBao, recovery Re
 			return err
 		}
 		if token, err = bao.Login(ctx, c.AuthMount, c.Init.Role, jwt); err != nil {
-			return fmt.Errorf("hugr-init: OpenBao is initialised, and the Job's login (role %s) failed: %w", c.Init.Role,
-				err)
+			return fmt.Errorf("hugr-init: OpenBao is initialised, and the Job's login (role %s) failed: %w - an OpenBao "+
+				"whose first run stopped before it made that role holds nothing yet: drop its database and the Secret %s "+
+				"and run again; one that served already needs the break-glass (its recovery key)", c.Init.Role, err,
+				c.RecoverySecret)
 		}
 		defer func() { _ = bao.RevokeSelf(context.WithoutCancel(ctx), token) }()
 		if present, err := recovery.Present(ctx); err == nil && !present {
@@ -408,7 +411,7 @@ func (b *OpenBao) Login(ctx context.Context, mount, role, jwt string) (string, e
 			ClientToken string `json:"client_token"`
 		} `json:"auth"`
 	}
-	if _, err := b.do(ctx, "", http.MethodPost, "auth/"+mount+"/login",
+	if _, err := b.call(ctx, "", http.MethodPost, "auth/"+mount+"/login",
 		map[string]any{"role": role, "jwt": jwt}, &out); err != nil {
 		return "", err
 	}
@@ -424,22 +427,30 @@ func (b *OpenBao) RevokeSelf(ctx context.Context, token string) error {
 	return err
 }
 
-// write is a configuration call, each idempotent: one answered 5xx (a node handing its HA lock over, a standby that
-// lost the active) is asked again, a few times
 func (b *OpenBao) write(ctx context.Context, token, method, path string, body any) error {
-	var err error
+	_, err := b.call(ctx, token, method, path, body, nil)
+	return err
+}
+
+// call is a request every one of the phase's calls but init may repeat (each idempotent): one answered 5xx or not
+// answered at all (a node handing its HA lock over, a standby that lost the active, a pod restarting) is asked again,
+// a few times
+func (b *OpenBao) call(ctx context.Context, token, method, path string, body, out any) (int, error) {
+	var (
+		status int
+		err    error
+	)
 	for attempt := 0; attempt < 5; attempt++ {
-		var status int
-		if status, err = b.do(ctx, token, method, path, body, nil); err == nil || status < 500 {
-			return err
+		if status, err = b.do(ctx, token, method, path, body, out); err == nil || (status != 0 && status < 500) {
+			return status, err
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return status, ctx.Err()
 		case <-time.After(b.Poll):
 		}
 	}
-	return err
+	return status, err
 }
 
 // list is the set of a listing's keys (sys/mounts, sys/auth: "transit/", "kubernetes/").
@@ -447,7 +458,7 @@ func (b *OpenBao) list(ctx context.Context, token, path string) (map[string]bool
 	var out struct {
 		Data map[string]json.RawMessage `json:"data"`
 	}
-	if _, err := b.do(ctx, token, http.MethodGet, path, nil, &out); err != nil {
+	if _, err := b.call(ctx, token, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 	set := map[string]bool{}
@@ -464,7 +475,7 @@ func (b *OpenBao) keyType(ctx context.Context, token, mount, key string) (string
 			Type string `json:"type"`
 		} `json:"data"`
 	}
-	status, err := b.do(ctx, token, http.MethodGet, mount+"/keys/"+key, nil, &out)
+	status, err := b.call(ctx, token, http.MethodGet, mount+"/keys/"+key, nil, &out)
 	if status == http.StatusNotFound {
 		return "", nil
 	}

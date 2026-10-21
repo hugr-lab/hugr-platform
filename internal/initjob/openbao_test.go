@@ -35,6 +35,8 @@ type fakeBao struct {
 	notActive int
 	// leaderless: the sys/leader reads after init that still name no active node
 	leaderless int
+	// unavailable: the logins answered 503 (an OpenBao still unsealing after a restart)
+	unavailable int
 }
 
 func newFakeBao() *fakeBao {
@@ -78,6 +80,10 @@ func (f *fakeBao) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		answer(200, map[string]any{"ha_enabled": true, "is_self": true, "leader_address": "https://openbao:8200"})
+		return
+	case strings.HasPrefix(path, "auth/") && strings.HasSuffix(path, "/login") && f.unavailable > 0:
+		f.unavailable--
+		refuse(503, "Vault is sealed")
 		return
 	case strings.HasPrefix(path, "auth/") && strings.HasSuffix(path, "/login"):
 		if _, ok := f.roles[strings.TrimSuffix(strings.TrimPrefix(path, "auth/"), "/login")+"/"+body["role"].(string)]; !ok ||
@@ -371,6 +377,21 @@ func TestOpenBaoUnkeptRecoveryKeyFailsAndRevokesTheRoot(t *testing.T) {
 	}
 	if len(f.tokens) != 0 {
 		t.Fatalf("the root token outlived the run")
+	}
+}
+
+func TestOpenBaoLoginWaitsOutAnUnsealingServer(t *testing.T) {
+	f := newFakeBao()
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	c := baoConfig(t)
+	rec := &fakeRecovery{}
+	if err := RunOpenBao(context.Background(), c, baoClient(srv), rec, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	f.unavailable = 2
+	if err := RunOpenBao(context.Background(), c, baoClient(srv), rec, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatalf("a login answered 503 twice was not asked again: %v", err)
 	}
 }
 

@@ -70,7 +70,7 @@ data:
         - name: {{ $v.kistaRole | quote }}
           use: sign
           key: {{ $v.kistaKey | quote }}
-          serviceAccount: {{ include "hugr.umbrella.kistaFullname" . | quote }}
+          serviceAccount: {{ default (include "hugr.umbrella.kistaFullname" .) ((.Values.kista.serviceAccount).name) | quote }}
           namespace: {{ .Values.global.namespaces.kista | quote }}
         - name: {{ $v.tresorRole | quote }}
           use: kek

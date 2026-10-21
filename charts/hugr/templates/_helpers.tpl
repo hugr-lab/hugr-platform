@@ -45,6 +45,8 @@ listener "tcp" {
   cluster_address = "0.0.0.0:8201"
   tls_cert_file   = "/openbao/tls/tls.crt"
   tls_key_file    = "/openbao/tls/tls.key"
+  # cert-manager renews the certificate in place: read again when it changes, no restart
+  tls_auto_reload = true
 }
 # the break-glass, on the pod's own loopback only (kubectl exec): a root token from the recovery key
 # (openbao-recovery) by the legacy, unauthenticated generation

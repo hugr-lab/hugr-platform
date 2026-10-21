@@ -269,9 +269,14 @@ same version.
         kept).
       - **The Job** (`hugr-init --phase openbao`, a Job per revision): the first run initialises with one recovery
         share, keeps the key in `openbao-recovery`, configures with the root token and revokes it. Every later run logs
-        in by Kubernetes auth as its own role `hugr-openbao-init`, whose policy names exactly the paths it configures
-        (the services' keys, policies and roles; never another). It writes its own policy first, so a release that adds
-        a service widens it before using it. Nothing is removed; a key of another type is refused, never changed.
+        in by Kubernetes auth as its own role `hugr-openbao-init`, whose policy names the paths it configures (the
+        services' keys, policies and roles) and no key's material. It writes its own policy first, so a release that
+        adds a service widens it before using it - which makes the role OpenBao's administrator in effect, as anyone
+        who reads the namespace's Secrets (the seal and the recovery key) is: OpenBao's namespace is its boundary.
+        Nothing is removed; a key of another type is refused, never changed.
+      - **TLS**: the serving certificate from the umbrella's OpenBao CA, read again when cert-manager renews it
+        (`tls_auto_reload`). tresor-server reads its certificate once at start (`ServeTLS`), so a renewed one reaches it
+        only with a restart - a product gap to relay (kista reloads its own).
       - **Break-glass**: OpenBao 2.5.3 turned the unauthenticated `sys/generate-root` off, and its successor
         `sys/generate-root-token` wants a token. The pod therefore has a second listener on its own loopback with the
         legacy endpoints on: `kubectl exec` and the recovery key make a root token when no other is left.
