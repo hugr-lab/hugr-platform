@@ -3,7 +3,7 @@ export GOWORK := off
 
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.23.0
 SETUP_ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.25
-STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@2026.1
+STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@2026.2.2
 # the API server and etcd of envtest, pinned (spec 001: the envtest binaries pinned)
 ENVTEST_K8S_VERSION ?= 1.35.0
 IMAGE ?= ghcr.io/hugr-lab/hugr-platform:dev

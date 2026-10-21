@@ -10,7 +10,7 @@ RUN npm ci --no-fund --no-audit --ignore-scripts
 COPY web/console/ ./
 RUN npm run licenses && npm run build && test -f dist/index.html
 
-FROM golang:1.26 AS build
+FROM golang:1.27.3 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
