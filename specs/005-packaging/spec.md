@@ -207,11 +207,97 @@ Where `hugr-init`'s rights come from:
    added to the values is granted; one removed is not revoked (nothing is taken back by itself);
 4. the administrator's Secret deleted (a Role allowing `delete` on that name only).
 
-A run after the secret exists touches neither the database nor the secret. One Job runs at a time: a login whose
+The server is PostgreSQL 18 or later (the owner, 2026-10-21): an older one is refused before anything is made. A
+run after the secret exists touches neither the database nor the secret.
+
+`--phase databases` (built 2026-10-21) is the umbrella's first run, a `pre-install` hook:
+- **What it makes.** For each of the configuration's `services` (tresor, kista), the login with a generated password,
+  the database, and the login's `USAGE, CREATE` on its `public` schema (the services keep their tables there; only
+  the database's owner may create there by default). It writes the password into a Secret of the service's own
+  namespace (`hugr-init`'s Role there may get and create Secrets).
+- **What it leaves alone.** A service whose Secret exists, so a password never changes by itself. The administrator's
+  Secret stays too, for the catalog phase that follows.
+- **A run that failed between the login and its Secret** is made again by the next one. One Job runs at a time: a login whose
 password was set by a run that failed before its write is set again by the next run.
 
 **Product gaps** (relayed 2026-10-20, both closed the same day): kista v0.1.0 (spec 0024: `bootstrap.upstreams`,
 `namespaceOverride`, its first release); tresor-server v0.7.0 (spec 026: `namespaceOverride`, the cluster's issuer).
+
+### Stage A: the umbrella chart `hugr` (accepted by the owner, 2026-10-21)
+
+The catalog's one chart (decision 1 of this spec). It lives here (`charts/hugr`) and ships with the operator, at the
+same version.
+
+- **Its dependencies:**
+  - `hugr-platform`, this repository's chart, packaged together;
+  - `tresor-server` 0.7.1 and `kista` 0.1.1, from `oci://ghcr.io/hugr-lab/charts`, both signed;
+  - optionally `openbao`, below.
+- **The namespaces.** The release's namespace is the platform's. tresor, kista and an internal OpenBao each go into a
+  namespace of their own (their charts' `namespaceOverride`): `<prefix>-tresor`, `<prefix>-kista`, `<prefix>-openbao`.
+  - The umbrella makes these namespaces, annotated `helm.sh/resource-policy: keep`, so an uninstall leaves their PVCs.
+  - Their names are values with defaults, because a subchart's values cannot be computed from the release. The
+    services' addresses follow from them: `tresor.<ns>.svc`, `kista.<ns>.svc`.
+- **TLS: each service has its own CA** (the owner, 2026-10-21):
+  - In tresor's and kista's namespaces, a CA is made once at install and kept across upgrades (Helm's `lookup`).
+    cert-manager issues and renews the service's serving certificate from a CA Issuer of that namespace.
+  - The CA's public certificate goes into a ConfigMap of the platform's namespace, named in `caBundle.extra`. The
+    operator's bundle then carries it to the nodes, the front and `hugr-init`.
+  - No private key leaves its namespace, and the platform's own CA stays its namespace's.
+- **Keys** (kista's channel key, tresor's KEK): `keys.mode`, asked by the form (the owner, 2026-10-21):
+  - **`external`**: the organisation's Vault-compatible server, HashiCorp Vault or OpenBao. The form asks for its
+    address, its CA, the Transit mount, and the Kubernetes-auth roles the organisation made for kista's and tresor's
+    ServiceAccounts.
+  - **`internal`**: OpenBao, installed in its own namespace by the umbrella.
+    - **Why not HashiCorp Vault**: Vault is under the Business Source License 1.1 since 2023, and embedding it in an
+      offering that third parties install is the grey zone of that licence. OpenBao is MPL 2.0, and its API is
+      Vault's.
+    - **Unseal**: OpenBao opens itself after a restart by its static-key auto-unseal. The key is a Secret of its
+      namespace, made once at install. The root of trust is therefore the cluster's etcd encryption, and the docs
+      say so (OpenBao's own docs ask for such a source of trust).
+    - **The first setup**: an init Job initialises OpenBao once and keeps its recovery keys in a Secret of that
+      namespace. With the root token it enables Transit, makes the two keys and the Kubernetes-auth roles for kista's
+      and tresor's ServiceAccounts, then revokes the token.
+  - **`secret`**: kista's channel key and tresor's KEK as Secrets of their own namespaces, made once at install. It
+    is the lightest of the three and is an explicit choice. tresor takes a KEK from a Secret today; kista refuses a key
+    from a Secret on purpose, so this mode waits for kista's opt-in (a product gap, relayed 2026-10-21).
+  - **Azure** (stage B): Azure Key Vault for both, by workload identity.
+- **The wiring** the umbrella writes into its dependencies' values. Each item is a value the form fills or a
+  default:
+  - tresor:
+    - its issuers: the organisation's IdP, and the cluster's ServiceAccount issuer for `hugr-init` (whose URL the form
+      gives: an API server's issuer is not readable at template time);
+    - `hugr-init` among its administrators, by subject, and the groups' identities as its actors;
+    - its state on the external PostgreSQL, and its KEK from the key store.
+  - kista: its `bootstrap` - the tenant, the channel for the node's duckdb, the upstreams (core, community, our public
+    channel, and an Enterest tenant when the form names one) - its store on the external PostgreSQL, and its channel
+    key from the key store.
+  - hugr-platform: tresor's host, kista's prefix, `hugrInit`, `firstPolicy`, and the groups from the form.
+- **The databases: one PostgreSQL 18 or later, external or internal** (the owner, 2026-10-21). On it, the policy
+  catalog, tresor's state and kista's store each get a database and a login of their own. `hugr-init` refuses an
+  older server before it makes anything.
+  - `database.mode: external`: the form names the server, the provider's managed one or the organisation's.
+  - `database.mode: internal`, for the catalogs of the clouds other than Azure (OTC, Hetzner, IONOS, STACKIT): the
+    umbrella runs PostgreSQL in the cluster, by CloudNativePG (Apache 2.0, the operator a dependency, the cluster in a
+    namespace of its own). Its superuser Secret is `hugr-init`'s administrator credential.
+  - `hugr-init` makes all three with the administrator's one-time Secret, which it then deletes.
+  - The catalog's login goes to tresor only, as today.
+  - tresor and kista cannot read their own login from tresor: each password is a generated value in a Secret of that
+    service's namespace (tresor's `password_ref`, kista's `password_file`), which its chart reads on every new
+    connection. These two passwords are the only ones at rest, each in its own service's namespace. For PostgreSQL
+    outside a cloud's IAM this is the only way for now (the owner, 2026-10-21). On Azure (stage B) both log in with
+    Entra and hold no password. Later, tresor and kista read their database passwords from the key store (a Vault),
+    a product gap of each.
+  - Order: tresor's and kista's databases must exist before their pods are ready, while `hugr-init`'s write into
+    tresor needs tresor up. So `hugr-init` runs twice: as a `pre-install` hook (the three databases, and the two
+    services' Secrets, by a Role in each of their namespaces), then as today (the catalog's secret, the grants, the
+    administrator's Secret deleted).
+- **Steps:**
+  1. the chart with `keys.mode: external`, `database.mode: external` and the per-service CAs. The demo installs through
+     it, its OpenBao and its PostgreSQL as the external ones.
+  2. `keys.mode: internal` (OpenBao).
+  3. `database.mode: internal` (CloudNativePG).
+  4. `keys.mode: secret`, once kista takes a key from a Secret.
+  5. the release publishes the umbrella beside `hugr-platform`.
 
 ### Stage A: the operator's release
 

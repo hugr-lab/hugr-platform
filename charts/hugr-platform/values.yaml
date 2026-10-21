@@ -91,7 +91,7 @@ hugrInit:
     audience: duckdb-secrets # the audience of the cluster issuer's entry in tresor-server's config
     grants: [] # the groups' identities in tresor, given use of the secret: role:... or group:...
   catalog:
-    engine: postgres
+    engine: postgres # PostgreSQL 18 or later
     host: ""
     port: 5432
     database: hugr

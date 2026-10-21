@@ -82,6 +82,43 @@ func Run(ctx context.Context, c *Config, tresor SecretsService, newDatabase func
 	return nil
 }
 
+// RunDatabases is the umbrella's first phase (a pre-install hook, spec 005): each service's database and login, its
+// password in a Secret of the service's namespace. A service whose Secret exists is left as it is: its login was made
+// by an earlier run, and a password is never changed by itself. The administrator's Secret stays, for the next phase.
+func RunDatabases(ctx context.Context, c *Config, newDatabase func() (Database, error), secrets ServiceSecrets,
+	log *slog.Logger) error {
+	var db Database
+	for _, svc := range c.Services {
+		exists, err := secrets.Exists(ctx, svc.Secret)
+		if err != nil {
+			return fmt.Errorf("hugr-init: %s's Secret %s/%s: %w", svc.Name, svc.Secret.Namespace, svc.Secret.Name, err)
+		}
+		if exists {
+			log.Info("a service's database is made already: left as it is", "service", svc.Name)
+			continue
+		}
+		if db == nil {
+			if db, err = newDatabase(); err != nil {
+				return err
+			}
+		}
+		password, err := newPassword()
+		if err != nil {
+			return err
+		}
+		if err := db.Ensure(ctx, svc.Login, password, svc.Database); err != nil {
+			return fmt.Errorf("hugr-init: %s's database: %w", svc.Name, err)
+		}
+		// a failure here leaves the login with a password nobody holds: the next run makes it again (no Secret)
+		if err := secrets.Create(ctx, svc.Secret, password); err != nil {
+			return fmt.Errorf("hugr-init: %s's Secret %s/%s: %w", svc.Name, svc.Secret.Namespace, svc.Secret.Name, err)
+		}
+		log.Info("a service's database and login are made", "service", svc.Name, "database", svc.Database,
+			"secret", svc.Secret.Namespace+"/"+svc.Secret.Name)
+	}
+	return nil
+}
+
 // catalogSecret is the login as the nodes read it: a postgres secret, the password redacted. Its keys are libpq's own
 // (dbname, not database): postgres_scanner takes a CREATE SECRET's aliases there, never a secret's material
 func catalogSecret(c *Config, password string) Secret {
