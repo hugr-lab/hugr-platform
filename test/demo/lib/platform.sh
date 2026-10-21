@@ -22,85 +22,128 @@ install_cert_manager() {
 	ok "cert-manager $CERT_MANAGER_VERSION, csi-driver $CSI_DRIVER_VERSION"
 }
 
-# platform_values: the chart's values for this run - no credential (spec 005): images, the IdP, tresor, kista, the sizes
-platform_values() {
-	local operator g replicas audience="" scope=""
+# chart_values: the umbrella's values for this run - no credential (spec 005): the images, the IdP, the vault, the
+# database, the sizes, the groups. The CAs (public certificates) are given as files (--set-file)
+chart_values() {
+	local operator g replicas audience="" actors="" private=false
 	operator="$(img hugr-platform)"
 	[ -z "$IDP_FEDERATION_AUDIENCE" ] || audience="
-      federationAudience: \"$IDP_FEDERATION_AUDIENCE\""
-	[ -z "$TRESOR_SCOPE" ] || scope="
-      scope: \"$TRESOR_SCOPE\""
+      idp: {federationAudience: \"$IDP_FEDERATION_AUDIENCE\"}"
+	# a private one (kind, minikube): tresor reads its discovery with its own token, by the cluster's CA
+	case "$CLUSTER_ISSUER" in https://kubernetes.default.svc*) private=true ;; esac
+	for g in "${GROUPS_[@]}"; do
+		actors="$actors
+        - {principal: 'client:$(group_client_id "$g")', verbs: [use]}"
+	done
 	cat <<YAML
-operator:
-  image: {repository: "${operator%:*}", tag: "${operator##*:}", pullPolicy: $PULL}
-  replicas: 1
-internalCA: {existingSecret: hugr-internal-ca}
-# the checks and the console stand reach the console through a port-forward, at 127.0.0.1
-console: {dnsNames: [localhost], ipAddresses: [127.0.0.1]}
-front: {dnsNames: [localhost], ipAddresses: [127.0.0.1]}
-admissionPolicies: {enabled: true}
-platform:
-  name: hugr
-  spec:
-    node: {image: "$(img hugr-node)", imagePullPolicy: $PULL}
-    idp:
-      issuer: "$IDP_ISSUER"$audience
+global:
+  database: {host: pg.db.svc}
+  idp:
+    issuer: "$IDP_ISSUER"
+    tresorAudience: "$TRESOR_AUDIENCE"
+    tresorRolesClaim: "$TRESOR_ROLES_CLAIM"
+    tresorGroupsClaim: "$TRESOR_GROUPS_CLAIM"
+    tresorServiceClaim: "$TRESOR_SERVICE_CLAIM"
+    tresorScope: "$TRESOR_SCOPE"
+  clusterIssuer: {url: "$CLUSTER_ISSUER", private: $private}
+  keys:
+    vault: {address: "$VAULT_ADDRESS"}
+  duckdbVersion: "$DUCKDB_VERSION"
+hugr-platform:
+  operator:
+    image: {repository: "${operator%:*}", tag: "${operator##*:}", pullPolicy: $PULL}
+    replicas: 1
+  internalCA: {existingSecret: hugr-internal-ca}
+  # the checks and the console stand reach the console through a port-forward, at 127.0.0.1
+  console: {dnsNames: [localhost], ipAddresses: [127.0.0.1]}
+  front: {dnsNames: [localhost], ipAddresses: [127.0.0.1]}
+  admissionPolicies: {enabled: true}
+  platform:
+    spec:
+      node: {image: "$(img hugr-node)", imagePullPolicy: $PULL}$audience
+      heartbeat: {intervalSeconds: 5}
+      front: {replicas: 2}
+      # the console (spec 003): the realm's public client hugr-console - a browser signs the person operator in through
+      # the console stand (run.sh <provider> console); the checks call the API with a principal's token
+      console:
+        clientID: hugr-console
+        audiences: {nodes: "$(console_audience "$HUGR_AUDIENCE")", tresor: "$(console_audience "$TRESOR_AUDIENCE")"}
+      # the first policy (spec 005, hugr-node spec 015): the first node writes it into the catalog hugr-init made - the
+      # issuer, the console's client, platform_admin for the realm's platform_admin, the groups a and b. The demo's own
+      # data (the source, the analysts, the catalog demo) is the seed's, after
+      firstPolicy:
+        issuer: {name: idp, rolesClaim: "$HUGR_ROLES_CLAIM", audiences: ["$HUGR_AUDIENCE"]}
+        administrators: platform_admin
+      sizes:
+        small:
+          resources: {requests: {cpu: "$NODE_CPU", memory: 1Gi}, limits: {memory: 2Gi}}
+          temp: {medium: local, size: 2Gi}
+      plan: {maxNodes: 4, sizes: [small]}
+  # hugr-init (spec 005): the catalog's secret in tresor for the groups' identities and the seeder (which writes the
+  # demo's data into the catalog)
+  hugrInit:
     tresor:
-      host: "$TRESOR_HOST"$scope
-    repository: {name: hugr, prefix: "$KISTA_PREFIX"}
-    heartbeat: {intervalSeconds: 5}
-    front: {replicas: 2}
-    # the console (spec 003): the realm's public client hugr-console - a browser signs the person operator in through
-    # the console stand (run.sh <provider> console); the checks call the API with a principal's token
-    console:
-      clientID: hugr-console
-      audiences: {nodes: "$(console_audience "$HUGR_AUDIENCE")", tresor: "$(console_audience "$TRESOR_AUDIENCE")"}
-    # the first policy (spec 005, hugr-node spec 015): the first node writes it into the catalog hugr-init made - the
-    # issuer, the console's client, platform_admin for the realm's platform_admin, the groups a and b. The demo's own
-    # data (the source, the analysts, the catalog demo) is the seed's, after
-    firstPolicy:
-      issuer: {name: idp, rolesClaim: "$HUGR_ROLES_CLAIM", audiences: ["$HUGR_AUDIENCE"]}
-      administrators: platform_admin
-    sizes:
-      small:
-        resources: {requests: {cpu: "$NODE_CPU", memory: 1Gi}, limits: {memory: 2Gi}}
-        temp: {medium: local, size: 2Gi}
-    plan: {maxNodes: 4, sizes: [small]}
-# hugr-init (spec 005): the catalog's database and login (the demo's PostgreSQL, no TLS), its secret in tresor for the
-# groups' identities and the seeder (which writes the demo's data into the catalog)
-hugrInit:
-  enabled: true
-  tresor:
-    url: "https://$TRESOR_HOST"
-    grants: ["$NODES_PRINCIPAL", "role:demo_seeder"]
-  catalog: {host: pg.db.svc, sslmode: disable}
-# the run's CA lives 30 days: the doors' certificates are a day's
-groupCertificateDuration: 24h
-groups:
+      grants: ["$NODES_PRINCIPAL", "role:demo_seeder"]
+  # the run's CA lives 30 days: the doors' certificates are a day's
+  groupCertificateDuration: 24h
+  groups:
 YAML
 	for g in "${GROUPS_[@]}"; do
 		replicas=1
 		[ "$g" = a ] && replicas=2
-		echo "  - {name: $g, spec: {replicas: $replicas, size: small, identity: {clientID: \"$(group_client_id "$g")\"}, drainSeconds: 10}}"
+		echo "    - {name: $g, spec: {replicas: $replicas, size: small, identity: {clientID: \"$(group_client_id "$g")\"}, drainSeconds: 10}}"
 	done
+	cat <<YAML
+tresor:
+  clusterIssuer: {enabled: $private}
+  resources: {requests: {cpu: 10m, memory: 32Mi}}
+  config:
+    policy:
+      # hugr-init's (the umbrella's), the seeder (the demo's data) and the console stand's person (spec 003: tresor's
+      # console mounted)
+      admins:
+        - "subject:{{ .Values.global.clusterIssuer.url }}|system:serviceaccount:{{ .Release.Namespace }}:hugr-init"
+        - role:demo_seeder
+        - role:secrets_admin
+      # the nodes act for their sessions (ACT_FOR_SESSIONS); an actor is a service, client:<id>
+      actors:$actors
+kista:
+  resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 512Mi}}
+  blobVolume: {size: 2Gi}
+  config:
+    blob: {max_body: 256MiB}
+YAML
 }
 
-# from_kustomize: a kept cluster from before the chart holds the operator and the platform kubectl applied - not
-# Helm's, so the chart's install would refuse them: deleted once, with the groups (the nodes start anew anyway)
-from_kustomize() {
-	helm_ status hugr -n hugr >/dev/null 2>&1 && return 0
-	k -n hugr get deploy hugr-platform >/dev/null 2>&1 || return 0
-	k -n hugr delete hng --all --wait --timeout=300s >/dev/null 2>&1 || true
-	k -n hugr delete hugrplatform --all --wait --timeout=120s >/dev/null 2>&1 || true
+# teardown: a run installs the umbrella afresh - the groups and the release go (while the operator still serves them),
+# then the platform's and the services' namespaces with all they hold, and the three databases and logins; the
+# cluster, the IdP, the vault, the PostgreSQL server and the images stay. The demo's layout before the umbrella
+# (tresor, kista, a kustomize install) goes too.
+teardown() {
+	if k get crd hugrnodegroups.platform.hugr.io >/dev/null 2>&1; then
+		k -n hugr delete hng --all --wait --timeout=300s >/dev/null 2>&1 || true
+		k -n hugr delete hugrplatform --all --wait --timeout=120s >/dev/null 2>&1 || true
+	fi
+	if helm_ status hugr -n hugr >/dev/null 2>&1; then
+		helm_ uninstall hugr -n hugr --wait --timeout 300s >"$WORK/uninstall.log" 2>&1 || {
+			cat "$WORK/uninstall.log" >&2
+			fail "the last run's release did not go"
+		}
+	fi
+	helm_ uninstall tresor -n tresor >/dev/null 2>&1 || true
 	k kustomize "$HERE/overlay" | k delete -f - --ignore-not-found --timeout=300s >/dev/null 2>&1 || true
 	k delete -k "$ROOT/config/policy" --ignore-not-found >/dev/null 2>&1 || true
+	k delete clusterrolebinding hugr-demo-tresor-issuer-discovery --ignore-not-found >/dev/null 2>&1 || true
+	k delete namespace hugr "$TRESOR_NS" "$KISTA_NS" tresor kista --ignore-not-found --wait --timeout=300s >/dev/null ||
+		fail "the last run's namespaces are still being deleted"
+	drop_databases
 }
 
-install_operator() {
+install_chart() {
 	install_cert_manager
-	step "the platform's chart: the operator, its rights, the webhook, the certificates, the HugrPlatform and its groups"
+	step "the umbrella chart hugr: the operator, tresor-server and kista in their namespaces, hugr-init, the groups"
+	teardown
 	namespace hugr
-	from_kustomize
 	# the run's CA is the platform's internal CA: what the platform's Issuer signs - the operator's certificate, the
 	# console's and the front's, every door's - chains to the CA the checks trust
 	k -n hugr delete secret hugr-internal-ca --ignore-not-found >/dev/null
@@ -110,17 +153,28 @@ install_operator() {
 	k -n hugr delete secret hugr-init-db-admin --ignore-not-found >/dev/null
 	k -n hugr create secret generic hugr-init-db-admin --from-literal=username=postgres \
 		--from-file=password="$(secret_file pg openssl rand -hex 24)" >/dev/null || fail "hugr-init's administrator Secret"
-	platform_values >"$WORK/platform-values.yaml"
-	local again=""
-	k -n hugr get deploy hugr-node-a >/dev/null 2>&1 && again=1
+	CLUSTER_ISSUER="$(k get --raw /.well-known/openid-configuration |
+		python3 -c 'import json, sys; print(json.load(sys.stdin)["issuer"])')" || fail "the cluster's ServiceAccount issuer"
+	chart_values >"$WORK/chart-values.yaml"
+	# the database, the vault and Keycloak are the run's CA's; Entra is the system roots'
+	local cas=(--set-file "global.database.caCert=$WORK/ca.crt" --set-file "global.keys.vault.caCert=$WORK/ca.crt")
+	[ "$IDP_NAME" != Keycloak ] || cas+=(--set-file "global.idp.caCert=$WORK/ca.crt")
 	# the nodes' logs are kept from here on, each from its pod's start
 	rm -rf "$WORK/logs"
-	if ! helm_ upgrade --install hugr "$ROOT/charts/hugr-platform" -n hugr -f "$WORK/platform-values.yaml" \
-		--wait --timeout 600s >"$WORK/platform-helm.log" 2>&1; then
-		cat "$WORK/platform-helm.log" >&2
-		k -n hugr get pods -o wide >&2 || true
-		k -n hugr logs job/hugr-init --tail 40 2>&1 | redact >&2 || true
-		fail "the platform's chart did not install"
+	# this checkout's platform chart, packaged beside the pinned tresor-server and kista
+	helm_ dependency build "$ROOT/charts/hugr" >"$WORK/chart-deps.log" 2>&1 || {
+		cat "$WORK/chart-deps.log" >&2
+		fail "the umbrella's dependencies"
+	}
+	if ! helm_ upgrade --install hugr "$ROOT/charts/hugr" -n hugr -f "$WORK/chart-values.yaml" "${cas[@]}" \
+		--wait --timeout 900s >"$WORK/chart-helm.log" 2>&1; then
+		cat "$WORK/chart-helm.log" >&2
+		local ns
+		for ns in hugr "$TRESOR_NS" "$KISTA_NS"; do k -n "$ns" get pods -o wide >&2 || true; done
+		k -n hugr logs -l app.kubernetes.io/component=init --tail 40 --prefix 2>&1 | redact >&2 || true
+		k -n "$TRESOR_NS" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix 2>&1 | redact >&2 || true
+		k -n "$KISTA_NS" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix 2>&1 | redact >&2 || true
+		fail "the umbrella chart did not install"
 	fi
 	rollout hugr hugr-platform
 	# a group the webhook judges answers through the operator's Service: a dry run of one
@@ -134,12 +188,7 @@ YAML
 		! grep -q 'failed calling webhook' "$WORK/webhook.err"
 	}
 	eventually 60 "the webhook answers" webhook_answers
-	# a run again: the catalog was made anew, so the nodes start anew (the group's restartedAt, as an operator would);
-	# the chart made the groups at its install only, and leaves them to the console and kubectl after
-	if [ -n "$again" ]; then
-		for g in "${GROUPS_[@]}"; do restart_group "$g"; done
-	fi
-	ok "the operator serves: the node API on https://hugr-platform.hugr.svc:8443, the webhook, the console"
+	ok "the release hugr: the operator serves (the node API, the webhook, the console), tresor at https://$TRESOR_HOST, kista at $KISTA_PREFIX; hugr-init made the databases and the catalog's secret"
 }
 
 install_platform() {
@@ -209,6 +258,6 @@ down_cluster_scoped() {
 	# before the chart: the kustomize install's own names
 	k kustomize "$HERE/overlay" | k delete -f - --ignore-not-found --timeout=300s >/dev/null 2>&1 || true
 	k delete -k "$ROOT/config/policy" --ignore-not-found >/dev/null 2>&1 || true
-	k delete clusterrolebinding hugr-demo-openbao-tokenreview hugr-demo-kc-issuer-discovery --ignore-not-found \
-		>/dev/null 2>&1 || true
+	k delete clusterrolebinding hugr-demo-openbao-tokenreview hugr-demo-kc-issuer-discovery \
+		hugr-demo-tresor-issuer-discovery --ignore-not-found >/dev/null 2>&1 || true
 }

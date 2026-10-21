@@ -61,7 +61,8 @@ data:
     tresor:
       url: {{ tpl $platform.hugrInit.tresor.url . | quote }}
       tokenFile: /var/run/secrets/hugr-init/tresor/token
-      caFile: {{ if $g.database.caCert }}/etc/hugr-ca/ca.crt{{ else }}""{{ end }}
+      # the database's private CA (this phase reaches no tresor); empty: the image's roots verify it
+      caFile: {{ if $g.database.caCert }}/etc/hugr-ca/database.crt{{ else }}""{{ end }}
       grants: {{ required "hugr-platform.hugrInit.tresor.grants names the groups' identities in tresor" $platform.hugrInit.tresor.grants | toJson }}
     catalog:
       secret: {{ default "hugr_policy_catalog" (($platform.platform.spec).catalog).secret | quote }}
@@ -126,8 +127,7 @@ spec:
       volumes:
         - name: config
           configMap: {name: hugr-init-db}
-        # the database's private CA (the umbrella's ConfigMap; empty: the image's roots verify it)
         - name: ca
-          configMap: {name: hugr-database-ca}
+          configMap: {name: hugr-private-cas}
         - name: db-admin
           secret: {secretName: {{ $g.database.adminSecret | quote }}}

@@ -23,16 +23,16 @@ global:
     # empty: the system roots
     caCert: ""
 
-  # The organisation's IdP: people's tokens (the console, tools) and the nodes' workload identity
+  # The organisation's IdP: people's tokens (the console, tools) and the nodes' workload identity. The platform's own
+  # use of it (the console's client, the first policy's issuer) is hugr-platform.platform.spec's
   idp:
     issuer: "" # required, https
-    # the audience of the people's tokens for the nodes (the console's client asks for it)
-    audience: ""
-    # the claim that carries a person's roles: roles (Entra ID), realm_access.roles (Keycloak)
-    rolesClaim: roles
-    # tresor's audience (its tokens for the secrets service) and the claim it reads roles from
+    # the IdP's CA when it is private (a Keycloak of the organisation's), PEM; empty: the system roots
+    caCert: ""
+    # tresor's audience (its tokens for the secrets service) and the claims it reads roles and groups from
     tresorAudience: ""
     tresorRolesClaim: roles
+    tresorGroupsClaim: "" # groups (Keycloak); empty: none
     # the claim tresor reads a service's (a node's) identity from: azp (Keycloak), appid or azp (Entra)
     tresorServiceClaim: azp
     # the scope a node asks for tresor's token, if the IdP needs one (Entra: api://<tresor>/.default)
@@ -65,7 +65,8 @@ global:
       tresorRole: tresor
       audience: vault
 
-  # The node's DuckDB version (the platform's hugr-node image's): kista's channel serves extensions for it
+  # The node's DuckDB version (the platform's hugr-node image's): kista's channel serves extensions for it - a release
+  # (v2.0.0) or the commit a node was built on (f8f3f4dcd9: a dev version, which no upstream mirrors)
   duckdbVersion: ""
 
 # --- the platform (hugr-platform's values, as its chart documents them) -------------------------------------------
@@ -87,9 +88,13 @@ hugr-platform:
       catalog: {secret: hugr_policy_catalog}
       sizes: {}
       plan: {maxNodes: 0, sizes: []}
-  # tresor's and kista's CAs and the database's private one (the umbrella's ConfigMaps), into the platform's bundle
+  # tresor's and kista's CAs, the database's and the IdP's private ones (the umbrella's ConfigMaps), into the
+  # platform's bundle
   caBundle:
-    extra: [{name: hugr-services-ca, key: ca.crt}, {name: hugr-database-ca, key: ca.crt}]
+    extra:
+      - {name: hugr-services-ca, key: ca.crt}
+      - {name: hugr-private-cas, key: database.crt}
+      - {name: hugr-private-cas, key: idp.crt}
   hugrInit:
     enabled: true
     tresor:
@@ -109,6 +114,7 @@ tresor:
   fullnameOverride: tresor
   replicas: 2
   tlsSecret: tresor-tls
+  service: {port: 443}
   clusterIssuer: {enabled: true} # = global.clusterIssuer.private (checked)
   vaultToken: {enabled: true, audience: vault} # = global.keys.vault.audience (checked)
   extraVolumes:
@@ -127,7 +133,7 @@ tresor:
         sslrootcert=/var/run/tresor/cas/database.crt{{ end }}
       auth: password
       password_file: /var/run/tresor/db/password
-    keys: {kind: vault, key: "{{ .Values.global.keys.vault.tresorKey }}"}
+    keys: {kind: vault, mount: "{{ .Values.global.keys.vault.transitMount }}", key: "{{ .Values.global.keys.vault.tresorKey }}"}
     vault:
       address: "{{ .Values.global.keys.vault.address }}"
       ca_file: "{{ if .Values.global.keys.vault.caCert }}/var/run/tresor/cas/vault.crt{{ end }}"
@@ -136,6 +142,8 @@ tresor:
       - issuer: "{{ .Values.global.idp.issuer }}"
         audience: "{{ .Values.global.idp.tresorAudience }}"
         roles_claim: "{{ .Values.global.idp.tresorRolesClaim }}"
+        groups_claim: "{{ .Values.global.idp.tresorGroupsClaim }}"
+        ca_file: "{{ if .Values.global.idp.caCert }}/var/run/tresor/cas/idp.crt{{ end }}"
         service: {claim: "{{ .Values.global.idp.tresorServiceClaim }}"}
         service_flows: [client_credentials, private_key_jwt, federated]
       - issuer: "{{ .Values.global.clusterIssuer.url }}"
@@ -145,7 +153,8 @@ tresor:
         discovery_token_file: "{{ if .Values.global.clusterIssuer.private }}/var/run/tresor/cluster/token{{ end }}"
         service: {claim: kubernetes.io, client_claim: sub}
     policy:
-      # hugr-init, by its subject (beside another issuer, a client: name could be that issuer's client of the name)
+      # hugr-init, by its subject (beside another issuer, a client: name could be that issuer's client of the name);
+      # a list of your own keeps this entry (checked)
       admins:
         - "subject:{{ .Values.global.clusterIssuer.url }}|system:serviceaccount:{{ .Release.Namespace }}:hugr-init"
       # the nodes act for their sessions: an actor per group's identity, client:<its client id at the IdP>
@@ -173,7 +182,7 @@ kista:
     store:
       kind: postgres
       dsn: >-
-        host={{ required "global.database.host" .Values.global.database.host }} port={{ .Values.global.database.port }}
+        host={{ required "global.database.host is required" .Values.global.database.host }} port={{ .Values.global.database.port }}
         dbname=kista user=kista
         sslmode={{ .Values.global.database.sslmode }}{{ if .Values.global.database.caCert }}
         sslrootcert=/etc/kista/secrets/cas/database.crt{{ end }}
@@ -202,7 +211,10 @@ kista:
     # its key, and the upstreams it mirrors
     bootstrap:
       versions:
-        - {version: "{{ .Values.global.duckdbVersion }}", kind: release}
+        # a DuckDB release is a vX.Y.Z tag; a node built on a commit of DuckDB's (until v2.0.0) runs a dev version
+        - version: "{{ .Values.global.duckdbVersion }}"
+          kind: >-
+            {{ if regexMatch "^v[0-9]+[.][0-9]+[.][0-9]+$" .Values.global.duckdbVersion }}release{{ else }}dev{{ end }}
       tenant: {name: hugr}
       channels:
         - name: platform

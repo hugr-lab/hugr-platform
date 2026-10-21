@@ -88,8 +88,9 @@ config:
     admins: ["subject:https://kubernetes.default.svc.cluster.local|system:serviceaccount:<namespace>:hugr-init"]
 ```
 
-Its own ServiceAccount needs the ClusterRole `system:service-account-issuer-discovery`. A run again (`helm upgrade`)
-only grants: the database and the secret stay as they are.
+tresor-server's ServiceAccount reads the issuer's discovery by the ClusterRole `system:service-account-issuer-discovery`,
+which Kubernetes binds to every ServiceAccount by default (a cluster that removed that binding needs one for it). A
+run again (`helm upgrade`) only grants: the database and the secret stay as they are.
 
 A platform installed from nothing has an empty policy catalog. `spec.firstPolicy` names what the first node writes
 into it (spec 005, hugr-node spec 015): the IdP, the applications whose tokens count (the console's always), the
@@ -112,7 +113,39 @@ operator's own image, a Service with the Flight SQL (32010) and quack (9494) doo
 write it) and verifies the nodes by `caBundle`. It keeps no table of sessions: a connection stays on the node that
 seated it by the label the node wrote into its cookie or connection id.
 
-Packaging proper - a Helm chart, the Azure Managed Application - is a spec of its own.
+### The platform with its services: the chart `hugr`
+
+`charts/hugr` (spec 005) installs the platform together with tresor-server and kista, each in a namespace of its own
+(`hugr-tresor`, `hugr-kista`; made by the release and kept when it goes, with their volumes). It pins their charts
+(tresor-server 0.7.2, kista 0.1.2) and wires them from one set of facts under `global`:
+
+- **TLS**: each service gets a CA of its own, made once in its namespace; cert-manager issues its serving certificate
+  there. The CAs' public certificates go into the platform's bundle, so the nodes, the front and `hugr-init` trust
+  both services.
+- **The database**: one PostgreSQL 18 or later (`global.database`). A Job of the release (`hugr-init --phase
+  databases`) makes tresor's and kista's databases and logins before they start, each password in a Secret of that
+  service's namespace. Then `hugr-init` makes the catalog's, as above. The administrator's Secret (`hugr-init-db-admin`
+  in the release's namespace) is made once by the installer.
+- **The keys**: the organisation's HashiCorp Vault or OpenBao (`global.keys.mode: external`). It holds two Transit
+  keys: kista signs its channel with `hugr-channel` (RSA), and tresor wraps its data keys with `hugr-tresor`. It also
+  holds a Kubernetes-auth role for each service's ServiceAccount (`hugr-kista` in `hugr-kista`, `tresor` in
+  `hugr-tresor`), bound to the audience `vault`.
+- **The IdP and the cluster's issuer**: `global.idp` (its private CA, if any, in `caCert`) and `global.clusterIssuer`,
+  whose URL `kubectl get --raw /.well-known/openid-configuration` gives.
+- **kista's bootstrap**: the tenant `hugr`, the signed channel `platform` for the node's DuckDB (`global.duckdbVersion`:
+  a release `vX.Y.Z`, or a commit's dev version) and its key.
+
+```sh
+helm dependency build charts/hugr
+kubectl -n hugr create secret generic hugr-init-db-admin --from-literal=username=… --from-file=password=…
+helm upgrade --install hugr charts/hugr -n hugr --create-namespace -f my-values.yaml \
+  --set-file global.database.caCert=db-ca.pem --wait
+```
+
+`charts/hugr/ci/example-values.yaml` is a whole set of values. The values hold no credential. A node restarts until
+kista holds the extensions its catalog needs (postgres_scanner for a PostgreSQL catalog), mirrored from an upstream
+(`kista.config.bootstrap.upstreams`) or published into the channel (`kista admin release add`). The demo
+(`test/demo`) installs through this chart, its OpenBao and its PostgreSQL standing in for the organisation's.
 
 Business Source License 1.1 (see `LICENSE`): production use is allowed, except offering it to third parties as a
 hosted or managed service. Each version changes to Apache-2.0 four years after its release.

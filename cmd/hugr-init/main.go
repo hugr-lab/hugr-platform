@@ -1,6 +1,6 @@
 // hugr-init is the platform's install Job (spec 005): the policy catalog's database and login, the login into tresor
 // as the catalog's secret, its grants to the groups' identities, then the database administrator's Secret deleted.
-// --phase databases (the umbrella's pre-install hook) makes the services' (tresor's, kista's) databases first.
+// --phase databases (a Job of the umbrella, before the services start) makes their (tresor's, kista's) databases first.
 package main
 
 import (

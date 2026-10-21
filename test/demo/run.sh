@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The platform in one cluster (spec 004): the operator, two groups of hugr-node pods, the IdP logging the nodes in by
-# their ServiceAccount tokens, tresor-server, kista and PostgreSQL - and the checks of what spec 001 and hugr-node
-# spec 010 promise.
+# The platform in one cluster (spec 004): the umbrella chart hugr (spec 005) - the operator, tresor-server and kista -
+# with two groups of hugr-node pods, the IdP logging the nodes in by their ServiceAccount tokens, OpenBao and
+# PostgreSQL as the organisation's vault and database - and the checks of what spec 001 and hugr-node spec 010 promise.
 #
 #   test/demo/run.sh minikube [up | check | down]   the main run, on a developer's machine (the profile hugr-demo)
 #   test/demo/run.sh kind                           CI: makes the cluster, runs everything, deletes it
@@ -17,8 +17,9 @@
 #   HUGR_NODE_DIST    the node's release assets (dist-linux_<arch>) instead of hugr-node's latest release dry run
 #   NODE_IMAGE        a published hugr-node image instead of the dry run's (the extensions still come from the dry run
 #                     or HUGR_NODE_DIST: they must be the image's duckdb's)
-#   TRESOR_SERVER_DIR, KISTA_DIR, HUGR_NODE_DIR   checkouts instead of each one's main
-#   HUGR_DEMO_ONLY    up to a step: images, db, idp, tresor, kista, operator, platform, seed (for working on one)
+#   HUGR_NODE_DIR     a checkout of hugr-node instead of its main (its scripts read the release's extensions)
+#   HUGR_DEMO_ONLY    up to a step: images, db, idp, vault, chart, platform, seed (for working on one); every run
+#                     installs the chart afresh - the services' state and the catalog with it
 #   HUGR_DEMO_NODE_CPU  a node's CPU request (1; CI's 4-core runner: 250m - the node rounds it up to 1 thread)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -66,21 +67,17 @@ stage() { # <name>: false once the step HUGR_DEMO_ONLY names is done
 up() {
 	provider_up
 	build_images
-	TRESOR_SRC="$(src tresor-server TRESOR_SERVER_DIR)"
-	KISTA_SRC="$(src duckdb-extension-repository KISTA_DIR)"
 	ca_make
 	stage images || return 0
 	install_db
 	stage db || return 0
 	install_idp
 	stage idp || return 0
-	install_tresor
-	stage tresor || return 0
-	install_kista
-	stage kista || return 0
-	reset_catalog
-	install_operator
-	stage operator || return 0
+	install_vault
+	stage vault || return 0
+	install_chart
+	publish_extensions
+	stage chart || return 0
 	install_platform
 	stage platform || return 0
 	seed

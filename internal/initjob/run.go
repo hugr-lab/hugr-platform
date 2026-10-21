@@ -82,9 +82,10 @@ func Run(ctx context.Context, c *Config, tresor SecretsService, newDatabase func
 	return nil
 }
 
-// RunDatabases is the umbrella's first phase (a pre-install hook, spec 005): each service's database and login, its
-// password in a Secret of the service's namespace. A service whose Secret exists is left as it is: its login was made
-// by an earlier run, and a password is never changed by itself. The administrator's Secret stays, for the next phase.
+// RunDatabases is the umbrella's first phase (a Job of its release, before the services start: spec 005): each
+// service's database and login, its password in a Secret of the service's namespace. A service whose Secret exists is
+// left as it is: its login was made by an earlier run, and a password is never changed by itself. The administrator's
+// Secret stays, for the next phase.
 func RunDatabases(ctx context.Context, c *Config, newDatabase func() (Database, error), secrets ServiceSecrets,
 	log *slog.Logger) error {
 	var db Database

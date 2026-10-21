@@ -16,6 +16,14 @@ so they are written twice there - checked here), and the install's required fact
 {{- if ne .Values.tresor.vaultToken.audience $g.keys.vault.audience }}
 {{- fail "tresor.vaultToken.audience must be global.keys.vault.audience" }}
 {{- end }}
+{{- $init := printf "subject:%s|system:serviceaccount:%s:hugr-init" $g.clusterIssuer.url .Release.Namespace }}
+{{- $admins := list }}
+{{- range .Values.tresor.config.policy.admins }}
+{{- $admins = append $admins (tpl . $) }}
+{{- end }}
+{{- if not (has $init $admins) }}
+{{- fail (printf "tresor.config.policy.admins must keep hugr-init's entry %q: it writes the catalog's secret" $init) }}
+{{- end }}
 {{- $_ := required "global.database.host is required (a PostgreSQL 18 server)" $g.database.host }}
 {{- if not (hasPrefix "https://" $g.idp.issuer) }}
 {{- fail "global.idp.issuer is the organisation IdP's https URL" }}

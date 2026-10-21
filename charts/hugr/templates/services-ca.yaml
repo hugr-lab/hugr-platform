@@ -61,7 +61,7 @@ spec:
     - {{ include "hugr.umbrella.serviceHost" (dict "root" $ "service" $svc) }}
     - {{ include "hugr.umbrella.serviceHost" (dict "root" $ "service" $svc) }}.cluster.local
 ---
-# the private CAs the service trusts (its database's, the vault's; public certificates, no credential)
+# the private CAs the service trusts (its database's, the vault's, the IdP's; public certificates, no credential)
 apiVersion: v1
 kind: Secret
 metadata:
@@ -73,6 +73,7 @@ type: Opaque
 stringData:
   database.crt: {{ $.Values.global.database.caCert | quote }}
   vault.crt: {{ $.Values.global.keys.vault.caCert | quote }}
+  idp.crt: {{ $.Values.global.idp.caCert | quote }}
 {{- end }}
 ---
 apiVersion: v1
@@ -88,12 +89,14 @@ data:
     {{- . | trim | nindent 4 }}
     {{- end }}
 ---
+# the database's and the IdP's private CAs, for the platform's bundle (an empty key adds nothing)
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: hugr-database-ca
+  name: hugr-private-cas
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hugr.umbrella.labels" . | nindent 4 }}
 data:
-  ca.crt: {{ .Values.global.database.caCert | quote }}
+  database.crt: {{ .Values.global.database.caCert | quote }}
+  idp.crt: {{ .Values.global.idp.caCert | quote }}

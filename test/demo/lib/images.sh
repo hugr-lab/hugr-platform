@@ -1,7 +1,8 @@
 # shellcheck shell=bash
-# The demo's images (spec 004): the operator from this checkout; tresor-server and kista from a checkout each; hugr-node
-# from the assets of a hugr-node release dry run (dist-linux_<arch>) - nothing new is published. Each is <name>:demo,
-# built by the provider: on kind and minikube locally and loaded into the cluster, on AKS in the run's registry.
+# The demo's images (spec 004): the operator from this checkout; hugr-node from the assets of a hugr-node release dry
+# run (dist-linux_<arch>) - nothing new is published. Each is <name>:demo, built by the provider: on kind and minikube
+# locally and loaded into the cluster, on AKS in the run's registry. tresor-server and kista are the releases the
+# umbrella chart pins, their published images (spec 005).
 
 # REGISTRY: the images' registry with its slash (AKS's), or none (loaded into the cluster); PULL: their pull policy
 REGISTRY=""
@@ -69,12 +70,12 @@ build_images() {
 	step "the images"
 	provider_build hugr-platform "$ROOT"
 	ok "the operator's image $(img hugr-platform), from this checkout"
-	provider_build tresor-server "$(src tresor-server TRESOR_SERVER_DIR)"
-	provider_build kista "$(src duckdb-extension-repository KISTA_DIR)"
-	ok "$(img tresor-server) and $(img kista), from their main"
 	NODE_SRC="$(src hugr-node HUGR_NODE_DIR)"
-	# the assets seed kista whichever image runs: the node's extensions are its release's
+	# the assets seed kista whichever image runs: the node's extensions are its release's, for its DuckDB
 	DIST="$(node_dist)"
+	DUCKDB_VERSION="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["duckdb_version"])' \
+		"$(python3 "$NODE_SRC/scripts/ext_footer.py" "$DIST/hugr_node.duckdb_extension")")" ||
+		fail "the node's DuckDB version"
 	if [ -n "${NODE_IMAGE:-}" ]; then
 		provider_import "$NODE_IMAGE" hugr-node
 		ok "$(img hugr-node), from $NODE_IMAGE"
