@@ -97,8 +97,9 @@ func TestRunFresh(t *testing.T) {
 	}
 	s := tr.created
 	if s == nil || s.Type != "postgres" || s.Params["password"] != db.password || s.Params["user"] != "hugr_catalog" ||
-		s.Params["host"] != "pg.db.svc" || s.Params["port"] != "5432" || s.Params["database"] != "hugr" ||
-		len(s.RedactKeys) != 1 || s.RedactKeys[0] != "password" {
+		s.Params["host"] != "pg.db.svc" || s.Params["port"] != "5432" || s.Params["dbname"] != "hugr" ||
+		s.Params["sslmode"] != "disable" || s.Params["sslrootcert"] != nil || len(s.RedactKeys) != 1 ||
+		s.RedactKeys[0] != "password" {
 		t.Errorf("the secret written: %+v", s)
 	}
 	if len(tr.grants) != 2 {
@@ -114,6 +115,11 @@ func TestRunFresh(t *testing.T) {
 	}
 	if strings.Join(tr.calls, ",") != "discover,exists,create,grant,grant" {
 		t.Errorf("the order: %v", tr.calls)
+	}
+	// a verified connection: the node's CA bundle is the secret's root
+	c.Catalog.SSLMode, c.Catalog.NodeCAFile = "verify-full", "/etc/hugr/ca/ca.crt"
+	if s := catalogSecret(c, "pw"); s.Params["sslmode"] != "verify-full" || s.Params["sslrootcert"] != "/etc/hugr/ca/ca.crt" {
+		t.Errorf("a verified catalog's secret: %v", s.Params)
 	}
 }
 

@@ -78,6 +78,8 @@ data:
       database: {{ $init.catalog.database | quote }}
       login: {{ $init.catalog.login | quote }}
       sslmode: {{ $init.catalog.sslmode | quote }}
+      # where a node finds the platform's CA bundle (its HUGR_CA_FILE): the secret's sslrootcert, verified
+      nodeCAFile: {{ printf "/etc/hugr/ca/%s" (default "ca.crt" ((.Values.platform.spec.caBundle).configMapRef).key) | quote }}
       admin:
         secretName: {{ $init.catalog.adminSecret | quote }}
         dir: /var/run/secrets/hugr-init/db-admin

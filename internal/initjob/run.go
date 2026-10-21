@@ -82,19 +82,25 @@ func Run(ctx context.Context, c *Config, tresor SecretsService, newDatabase func
 	return nil
 }
 
-// catalogSecret is the login as the nodes read it: a postgres secret, the password redacted
+// catalogSecret is the login as the nodes read it: a postgres secret, the password redacted. Its keys are libpq's own
+// (dbname, not database): postgres_scanner takes a CREATE SECRET's aliases there, never a secret's material
 func catalogSecret(c *Config, password string) Secret {
+	params := map[string]any{
+		"host":     c.Catalog.Host,
+		"port":     strconv.Itoa(c.Catalog.Port),
+		"dbname":   c.Catalog.Database,
+		"user":     c.Catalog.Login,
+		"password": password,
+		"sslmode":  c.Catalog.SSLMode,
+	}
+	if strings.HasPrefix(c.Catalog.SSLMode, "verify-") && c.Catalog.NodeCAFile != "" {
+		params["sslrootcert"] = c.Catalog.NodeCAFile
+	}
 	return Secret{
-		Type:     "postgres",
-		Provider: "config",
-		Scope:    []string{},
-		Params: map[string]any{
-			"host":     c.Catalog.Host,
-			"port":     strconv.Itoa(c.Catalog.Port),
-			"database": c.Catalog.Database,
-			"user":     c.Catalog.Login,
-			"password": password,
-		},
+		Type:       "postgres",
+		Provider:   "config",
+		Scope:      []string{},
+		Params:     params,
 		RedactKeys: []string{"password"},
 		Comment:    "the policy catalog's login, made by hugr-init",
 	}

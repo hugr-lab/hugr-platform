@@ -41,8 +41,11 @@ type CatalogConfig struct {
 	Port     int    `json:"port"`
 	Database string `json:"database"`
 	Login    string `json:"login"`
-	// SSLMode of the administrator's connection: disable, require, verify-ca or verify-full.
+	// SSLMode of the administrator's connection and of the nodes': disable, require, verify-ca or verify-full.
 	SSLMode string `json:"sslmode"`
+	// NodeCAFile is where a node finds the platform's CA bundle (its HUGR_CA_FILE): the secret's sslrootcert with a
+	// verify sslmode.
+	NodeCAFile string `json:"nodeCAFile,omitempty"`
 	// Admin is the database administrator's one-time credential.
 	Admin AdminConfig `json:"admin"`
 }
