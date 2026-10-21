@@ -567,6 +567,32 @@ check_no_secrets() {
 	ok "no secret of the run, no token, no private key in any log of the run (the nodes' from their start), the events or the namespace's resources; the seed's SQL is gone"
 }
 
+# check_upgrade: the release upgraded to itself (spec 008's first step): every Job of the umbrella runs again - the
+# databases phase without the administrator's Secret (the catalog phase deleted it), the internal OpenBao's by its own
+# login - and makes nothing twice; the platform serves throughout
+check_upgrade() {
+	step "11. an upgrade of the release to itself: every Job runs again, nothing is made twice, the platform serves"
+	local revision want=2 out
+	revision="$(helm_ status hugr -n hugr -o json | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"] + 1)')"
+	chart_release
+	k -n hugr wait --for=condition=complete "job/hugr-init-db-$revision" --timeout=300s >/dev/null ||
+		fail "the databases Job of revision $revision"
+	[ "$KEYS_MODE" = external ] || want=3
+	out="$(k -n hugr logs "job/hugr-init-db-$revision" 2>&1)"
+	[ "$(grep -c 'made already: left as it is' <<<"$out")" = "$want" ] ||
+		fail "the databases Job of revision $revision did not leave the $want services' logins as they were: $(redact <<<"$out")"
+	if [ "$KEYS_MODE" = internal ]; then
+		k -n "$OPENBAO_NS" wait --for=condition=complete "job/hugr-openbao-init-$revision" --timeout=300s >/dev/null ||
+			fail "the OpenBao Job of revision $revision"
+		out="$(k -n "$OPENBAO_NS" logs "job/hugr-openbao-init-$revision" 2>&1)"
+		grep -q "holds the services' keys" <<<"$out" && ! grep -q 'OpenBao initialised' <<<"$out" ||
+			fail "the OpenBao Job of revision $revision did not configure by its own login: $(redact <<<"$out")"
+	fi
+	out="$(as analyst-a "$(first_pod a)" "SELECT count(*) FROM orders")" || fail "analyst_a's read after the upgrade"
+	[ "$out" = 3 ] || fail "analyst_a after the upgrade: $out"
+	ok "revision $revision: the services' databases left as they were, OpenBao configured by its own login, analyst_a still reads"
+}
+
 run_checks() {
 	checker_up
 	check_entry
@@ -581,6 +607,7 @@ run_checks() {
 	check_plan
 	check_network
 	check_policy
+	check_upgrade
 	check_no_secrets
 	echo
 	echo "PASS: the platform in one cluster ($PROVIDER)"
