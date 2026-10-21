@@ -153,6 +153,9 @@ tresor:
 
 # --- kista (its values; config rendered through tpl) ---------------------------------------------------------------
 kista:
+  # kista 0.1.2 (its spec 0025): each string of config holding {{ rendered by tpl, within the string; one rendering
+  # empty is refused
+  configTemplate: true
   namespaceOverride: hugr-kista # = global.namespaces.kista (checked)
   mode: tls
   tlsSecret: kista-tls
@@ -166,11 +169,12 @@ kista:
   projectedTokens:
     - {name: vault, mountPath: /var/run/secrets/kista/vault, audience: vault, expirationSeconds: 3600} # audience = global.keys.vault.audience (checked)
   config:
-    serve: {public_url: "https://{{ .Release.Name }}-kista.{{ .Values.global.namespaces.kista }}.svc"}
+    serve: {public_url: "https://{{ .Release.Name }}-kista.{{ .Values.namespaceOverride }}.svc"}
     store:
       kind: postgres
       dsn: >-
-        host={{ .Values.global.database.host }} port={{ .Values.global.database.port }} dbname=kista user=kista
+        host={{ required "global.database.host" .Values.global.database.host }} port={{ .Values.global.database.port }}
+        dbname=kista user=kista
         sslmode={{ .Values.global.database.sslmode }}{{ if .Values.global.database.caCert }}
         sslrootcert=/etc/kista/secrets/cas/database.crt{{ end }}
       login: {kind: password, password_file: /etc/kista/secrets/db/password}
@@ -185,7 +189,9 @@ kista:
           vault:
             address: "{{ .Values.global.keys.vault.address }}"
             mount: "{{ .Values.global.keys.vault.transitMount }}"
-            ca_file: "{{ if .Values.global.keys.vault.caCert }}/etc/kista/secrets/cas/vault.crt{{ end }}"
+            # a private CA, or the image's system roots (an empty string is refused)
+            ca_file: >-
+              {{ if .Values.global.keys.vault.caCert }}/etc/kista/secrets/cas/vault.crt{{ else }}/etc/ssl/certs/ca-certificates.crt{{ end }}
             software_keys: true
             auth:
               kind: kubernetes
