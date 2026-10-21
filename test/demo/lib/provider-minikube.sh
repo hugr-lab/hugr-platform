@@ -30,12 +30,17 @@ provider_context() { minikube -p "$DEMO_PROFILE" update-context >/dev/null 2>&1 
 provider_build() { local_build "$@"; }
 provider_import() { local_import "$@"; }
 provider_load() {
-	# loaded again only when it changed: a node image is hundreds of MB
+	# loaded again only when it changed (a node image is hundreds of MB), judged by its build time: the ids differ
+	# between Docker Desktop's containerd store (an index's) and minikube's (a config's) whatever the image
 	local here there
-	here="$(docker image inspect -f '{{.Id}}' "$1")"
-	there="$(minikube -p "$DEMO_PROFILE" ssh -- docker image inspect -f '{{.Id}}' "$1" 2>/dev/null | tr -d '\r' || true)"
+	here="$(docker image inspect -f '{{.Created}}' "$1")"
+	there="$(minikube -p "$DEMO_PROFILE" ssh -- docker image inspect -f '{{.Created}}' "$1" 2>/dev/null | tr -d '\r' || true)"
 	[ "$here" = "$there" ] && return 0
-	minikube -p "$DEMO_PROFILE" image load --overwrite=true "$1" >/dev/null || fail "loading $1 into minikube"
+	# docker load moves the tag to the new image; minikube's image load --overwrite left the old one in place
+	docker save "$1" | minikube -p "$DEMO_PROFILE" ssh --native-ssh=false -- docker load >/dev/null ||
+		fail "loading $1 into minikube"
+	there="$(minikube -p "$DEMO_PROFILE" ssh -- docker image inspect -f '{{.Created}}' "$1" 2>/dev/null | tr -d '\r' || true)"
+	[ "$here" = "$there" ] || fail "minikube holds another $1 than the one built here"
 }
 
 # the end of a run: the namespaces go, the profile stays for the next run (HUGR_DEMO_DELETE=1 deletes it)
@@ -51,7 +56,8 @@ provider_down() {
 	}
 	minikube -p "$DEMO_PROFILE" update-context >/dev/null 2>&1 || fail "the profile's kube context"
 	# waited for: an up right after finds no namespace being deleted
-	k delete namespace hugr idp tresor kista db --ignore-not-found --timeout=300s >/dev/null || fail "deleting the namespaces"
+	k delete namespace hugr idp hugr-tresor hugr-kista openbao db tresor kista --ignore-not-found --timeout=300s \
+		>/dev/null || fail "deleting the namespaces"
 	down_cluster_scoped
 	ok "the demo's namespaces and cluster-wide objects are deleted; the profile $DEMO_PROFILE stays"
 }

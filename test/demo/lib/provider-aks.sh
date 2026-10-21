@@ -98,9 +98,8 @@ docker_login() {
 	return 0
 }
 
-# provider_build <name> <context>: built here for amd64 and pushed to the run's registry. tresor-server and kista
-# cross-compile (BuildKit's platform arguments); the operator's and the node's images build emulated on an arm64
-# machine
+# provider_build <name> <context>: built here for amd64 and pushed to the run's registry: the operator's image
+# cross-compiles (BuildKit's platform arguments), the node's builds emulated on an arm64 machine
 provider_build() {
 	docker build -q --platform linux/amd64 -t "$(img "$1")" --build-arg VERSION=demo "$2" >"$WORK/build-$1.log" 2>&1 || {
 		tail -30 "$WORK/build-$1.log" >&2

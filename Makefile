@@ -30,6 +30,9 @@ manifests:
 chart:
 	helm lint --strict charts/hugr-platform -f charts/hugr-platform/ci/example-values.yaml
 	helm template hugr charts/hugr-platform -n hugr -f charts/hugr-platform/ci/example-values.yaml >/dev/null
+	helm dependency build charts/hugr
+	helm lint --strict charts/hugr -f charts/hugr/ci/example-values.yaml
+	charts/hugr/ci/render-test.sh
 
 build:
 	go build ./...

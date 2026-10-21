@@ -1,0 +1,12 @@
+dependencies:
+- name: hugr-platform
+  repository: file://../hugr-platform
+  version: 0.1.0
+- name: tresor-server
+  repository: oci://ghcr.io/hugr-lab/charts
+  version: 0.7.2
+- name: kista
+  repository: oci://ghcr.io/hugr-lab/charts
+  version: 0.1.2
+digest: sha256:9d93c4c3d915c6de102051840f444483d4e377354c4a905eebe1dda66c70e198
+generated: "2026-10-21T12:26:11.294997+02:00"

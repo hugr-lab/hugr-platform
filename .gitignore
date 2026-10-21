@@ -4,3 +4,6 @@
 *.out
 .env
 /tmp/
+
+# the umbrella's dependencies, fetched by helm dependency build (Chart.lock pins them)
+/charts/hugr/charts/

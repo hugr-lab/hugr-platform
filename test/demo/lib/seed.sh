@@ -4,26 +4,10 @@
 # unprefixed, on the node's image: the source's secret, the roles, a virtual catalog over the source, the groups'
 # bindings, the first profile.
 
-# the platform's CA bundle: HUGR_CA_FILE replaces the node's system roots, so it holds them plus the run's CA. The
-# roots are read from the node's image in the cluster, wherever it was built.
-install_ca_bundle() {
-	namespace hugr
-	k -n hugr delete pod ca-roots --ignore-not-found --wait >/dev/null
-	k -n hugr run ca-roots --image="$(img hugr-node)" --image-pull-policy="$PULL" --restart=Never \
-		--command -- cat /etc/ssl/certs/ca-certificates.crt >/dev/null || fail "the node image's system roots"
-	k -n hugr wait --for=jsonpath='{.status.phase}'=Succeeded pod/ca-roots --timeout=300s >/dev/null ||
-		fail "the node image's system roots: $(k -n hugr get pod ca-roots -o jsonpath='{.status.containerStatuses[0].state}')"
-	k -n hugr logs ca-roots >"$WORK/bundle.crt"
-	k -n hugr delete pod ca-roots --wait=false >/dev/null
-	grep -q 'BEGIN CERTIFICATE' "$WORK/bundle.crt" || fail "the node image holds no system roots"
-	cat "$WORK/ca.crt" >>"$WORK/bundle.crt"
-	k -n hugr delete configmap hugr-ca --ignore-not-found >/dev/null
-	k -n hugr create configmap hugr-ca --from-file=ca.crt="$WORK/bundle.crt" >/dev/null
-}
-
 # tresor_job <name> <sql file>: the SQL in a Job of its own process on the node's image, as the seeder (tresor's
 # administrator) - the file carries the run's secrets: it goes into a Secret of the demo's cluster, never a
-# ConfigMap or a log, and is removed here. Its log is left in $WORK/<name>.log
+# ConfigMap or a log, and is removed here. It trusts what a node trusts: the platform's CA bundle (the operator's -
+# the system roots, the internal CA, tresor's and kista's, the database's). Its log is left in $WORK/<name>.log
 tresor_job() {
 	local name="$1" sql="$2" scope=""
 	[ -z "$TRESOR_SCOPE" ] || scope=", OAUTH_SCOPE '$TRESOR_SCOPE'"
@@ -65,7 +49,7 @@ spec:
             - {name: home, mountPath: /var/lib/hugr-node}
       volumes:
         - {name: job, secret: {secretName: $name}}
-        - {name: ca, configMap: {name: hugr-ca}}
+        - {name: ca, configMap: {name: hugr-ca-bundle}}
         - {name: home, emptyDir: {}}
 YAML
 	local done=1
@@ -77,16 +61,6 @@ YAML
 		tail -60 "$WORK/$name.log" | redact >&2 || true
 		fail "the Job $name did not complete"
 	fi
-}
-
-# reset_catalog: the run's catalog is made anew by hugr-init (install_db dropped the last one): the catalog's secret
-# the last run left in tresor goes, or hugr-init would take the install as done
-reset_catalog() {
-	step "the last run's catalog secret out of tresor: hugr-init makes the catalog anew"
-	install_ca_bundle
-	echo "DROP PERSISTENT SECRET IF EXISTS hugr_policy_catalog FROM owner;" >"$WORK/reset.sql"
-	tresor_job demo-reset "$WORK/reset.sql"
-	ok "tresor holds no hugr_policy_catalog: this run's hugr-init writes it"
 }
 
 # seed: the demo's own data, as the database's operator (an anonymous administrator in the Job's own process, spec

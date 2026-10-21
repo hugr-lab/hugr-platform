@@ -1,6 +1,7 @@
-{{/* The HugrPlatform (api/v1alpha1), its spec as the values write it. The chart fills what it provides when the
-values leave it unset: the CA bundle (the ConfigMap the operator writes) and the front's certificate Secret. */}}
-{{- $spec := deepCopy .Values.platform.spec }}
+{{/* The HugrPlatform (api/v1alpha1), its spec as the values write it - rendered through tpl first, so an umbrella's
+values may name its global facts ({{ .Values.global.idp.issuer }}, spec 005). The chart fills what it provides when
+the values leave it unset: the CA bundle (the ConfigMap the operator writes) and the front's certificate Secret. */}}
+{{- $spec := tpl (toYaml .Values.platform.spec) . | fromYaml }}
 {{- $_ := required "platform.spec.idp.issuer is required" $spec.idp.issuer }}
 {{- $_ := required "platform.spec.tresor.host is required" $spec.tresor.host }}
 {{- $_ := required "platform.spec.repository.prefix is required" $spec.repository.prefix }}

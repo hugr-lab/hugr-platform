@@ -540,10 +540,12 @@ check_no_secrets() {
 		k -n hugr logs deploy/hugr-platform --tail -1
 		k -n hugr logs -l app.kubernetes.io/name=hugr-front --tail -1 --prefix
 		k -n hugr logs job/demo-seed --tail -1
-		# the stack's services; OpenBao's dev mode prints its own root token, on purpose (spec 004)
-		for ns in idp tresor kista db; do
+		# hugr-init's databases phase (its catalog phase's Job is gone once it succeeded)
+		k -n hugr logs -l app.kubernetes.io/component=init --tail -1 --prefix
+		# the stack's services; OpenBao's dev mode prints its own root token, on purpose (spec 004): its namespace is
+		# not read
+		for ns in idp "$TRESOR_NS" "$KISTA_NS" db; do
 			for pod in $(k -n "$ns" get pods -o jsonpath='{.items[*].metadata.name}'); do
-				case "$pod" in openbao-*) continue ;; esac
 				k -n "$ns" logs "$pod" --all-containers 2>/dev/null || true
 			done
 		done

@@ -78,6 +78,12 @@ diagnose() {
 		k get events -A --sort-by=.lastTimestamp | tail -80
 		k -n hugr get hng,hp -o yaml
 		k -n hugr logs deploy/hugr-platform --tail 100
+		k -n hugr logs -l app.kubernetes.io/component=init --tail 40 --prefix
+		local ns
+		for ns in hugr-tresor hugr-kista; do
+			echo "== $ns"
+			k -n "$ns" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix
+		done
 		local pod
 		for pod in $(k -n hugr get pods -l platform.hugr.io/group -o jsonpath='{.items[*].metadata.name}'); do
 			echo "== $pod"
@@ -116,15 +122,20 @@ ca_make() {
 
 # ca_cert <name> <dns>...: a server certificate in $WORK/<name>.{crt,key}, also for 127.0.0.1 and localhost (a
 # port-forward reaches it there)
-# A certificate still valid for a day, of the CA as it is, is kept: the services serving it keep running on it.
+# A certificate still valid for a day, of the CA as it is, for the names asked, is kept: the services serving it keep
+# running on it (a service that moved namespace gets a new one).
 ca_cert() {
-	local name="$1" san="IP:127.0.0.1,DNS:localhost" dns
-	if [ -f "$WORK/$name.crt" ] && openssl x509 -checkend 86400 -noout -in "$WORK/$name.crt" >/dev/null 2>&1 &&
-		openssl verify -CAfile "$WORK/ca.crt" "$WORK/$name.crt" >/dev/null 2>&1; then
-		return 0
-	fi
+	local name="$1" san="IP:127.0.0.1,DNS:localhost" dns kept=1
 	shift
 	for dns in "$@"; do san="$san,DNS:$dns"; done
+	if [ -f "$WORK/$name.crt" ] && openssl x509 -checkend 86400 -noout -in "$WORK/$name.crt" >/dev/null 2>&1 &&
+		openssl verify -CAfile "$WORK/ca.crt" "$WORK/$name.crt" >/dev/null 2>&1; then
+		for dns in "$@"; do
+			openssl x509 -noout -ext subjectAltName -in "$WORK/$name.crt" 2>/dev/null | grep -q "DNS:$dns\(,\|$\)" ||
+				kept=""
+		done
+		[ -z "$kept" ] || return 0
+	fi
 	(umask 077 && openssl req -newkey rsa:2048 -nodes -keyout "$WORK/$name.key" -out "$WORK/$name.csr" -subj "/CN=$1" \
 		2>/dev/null) || fail "the key of $name"
 	printf 'subjectAltName=%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n' "$san" >"$WORK/$name.ext"

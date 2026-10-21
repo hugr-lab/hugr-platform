@@ -1,0 +1,102 @@
+{{/* Each service's own CA (the owner, 2026-10-21): made once at install and kept across upgrades (lookup), in the
+service's namespace; cert-manager issues and renews the service's serving certificate from it there. No private key
+leaves its namespace. The CAs' public certificates go to the platform's namespace (hugr-services-ca), into the
+platform's bundle: the nodes, the front and hugr-init trust tresor and kista by it. */}}
+{{- $cas := list }}
+{{- range $svc, $ns := include "hugr.umbrella.services" . | fromYaml }}
+{{- $name := printf "%s-ca" $svc }}
+{{- $existing := lookup "v1" "Secret" $ns $name }}
+{{- $crt := "" }}
+{{- $key := "" }}
+{{- if and $existing $existing.data }}
+{{- $crt = index $existing.data "tls.crt" | b64dec }}
+{{- $key = index $existing.data "tls.key" | b64dec }}
+{{- else }}
+{{- $ca := genCA (printf "hugr %s CA" $svc) 3650 }}
+{{- $crt = $ca.Cert }}
+{{- $key = $ca.Key }}
+{{- end }}
+{{- $cas = append $cas $crt }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" $ | nindent 4 }}
+  annotations:
+    # a new CA would be trusted by nobody until the platform's bundle and every pod took it: never made again
+    helm.sh/resource-policy: keep
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $crt | b64enc }}
+  tls.key: {{ $key | b64enc }}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" $ | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ $name }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $svc }}-tls
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" $ | nindent 4 }}
+spec:
+  secretName: {{ $svc }}-tls
+  issuerRef: {name: {{ $name }}, kind: Issuer, group: cert-manager.io}
+  duration: 2160h
+  renewBefore: 720h
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  dnsNames:
+    - {{ include "hugr.umbrella.serviceHost" (dict "root" $ "service" $svc) }}
+    - {{ include "hugr.umbrella.serviceHost" (dict "root" $ "service" $svc) }}.cluster.local
+---
+# the private CAs the service trusts (its database's, the vault's, the IdP's; public certificates, no credential)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hugr-cas
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" $ | nindent 4 }}
+type: Opaque
+stringData:
+  database.crt: {{ $.Values.global.database.caCert | quote }}
+  vault.crt: {{ $.Values.global.keys.vault.caCert | quote }}
+  idp.crt: {{ $.Values.global.idp.caCert | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hugr-services-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+data:
+  ca.crt: |
+    {{- range $cas }}
+    {{- . | trim | nindent 4 }}
+    {{- end }}
+---
+# the database's and the IdP's private CAs, for the platform's bundle (an empty key adds nothing)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hugr-private-cas
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+data:
+  database.crt: {{ .Values.global.database.caCert | quote }}
+  idp.crt: {{ .Values.global.idp.caCert | quote }}

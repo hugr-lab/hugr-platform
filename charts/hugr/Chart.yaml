@@ -1,0 +1,25 @@
+apiVersion: v2
+name: hugr
+description: >-
+  The hugr platform with its two services, for a catalog's one-chart install (hugr-platform spec 005): the platform
+  (hugr-platform), the secrets service (tresor-server) and the extension repository (kista), each in a namespace of its
+  own, wired together
+type: application
+version: 0.1.0
+appVersion: "dev"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/hugr-lab/hugr-platform
+sources:
+  - https://github.com/hugr-lab/hugr-platform
+dependencies:
+  # this repository's chart, packaged with this one at the release's version
+  - name: hugr-platform
+    version: ">=0.0.0-0"
+    repository: file://../hugr-platform
+  - name: tresor-server
+    alias: tresor
+    version: 0.7.2
+    repository: oci://ghcr.io/hugr-lab/charts
+  - name: kista
+    version: 0.1.2
+    repository: oci://ghcr.io/hugr-lab/charts
