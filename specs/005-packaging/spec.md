@@ -433,11 +433,13 @@ Built (2026-10-21):
   - **The policy catalog on Azure SQL**: a node logs in by its group's Entra token through mssql and the linked `azure`
     extension (mssql reads a token per connection), so `hugr_policy_catalog` in tresor names the host and the
     database only. Still to verify: the group's workload identity reaching the `azure` extension's credential chain.
-    - **Checked 2026-10-21 (mssql-extension a7c320e):** mssql takes an Entra token from a service principal's
-      secret, from the environment (a client secret), from the Azure CLI, from an interactive login, or as a given
-      token. It does not take one from a pod's workload identity (`AZURE_FEDERATED_TOKEN_FILE`), and its
-      `managed_identity` provider is "not yet implemented". A node on AKS therefore cannot log in to Azure SQL yet. This
-      is a product gap for mssql-extension, to relay when stage B starts.
+    - **Checked 2026-10-21 (mssql-extension a7c320e):** a node logs in to Azure SQL by Entra today, as a service
+      principal (`PROVIDER service_principal`; mssql gets and renews the tokens itself). The principal's client secret
+      is then the one credential, and it lives only in tresor, in `hugr_policy_catalog`. mssql also takes a token from
+      the Azure CLI, an interactive login, the environment or a given token. What it lacks is the login with no secret
+      at all: a pod's workload identity (`AZURE_FEDERATED_TOKEN_FILE`), and its `managed_identity` provider is "not yet
+      implemented". That would remove the client secret too: a product gap for mssql-extension, to relay when stage B
+      starts.
   - **The policy catalog on PostgreSQL** has one gap. An Entra token lives about an hour, and postgres_scanner takes
     its password once, so a new connection after that fails. Two ways close it: postgres_scanner re-reading a token as
     the password per connection (a patch of ours), or a dynamic secret in tresor that hands out a fresh token ("CREATE
