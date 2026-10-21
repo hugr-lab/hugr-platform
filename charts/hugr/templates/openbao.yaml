@@ -121,8 +121,9 @@ spec:
           readinessProbe:
             httpGet: {path: "/v1/sys/health?standbyok=true&uninitcode=204", port: 8200, scheme: HTTPS}
             periodSeconds: 5
+          # alive while it answers at all (a TCP probe of a TLS listener only fills its log with handshake errors)
           livenessProbe:
-            tcpSocket: {port: 8200}
+            httpGet: {path: "/v1/sys/health?standbyok=true&uninitcode=204&sealedcode=204", port: 8200, scheme: HTTPS}
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:

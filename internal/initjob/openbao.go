@@ -199,6 +199,10 @@ func RunOpenBao(ctx context.Context, c *OpenBaoConfig, bao *OpenBao, recovery Re
 		token = root
 		// the root token dies with this run whatever happens next
 		defer func() { _ = bao.RevokeSelf(context.WithoutCancel(ctx), root) }()
+		// the node just initialised is active only once it has taken the HA lock: a write before that is refused
+		if err := bao.WaitActive(ctx); err != nil {
+			return err
+		}
 		if err := recovery.Put(ctx, key); err != nil {
 			return fmt.Errorf("hugr-init: OpenBao is initialised, but its recovery key could not be kept in %s/%s: %w"+
 				" - without it there is no break-glass; drop OpenBao's database and run again", c.Namespace,
@@ -228,11 +232,44 @@ func RunOpenBao(ctx context.Context, c *OpenBaoConfig, bao *OpenBao, recovery Re
 }
 
 func configureOpenBao(ctx context.Context, c *OpenBaoConfig, bao *OpenBao, token string) error {
-	// the Job's own policy first: a release that adds a service widens it, and OpenBao applies a policy to the tokens
-	// that hold it at once - the new key and role below are then within it
+	// the Job's own policy and its login first: a release that adds a service widens the policy, which OpenBao applies
+	// to the tokens holding it at once; and a first run that stops after this still leaves the next one a login
 	if err := bao.write(ctx, token, http.MethodPut, "sys/policies/acl/"+c.Init.Role,
 		map[string]any{"policy": initPolicy(c)}); err != nil {
 		return fmt.Errorf("hugr-init: the Job's own policy %s: %w", c.Init.Role, err)
+	}
+	auths, err := bao.list(ctx, token, "sys/auth")
+	if err != nil {
+		return fmt.Errorf("hugr-init: OpenBao's auth methods: %w", err)
+	}
+	if !auths[c.AuthMount+"/"] {
+		if err := bao.write(ctx, token, http.MethodPost, "sys/auth/"+c.AuthMount,
+			map[string]any{"type": "kubernetes"}); err != nil {
+			return fmt.Errorf("hugr-init: enabling Kubernetes auth at %s: %w", c.AuthMount, err)
+		}
+	}
+	// OpenBao reviews a token with its own ServiceAccount and the cluster's CA, both read in its pod
+	if err := bao.write(ctx, token, http.MethodPost, "auth/"+c.AuthMount+"/config",
+		map[string]any{"kubernetes_host": "https://kubernetes.default.svc"}); err != nil {
+		return fmt.Errorf("hugr-init: configuring Kubernetes auth: %w", err)
+	}
+	roles := []struct {
+		name, sa, ns, ttl string
+	}{{c.Init.Role, c.Init.ServiceAccount, c.Namespace, "15m"}}
+	for _, s := range c.Services {
+		roles = append(roles, struct{ name, sa, ns, ttl string }{s.Name, s.ServiceAccount, s.Namespace, "1h"})
+	}
+	putRole := func(name, sa, ns, ttl string) error {
+		if err := bao.write(ctx, token, http.MethodPost, "auth/"+c.AuthMount+"/role/"+name, map[string]any{
+			"bound_service_account_names": []string{sa}, "bound_service_account_namespaces": []string{ns},
+			"audience": c.Audience, "token_policies": []string{name}, "token_ttl": ttl,
+		}); err != nil {
+			return fmt.Errorf("hugr-init: the role %s: %w", name, err)
+		}
+		return nil
+	}
+	if err := putRole(roles[0].name, roles[0].sa, roles[0].ns, roles[0].ttl); err != nil {
+		return err
 	}
 	mounts, err := bao.list(ctx, token, "sys/mounts")
 	if err != nil {
@@ -267,33 +304,9 @@ func configureOpenBao(ctx context.Context, c *OpenBaoConfig, bao *OpenBao, token
 			return fmt.Errorf("hugr-init: the policy %s: %w", s.Name, err)
 		}
 	}
-	auths, err := bao.list(ctx, token, "sys/auth")
-	if err != nil {
-		return fmt.Errorf("hugr-init: OpenBao's auth methods: %w", err)
-	}
-	if !auths[c.AuthMount+"/"] {
-		if err := bao.write(ctx, token, http.MethodPost, "sys/auth/"+c.AuthMount,
-			map[string]any{"type": "kubernetes"}); err != nil {
-			return fmt.Errorf("hugr-init: enabling Kubernetes auth at %s: %w", c.AuthMount, err)
-		}
-	}
-	// OpenBao reviews a token with its own ServiceAccount and the cluster's CA, both read in its pod
-	if err := bao.write(ctx, token, http.MethodPost, "auth/"+c.AuthMount+"/config",
-		map[string]any{"kubernetes_host": "https://kubernetes.default.svc"}); err != nil {
-		return fmt.Errorf("hugr-init: configuring Kubernetes auth: %w", err)
-	}
-	roles := []struct {
-		name, sa, ns, ttl string
-	}{{c.Init.Role, c.Init.ServiceAccount, c.Namespace, "15m"}}
-	for _, s := range c.Services {
-		roles = append(roles, struct{ name, sa, ns, ttl string }{s.Name, s.ServiceAccount, s.Namespace, "1h"})
-	}
-	for _, r := range roles {
-		if err := bao.write(ctx, token, http.MethodPost, "auth/"+c.AuthMount+"/role/"+r.name, map[string]any{
-			"bound_service_account_names": []string{r.sa}, "bound_service_account_namespaces": []string{r.ns},
-			"audience": c.Audience, "token_policies": []string{r.name}, "token_ttl": r.ttl,
-		}); err != nil {
-			return fmt.Errorf("hugr-init: the role %s: %w", r.name, err)
+	for _, r := range roles[1:] {
+		if err := putRole(r.name, r.sa, r.ns, r.ttl); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -366,6 +379,28 @@ func (b *OpenBao) Initialize(ctx context.Context) (root, recoveryKey string, err
 	return out.RootToken, out.RecoveryKeysBase64[0], nil
 }
 
+// WaitActive waits until the cluster has an active node: the one OpenBao just initialised takes the HA lock a moment
+// after, and until then a write answers "local node not active but active cluster node not found".
+func (b *OpenBao) WaitActive(ctx context.Context) error {
+	deadline := time.Now().Add(b.Wait)
+	for {
+		var out struct {
+			LeaderAddress string `json:"leader_address"`
+		}
+		if _, err := b.do(ctx, "", http.MethodGet, "sys/leader", nil, &out); err == nil && out.LeaderAddress != "" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("hugr-init: OpenBao has no active node within %s", b.Wait)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(b.Poll):
+		}
+	}
+}
+
 // Login is the Job's Kubernetes-auth login: a token of its own role.
 func (b *OpenBao) Login(ctx context.Context, mount, role, jwt string) (string, error) {
 	var out struct {
@@ -389,8 +424,21 @@ func (b *OpenBao) RevokeSelf(ctx context.Context, token string) error {
 	return err
 }
 
+// write is a configuration call, each idempotent: one answered 5xx (a node handing its HA lock over, a standby that
+// lost the active) is asked again, a few times
 func (b *OpenBao) write(ctx context.Context, token, method, path string, body any) error {
-	_, err := b.do(ctx, token, method, path, body, nil)
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		var status int
+		if status, err = b.do(ctx, token, method, path, body, nil); err == nil || status < 500 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(b.Poll):
+		}
+	}
 	return err
 }
 

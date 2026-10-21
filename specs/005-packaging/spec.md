@@ -260,6 +260,23 @@ same version.
     - **The first setup**: an init Job initialises OpenBao once and keeps its recovery keys in a Secret of that
       namespace. With the root token it enables Transit, makes the two keys and the Kubernetes-auth roles for kista's
       and tresor's ServiceAccounts, then revokes the token.
+    - **Built (step 2, 2026-10-21)**, after a live check on OpenBao 2.7.1 (PostgreSQL 18, static seal):
+      - **Storage**: PostgreSQL (spec 008 Q6) - a fourth database and login, made by the databases Job like tresor's
+        and kista's (the password a Secret of OpenBao's namespace). Two stateless replicas in HA: one active, a standby
+        forwarding every request (`disable_standby_reads`: OpenBao 2.7's standbys otherwise serve reads themselves and
+        are eventually consistent - a mount just enabled answered "no handler" through a standby).
+      - **Unseal**: the static seal with a 32-byte key made once at install (`randBytes`, the Secret `openbao-seal`,
+        kept).
+      - **The Job** (`hugr-init --phase openbao`, a Job per revision): the first run initialises with one recovery
+        share, keeps the key in `openbao-recovery`, configures with the root token and revokes it. Every later run logs
+        in by Kubernetes auth as its own role `hugr-openbao-init`, whose policy names exactly the paths it configures
+        (the services' keys, policies and roles; never another). It writes its own policy first, so a release that adds
+        a service widens it before using it. Nothing is removed; a key of another type is refused, never changed.
+      - **Break-glass**: OpenBao 2.5.3 turned the unauthenticated `sys/generate-root` off, and its successor
+        `sys/generate-root-token` wants a token. The pod therefore has a second listener on its own loopback with the
+        legacy endpoints on: `kubectl exec` and the recovery key make a root token when no other is left.
+      - **The services**: tresor and kista reach `https://openbao.<ns>.svc:8200` by the umbrella's OpenBao CA (their
+        `vault.crt`); the default is `keys.mode: internal`.
   - **`secret`**: kista's channel key and tresor's KEK as Secrets of their own namespaces, made once at install. It
     is the lightest of the three and is an explicit choice. tresor takes a KEK from a Secret today; kista refuses a key
     from a Secret on purpose, so this mode waits for kista's opt-in (a product gap, relayed 2026-10-21).

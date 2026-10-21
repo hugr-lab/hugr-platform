@@ -31,6 +31,10 @@ type fakeBao struct {
 	config      map[string]any
 	jwt         string // the login's accepted token
 	calls       []string
+	// notActive: the writes after init that answer as a node not yet holding the HA lock
+	notActive int
+	// leaderless: the sys/leader reads after init that still name no active node
+	leaderless int
 }
 
 func newFakeBao() *fakeBao {
@@ -67,6 +71,14 @@ func (f *fakeBao) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		answer(200, map[string]any{"root_token": "root-token", "recovery_keys_base64": []string{"recovery-key"},
 			"keys": []string{}, "keys_base64": []string{}})
 		return
+	case path == "sys/leader":
+		if !f.initialized || f.leaderless > 0 {
+			f.leaderless--
+			answer(200, map[string]any{"ha_enabled": true, "leader_address": ""})
+			return
+		}
+		answer(200, map[string]any{"ha_enabled": true, "is_self": true, "leader_address": "https://openbao:8200"})
+		return
 	case strings.HasPrefix(path, "auth/") && strings.HasSuffix(path, "/login"):
 		if _, ok := f.roles[strings.TrimSuffix(strings.TrimPrefix(path, "auth/"), "/login")+"/"+body["role"].(string)]; !ok ||
 			body["jwt"] != f.jwt {
@@ -80,6 +92,11 @@ func (f *fakeBao) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := r.Header.Get("X-Vault-Token")
 	if !f.tokens[token] {
 		refuse(403, "permission denied")
+		return
+	}
+	if r.Method != http.MethodGet && f.notActive > 0 {
+		f.notActive--
+		refuse(500, "local node not active but active cluster node not found")
 		return
 	}
 	switch {
@@ -278,6 +295,46 @@ func TestOpenBaoWidensItsOwnPolicyFirst(t *testing.T) {
 	if !strings.Contains(f.policies["hugr-openbao-init"], "transit/keys/hugr-extra") || f.keys["hugr-extra"] == "" ||
 		f.roles["kubernetes/extra"] == nil {
 		t.Fatalf("the new service was not made: keys %v", f.keys)
+	}
+}
+
+// the node just initialised takes the HA lock a moment later: the Job waits for an active node, and a write refused
+// as "not active" in between is asked again (live OpenBao 2.7.1 on PostgreSQL answered so)
+func TestOpenBaoFirstRunWaitsForTheActiveNode(t *testing.T) {
+	f := newFakeBao()
+	f.leaderless = 3
+	f.notActive = 2
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	rec := &fakeRecovery{}
+	if err := RunOpenBao(context.Background(), baoConfig(t), baoClient(srv), rec, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	if f.roles["kubernetes/hugr-openbao-init"] == nil || f.keys["hugr-tresor"] == "" || len(f.tokens) != 0 {
+		t.Fatalf("roles %v keys %v tokens %v", f.roles, f.keys, f.tokens)
+	}
+}
+
+// a first run that stops after its own login is made leaves the next one able to finish
+func TestOpenBaoTheJobsLoginComesFirst(t *testing.T) {
+	f := newFakeBao()
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	if err := RunOpenBao(context.Background(), baoConfig(t), baoClient(srv), &fakeRecovery{},
+		slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	own, key := -1, -1
+	for i, call := range f.calls {
+		if call == "POST auth/kubernetes/role/hugr-openbao-init" && own < 0 {
+			own = i
+		}
+		if strings.HasPrefix(call, "POST transit/keys/") && key < 0 {
+			key = i
+		}
+	}
+	if own < 0 || key < 0 || own > key {
+		t.Fatalf("the Job's own role (%d) is not made before the first key (%d): %v", own, key, f.calls)
 	}
 }
 
