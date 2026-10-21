@@ -316,6 +316,9 @@ same version.
     binds to every ServiceAccount by default. The umbrella makes no binding for it.
   - `global.idp.audience` and `rolesClaim` were dropped: the platform's own use of the IdP (the console, the first
     policy) is `hugr-platform.platform.spec`'s.
+  - The databases Job mounted the administrator's Secret as required, but the catalog phase deletes it after the first
+    install, so an upgrade's run never started. It is optional now (a render test holds it); a run that has to make a
+    login without it fails naming the credential.
 
 ### Stage A: the operator's release
 
