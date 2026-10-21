@@ -145,12 +145,15 @@ One mechanism everywhere: the chart's install Job `hugr-init`, under a ServiceAc
 the admission policies leave it alone. Then the first node writes the first policy.
 
 1. **The database.** `hugr-init` makes the policy catalog's database and its login:
-   - on Azure SQL, Entra users for the groups' identities, with no password;
-   - elsewhere, a login with a generated password, written straight into tresor and nowhere else.
-2. **tresor.** It writes `hugr_policy_catalog` and grants it to the groups' identities.
-3. **kista.** It makes the tenant and the channel, and the upstreams: DuckDB's core and community repositories, our
-   public channel, and the organisation's Enterest tenant when the form names one. Subscribing to Enterest and granting
-   the in-cluster kista there stays manual, as a matter between the organisation and Enterest.
+   - on Azure SQL, Entra users for the groups' identities, with no password (stage B);
+   - on PostgreSQL (stage A), a login with a generated password (32 random bytes), written straight into tresor and
+     nowhere else, and the database owned by it.
+2. **tresor.** It writes `hugr_policy_catalog` and grants `use` on it to the principals the values name (the groups'
+   identities: a role or a group in tresor).
+3. **kista** sets itself up from the chart's values: its `bootstrap` section makes the tenant, the channel and its
+   upstreams once (kista spec 0024: DuckDB's core and community repositories, our public channel, the organisation's
+   Enterest tenant by a credential of `upstreams.credentials`). `hugr-init` does nothing there. Subscribing to
+   Enterest and granting the in-cluster kista there stays manual, as a matter between the organisation and Enterest.
 4. **The nodes** start, and the first one writes the first policy. The administrator signs into the console. The
    first policy:
    - **what it is:** `HugrPlatform.spec.firstPolicy`, structured fields, never SQL:
@@ -177,22 +180,38 @@ the admission policies leave it alone. Then the first node writes the first poli
 
 Where `hugr-init`'s rights come from:
 
-- **Azure** (the Managed Application): its ServiceAccount is federated with a managed identity the Managed Application
-  makes. That identity is the database server's Entra administrator and a tresor administrator.
-- **IONOS, OTC, Hetzner** (a catalog's form):
-  - **The database**, the form's choice: the provider's managed database, whose administrator credential the form
-    hands over once, in a Secret that `hugr-init` deletes after use (the owner: acceptable where needed); or one in
-    the cluster, CloudNativePG as a dependency of the umbrella.
-  - **tresor** trusts the cluster's own ServiceAccount issuer, and `hugr-init` logs in with its projected token
-    (`FLOW 'token'`: a short Job needs no renewal). This is to verify live: tresor-server takes any OIDC issuer with
-    discovery.
+- **Azure** (the Managed Application, stage B): its ServiceAccount is federated with a managed identity the Managed
+  Application makes. That identity is the database server's Entra administrator and a tresor administrator.
+- **IONOS, OTC, Hetzner, kind** (stage A):
+  - **The database**, the form's choice: the provider's managed database, or one in the cluster (CloudNativePG as a
+    dependency of the umbrella). Its administrator credential comes once, in a Secret the values name, which
+    `hugr-init` deletes after use (the owner: acceptable where needed).
+  - **tresor** trusts the cluster's own ServiceAccount issuer (tresor-server 0.7.0, its spec 026: `clusterIssuer`,
+    the issuer's `ca_file` and `discovery_token_file`; a public issuer - AKS, EKS, GKE - needs neither), and lists
+    `client:system:serviceaccount:<namespace>:hugr-init` among its administrators. `hugr-init` sends its projected
+    token (audience: the one that issuer entry names, 600 s) as the bearer. An administrator is all-or-nothing; the
+    owner wants no narrower role.
   - **The nodes** log in to tresor as today, by `federated`: the organisation's IdP trusts the cluster's issuer once.
-    Without that, the tresor extension would need a login by a token file it re-reads per request: a product gap.
-- **Product gaps**, for their sessions:
-  - kista: its first setup by API or by declarative values (today `kista admin` in the pod), `namespaceOverride` in
-    its chart, and a first release with the chart;
-  - tresor-server: `namespaceOverride` in its chart, and the token-file login above if the nodes are to skip the
-    IdP.
+
+**`hugr-init`, as built.** A third binary of the operator's image (`/hugr-init`), run as a Helm hook
+(`post-install`, `post-upgrade`) ahead of the first groups:
+
+1. tresor's discovery (`/.well-known/duckdb-secrets`), then whether `hugr_policy_catalog` exists (the descriptors an
+   administrator sees);
+2. when it does not: the login made (or its password set) and the database made, as the administrator; then the
+   secret written with `If-None-Match: *` (TYPE postgres, the password redacted). A `412` is an install that already
+   has it. The server gets the password's SCRAM-SHA-256 verifier, never the password (as psql's `\password`): a
+   server that logs DDL logs nothing that logs in. The database stays the administrator's, and the login gets
+   `CONNECT, CREATE, TEMPORARY` on it - a managed server's administrator may make a role but not give it a database;
+3. a grant per principal (`PUT …/grants/<id>`, the id derived from the principal) - again at every run, so a principal
+   added to the values is granted; one removed is not revoked (nothing is taken back by itself);
+4. the administrator's Secret deleted (a Role allowing `delete` on that name only).
+
+A run after the secret exists touches neither the database nor the secret. One Job runs at a time: a login whose
+password was set by a run that failed before its write is set again by the next run.
+
+**Product gaps** (relayed 2026-10-20, both closed the same day): kista v0.1.0 (spec 0024: `bootstrap.upstreams`,
+`namespaceOverride`, its first release); tresor-server v0.7.0 (spec 026: `namespaceOverride`, the cluster's issuer).
 
 ### Stage A: the operator's release
 

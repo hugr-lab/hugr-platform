@@ -56,6 +56,29 @@ kubectl apply -k config/default            # the CRDs, the operator, its rights,
 kubectl apply -f config/samples/platform.yaml   # a HugrPlatform and a HugrNodeGroup, edited for the cluster
 ```
 
+`hugrInit` in the values runs the install Job `hugr-init` (spec 005) ahead of the first groups. It makes the policy
+catalog's database and its login on PostgreSQL, with a generated password that goes to tresor only. It writes that
+login into tresor as `hugr_policy_catalog`, grants it to the groups' identities, and deletes the database
+administrator's one-time Secret (`hugr-init-db-admin`: `username`, `password`). tresor-server (0.7.0 or later)
+trusts the cluster's ServiceAccount issuer for it and names it an administrator:
+
+```yaml
+# tresor-server's values
+clusterIssuer: {enabled: true}   # an issuer of the API server; a public one (AKS, EKS, GKE) needs none of it
+config:
+  issuers:
+    - issuer: https://kubernetes.default.svc.cluster.local   # kubectl get --raw /.well-known/openid-configuration
+      audience: duckdb-secrets                               # = hugrInit.tresor.audience
+      ca_file: /var/run/tresor/cluster/ca.crt
+      discovery_token_file: /var/run/tresor/cluster/token
+      service: {claim: kubernetes.io, client_claim: sub}
+  policy:
+    admins: ["subject:https://kubernetes.default.svc.cluster.local|system:serviceaccount:<namespace>:hugr-init"]
+```
+
+Its own ServiceAccount needs the ClusterRole `system:service-account-issuer-discovery`. A run again (`helm upgrade`)
+only grants: the database and the secret stay as they are.
+
 A platform installed from nothing has an empty policy catalog. `spec.firstPolicy` names what the first node writes
 into it (spec 005, hugr-node spec 015): the IdP, the applications whose tokens count (the console's always), the
 roles-claim value of the administrators and the default group. Its resource groups are the groups'. A node writes it

@@ -55,11 +55,25 @@ platform:
     console:
       clientID: hugr-console
       audiences: {nodes: "$(console_audience "$HUGR_AUDIENCE")", tresor: "$(console_audience "$TRESOR_AUDIENCE")"}
+    # the first policy (spec 005, hugr-node spec 015): the first node writes it into the catalog hugr-init made - the
+    # issuer, the console's client, platform_admin for the realm's platform_admin, the groups a and b. The demo's own
+    # data (the source, the analysts, the catalog demo) is the seed's, after
+    firstPolicy:
+      issuer: {name: idp, rolesClaim: "$HUGR_ROLES_CLAIM", audiences: ["$HUGR_AUDIENCE"]}
+      administrators: platform_admin
     sizes:
       small:
         resources: {requests: {cpu: "$NODE_CPU", memory: 1Gi}, limits: {memory: 2Gi}}
         temp: {medium: local, size: 2Gi}
     plan: {maxNodes: 4, sizes: [small]}
+# hugr-init (spec 005): the catalog's database and login (the demo's PostgreSQL, no TLS), its secret in tresor for the
+# groups' identities and the seeder (which writes the demo's data into the catalog)
+hugrInit:
+  enabled: true
+  tresor:
+    url: "https://$TRESOR_HOST"
+    grants: ["$NODES_PRINCIPAL", "role:demo_seeder"]
+  catalog: {host: pg.db.svc, sslmode: disable}
 # the run's CA lives 30 days: the doors' certificates are a day's
 groupCertificateDuration: 24h
 groups:
@@ -92,6 +106,10 @@ install_operator() {
 	k -n hugr delete secret hugr-internal-ca --ignore-not-found >/dev/null
 	k -n hugr create secret tls hugr-internal-ca --cert "$WORK/ca.crt" --key "$WORK/ca.key" >/dev/null ||
 		fail "the internal CA's Secret"
+	# the database administrator's credential, once: hugr-init deletes it after use (spec 005)
+	k -n hugr delete secret hugr-init-db-admin --ignore-not-found >/dev/null
+	k -n hugr create secret generic hugr-init-db-admin --from-literal=username=postgres \
+		--from-file=password="$(secret_file pg openssl rand -hex 24)" >/dev/null || fail "hugr-init's administrator Secret"
 	platform_values >"$WORK/platform-values.yaml"
 	local again=""
 	k -n hugr get deploy hugr-node-a >/dev/null 2>&1 && again=1
@@ -101,6 +119,7 @@ install_operator() {
 		--wait --timeout 600s >"$WORK/platform-helm.log" 2>&1; then
 		cat "$WORK/platform-helm.log" >&2
 		k -n hugr get pods -o wide >&2 || true
+		k -n hugr logs job/hugr-init --tail 40 2>&1 | redact >&2 || true
 		fail "the platform's chart did not install"
 	fi
 	rollout hugr hugr-platform

@@ -79,6 +79,34 @@ platform:
       maxNodes: 0
       sizes: []
 
+# hugr-init, the install Job (spec 005): makes the policy catalog's database and its login (a generated password that
+# goes to tresor only), writes the login into tresor as platform.spec.catalog.secret, grants it to the groups'
+# identities, and deletes the database administrator's one-time Secret. A hook ahead of the first groups; a run again
+# (post-upgrade) only grants. tresor-server (0.7.0+) trusts the cluster's ServiceAccount issuer for it and lists
+# client:system:serviceaccount:<this namespace>:hugr-init among its administrators.
+hugrInit:
+  enabled: false
+  tresor:
+    url: "" # tresor-server's base, https (its discovery is <url>/.well-known/duckdb-secrets)
+    audience: duckdb-secrets # the audience of the cluster issuer's entry in tresor-server's config
+    grants: [] # the groups' identities in tresor, given use of the secret: role:... or group:...
+  catalog:
+    engine: postgres
+    host: ""
+    port: 5432
+    database: hugr
+    login: hugr_catalog
+    sslmode: verify-full # disable | require | verify-ca | verify-full (the platform's CA bundle verifies)
+    # the database administrator's credential (username, password): a Secret of this namespace the installer makes
+    # once; the Job deletes it after use
+    adminSecret: hugr-init-db-admin
+    adminDatabase: postgres
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
 # The first node groups, created once, at install (post-install hooks, after the operator - whose webhook judges a
 # group - is ready: install with --wait): an upgrade never touches them, so a scale made in the console or with kubectl
 # stays, and they stay when the release goes. tls defaults to a certificate the csi-driver issues into each pod from
