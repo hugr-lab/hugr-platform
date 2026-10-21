@@ -39,7 +39,19 @@ bundle (`hugr-ca-bundle`: its image's public roots, the internal CA, the organis
 cert-manager and its csi-driver first.
 
 ```sh
-helm upgrade --install hugr charts/hugr-platform -n hugr --create-namespace -f my-values.yaml --wait
+helm upgrade --install hugr oci://ghcr.io/hugr-lab/charts/hugr-platform --version <X.Y.Z> -n hugr \
+  --create-namespace -f my-values.yaml --wait
+# or from a checkout: helm upgrade --install hugr charts/hugr-platform ...
+```
+
+A release (a tag `vX.Y.Z`, spec 005) publishes the image `ghcr.io/hugr-lab/hugr-platform:vX.Y.Z` (amd64, arm64) and
+the chart `X.Y.Z`, whose default image is that tag. It publishes them only after the demo has passed through the chart
+on the tag's commit. Both are signed keylessly by the release workflow:
+
+```sh
+cosign verify ghcr.io/hugr-lab/hugr-platform:vX.Y.Z \
+  --certificate-identity https://github.com/hugr-lab/hugr-platform/.github/workflows/release.yml@refs/tags/vX.Y.Z \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
 `--wait` matters: the first groups are made after the operator - whose webhook judges a group - is ready. The values
