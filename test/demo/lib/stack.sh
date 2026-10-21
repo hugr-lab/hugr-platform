@@ -2,7 +2,7 @@
 # The demo's services (spec 004): PostgreSQL, the IdP, tresor-server, kista. Each made again by a run; its secrets
 # are the run's (secret_value), held in Kubernetes Secrets of the demo's cluster, never printed.
 
-POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:17}"
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18}"
 TRESOR_HOST="tresor.tresor.svc:443"
 KISTA_PREFIX="https://kista.kista.svc/hugr/demo"
 GROUPS_=(a b)

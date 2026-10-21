@@ -22,6 +22,9 @@ type Database interface {
 	Ensure(ctx context.Context, login, password, database string) error
 }
 
+// MinServerVersion is the oldest PostgreSQL the platform's databases run on: 18 (server_version_num).
+const MinServerVersion = 180000
+
 // Postgres is the administrator's connection to a PostgreSQL server.
 type Postgres struct {
 	cfg *pgx.ConnConfig
@@ -64,8 +67,9 @@ func readCredential(dir, key string) (string, error) {
 }
 
 // Ensure makes, or brings back to what the run needs, the login and the database. The database stays the
-// administrator's: the login gets CONNECT, CREATE and TEMPORARY on it and makes its own schema there - an
-// administrator of a managed server (Azure, IONOS) may create a role but not set the database's owner to it.
+// administrator's: the login gets CONNECT, CREATE and TEMPORARY on it and USAGE, CREATE on its public schema, and makes
+// its own schema or tables there - an administrator of a managed server (Azure, IONOS) may create a role but not set
+// the database's owner to it.
 func (p *Postgres) Ensure(ctx context.Context, login, password, database string) error {
 	conn, err := pgx.ConnectConfig(ctx, p.cfg)
 	if err != nil {
@@ -73,6 +77,16 @@ func (p *Postgres) Ensure(ctx context.Context, login, password, database string)
 		return fmt.Errorf("connecting as the database's administrator: %w", err)
 	}
 	defer conn.Close(context.Background())
+	// the platform's databases are PostgreSQL 18 or later (the owner, 2026-10-21): an older server is refused before
+	// anything is made on it
+	var version int
+	if err := conn.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&version); err != nil {
+		return fmt.Errorf("reading the server's version: %w", err)
+	}
+	if version < MinServerVersion {
+		return fmt.Errorf("the server is PostgreSQL %d.%d: the platform needs %d or later", version/10000,
+			version%10000, MinServerVersion/10000)
+	}
 	role := pgx.Identifier{login}.Sanitize()
 	// the server gets the password's SCRAM verifier, never the password: a statement the server logs
 	// (log_statement = ddl) carries nothing that logs in. Its alphabet (base64, '$', ':') needs no escaping in a
@@ -103,6 +117,18 @@ func (p *Postgres) Ensure(ctx context.Context, login, password, database string)
 	}
 	if _, err := conn.Exec(ctx, "GRANT CONNECT, CREATE, TEMPORARY ON DATABASE "+db+" TO "+role); err != nil {
 		return fmt.Errorf("the login's rights on %s: %s", database, pgCode(err))
+	}
+	// only the database's owner may create in its public schema (PostgreSQL since 15), and a service (tresor, kista)
+	// keeps its tables there: the login gets that, in the database itself, its owner staying the administrator
+	inner := p.cfg.Copy()
+	inner.Database = database
+	dbConn, err := pgx.ConnectConfig(ctx, inner)
+	if err != nil {
+		return fmt.Errorf("connecting to %s as the database's administrator: %w", database, err)
+	}
+	defer dbConn.Close(context.Background())
+	if _, err := dbConn.Exec(ctx, "GRANT USAGE, CREATE ON SCHEMA public TO "+role); err != nil {
+		return fmt.Errorf("the login's rights on %s's public schema: %s", database, pgCode(err))
 	}
 	return nil
 }

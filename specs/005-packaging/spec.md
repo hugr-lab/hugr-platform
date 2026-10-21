@@ -207,7 +207,17 @@ Where `hugr-init`'s rights come from:
    added to the values is granted; one removed is not revoked (nothing is taken back by itself);
 4. the administrator's Secret deleted (a Role allowing `delete` on that name only).
 
-A run after the secret exists touches neither the database nor the secret. One Job runs at a time: a login whose
+The server is PostgreSQL 18 or later (the owner, 2026-10-21): an older one is refused before anything is made. A
+run after the secret exists touches neither the database nor the secret.
+
+`--phase databases` (built 2026-10-21) is the umbrella's first run, a `pre-install` hook:
+- **What it makes.** For each of the configuration's `services` (tresor, kista), the login with a generated password,
+  the database, and the login's `USAGE, CREATE` on its `public` schema (the services keep their tables there; only
+  the database's owner may create there by default). It writes the password into a Secret of the service's own
+  namespace (`hugr-init`'s Role there may get and create Secrets).
+- **What it leaves alone.** A service whose Secret exists, so a password never changes by itself. The administrator's
+  Secret stays too, for the catalog phase that follows.
+- **A run that failed between the login and its Secret** is made again by the next one. One Job runs at a time: a login whose
 password was set by a run that failed before its write is set again by the next run.
 
 **Product gaps** (relayed 2026-10-20, both closed the same day): kista v0.1.0 (spec 0024: `bootstrap.upstreams`,
@@ -262,8 +272,9 @@ same version.
     channel, and an Enterest tenant when the form names one) - its store on the external PostgreSQL, and its channel
     key from the key store.
   - hugr-platform: tresor's host, kista's prefix, `hugrInit`, `firstPolicy`, and the groups from the form.
-- **The databases: one PostgreSQL, external or internal** (the owner, 2026-10-21). On it, the policy catalog, tresor's
-  state and kista's store each get a database and a login of their own.
+- **The databases: one PostgreSQL 18 or later, external or internal** (the owner, 2026-10-21). On it, the policy
+  catalog, tresor's state and kista's store each get a database and a login of their own. `hugr-init` refuses an
+  older server before it makes anything.
   - `database.mode: external`: the form names the server, the provider's managed one or the organisation's.
   - `database.mode: internal`, for the catalogs of the clouds other than Azure (OTC, Hetzner, IONOS, STACKIT): the
     umbrella runs PostgreSQL in the cluster, by CloudNativePG (Apache 2.0, the operator a dependency, the cluster in a

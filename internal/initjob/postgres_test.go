@@ -11,7 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestPostgresEnsure runs against a real server when HUGR_INIT_TEST_PG names one (host:port:superuser password):
+// TestPostgresEnsure runs against a real server when HUGR_INIT_TEST_PG names one (host:port:superuser password; a
+// PostgreSQL 18 - with HUGR_INIT_TEST_PG_OLD naming a 17 too, the refusal of an older server is checked):
 // the administrator a managed server gives - CREATEROLE and CREATEDB, no superuser - makes the login and the
 // database, a run again sets the password anew, and the login then makes its own schema there, as a node's init does.
 func TestPostgresEnsure(t *testing.T) {
@@ -68,7 +69,9 @@ func TestPostgresEnsure(t *testing.T) {
 		t.Fatalf("the login with the password of the last run: %v", err)
 	}
 	defer login.Close(ctx)
-	for _, sql := range []string{"CREATE SCHEMA acl", "CREATE TABLE acl.meta (key text PRIMARY KEY, value text)"} {
+	// its own schema (the catalog's acl) and the public one (tresor's and kista's tables)
+	for _, sql := range []string{"CREATE SCHEMA acl", "CREATE TABLE acl.meta (key text PRIMARY KEY, value text)",
+		"CREATE TABLE public.secrets (name text PRIMARY KEY)"} {
 		if _, err := login.Exec(ctx, sql); err != nil {
 			t.Fatalf("the login: %s: %v", sql, err)
 		}
@@ -77,5 +80,20 @@ func TestPostgresEnsure(t *testing.T) {
 	if old, err := pgx.ConnectConfig(ctx, cfg); err == nil {
 		old.Close(ctx)
 		t.Error("the first run's password still logs in")
+	}
+	if older := os.Getenv("HUGR_INIT_TEST_PG_OLD"); older != "" {
+		p := strings.SplitN(older, ":", 3)
+		port, _ := strconv.Atoi(p[1])
+		_ = os.WriteFile(filepath.Join(dir, "username"), []byte("postgres"), 0o600)
+		_ = os.WriteFile(filepath.Join(dir, "password"), []byte(p[2]), 0o600)
+		c.Host, c.Port = p[0], port
+		pg, err := NewPostgres(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pg.Ensure(ctx, c.Login, "pw", c.Database)
+		if err == nil || !strings.Contains(err.Error(), "needs 18 or later") {
+			t.Errorf("an older server: %v", err)
+		}
 	}
 }

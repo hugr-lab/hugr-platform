@@ -167,6 +167,112 @@ func TestRunFailures(t *testing.T) {
 	}
 }
 
+// fakeSecrets is the services' Secrets as the cluster would keep them
+type fakeSecrets struct {
+	held      map[string]string
+	createErr error
+}
+
+func (f *fakeSecrets) Exists(_ context.Context, ref SecretRef) (bool, error) {
+	_, ok := f.held[ref.Namespace+"/"+ref.Name]
+	return ok, nil
+}
+func (f *fakeSecrets) Create(_ context.Context, ref SecretRef, value string) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
+	if f.held == nil {
+		f.held = map[string]string{}
+	}
+	f.held[ref.Namespace+"/"+ref.Name] = value
+	return nil
+}
+
+// recordingDatabase records each Ensure
+type recordingDatabase struct {
+	made map[string]string // login -> password
+	err  error
+}
+
+func (r *recordingDatabase) Ensure(_ context.Context, login, password, _ string) error {
+	if r.err != nil {
+		return r.err
+	}
+	if r.made == nil {
+		r.made = map[string]string{}
+	}
+	r.made[login] = password
+	return nil
+}
+
+func servicesConfig() *Config {
+	c := testConfig()
+	c.Services = []ServiceDatabase{
+		{Name: "tresor", Database: "tresor", Login: "tresor",
+			Secret: SecretRef{Namespace: "hugr-tresor", Name: "tresor-db", Key: "password"}},
+		{Name: "kista", Database: "kista", Login: "kista",
+			Secret: SecretRef{Namespace: "hugr-kista", Name: "kista-db", Key: "password"}},
+	}
+	return c
+}
+
+// TestRunDatabases: each service's login and database made once, its password in its own namespace's Secret; a
+// service whose Secret exists is left alone, and no database is reached when nothing is to be made
+func TestRunDatabases(t *testing.T) {
+	c := servicesConfig()
+	db, secrets := &recordingDatabase{}, &fakeSecrets{}
+	opened := 0
+	newDB := func() (Database, error) { opened++; return db, nil }
+	if err := RunDatabases(context.Background(), c, newDB, secrets, quiet()); err != nil {
+		t.Fatal(err)
+	}
+	if len(db.made) != 2 || db.made["tresor"] != secrets.held["hugr-tresor/tresor-db"] ||
+		db.made["kista"] != secrets.held["hugr-kista/kista-db"] || db.made["tresor"] == db.made["kista"] {
+		t.Errorf("the logins and their Secrets: made %v, held %v", db.made, secrets.held)
+	}
+	// a run again: both Secrets exist - nothing changed, no connection opened
+	before := map[string]string{"tresor": db.made["tresor"]}
+	db.made, opened = nil, 0
+	if err := RunDatabases(context.Background(), c, newDB, secrets, quiet()); err != nil {
+		t.Fatal(err)
+	}
+	if len(db.made) != 0 || opened != 0 || secrets.held["hugr-tresor/tresor-db"] != before["tresor"] {
+		t.Errorf("a run again changed a login: %v, %d connections", db.made, opened)
+	}
+	// a Secret that cannot be made fails the phase: the next run makes the login again
+	failing := &fakeSecrets{createErr: errors.New("forbidden")}
+	if err := RunDatabases(context.Background(), c, newDB, failing, quiet()); err == nil {
+		t.Error("a Secret that could not be written passed")
+	}
+	// a refused database writes no Secret
+	refusing, empty := &recordingDatabase{err: errors.New("no")}, &fakeSecrets{}
+	if err := RunDatabases(context.Background(), c, func() (Database, error) { return refusing, nil }, empty,
+		quiet()); err == nil || len(empty.held) != 0 {
+		t.Errorf("a refused database: %v, %v", err, empty.held)
+	}
+}
+
+func TestServicesValidate(t *testing.T) {
+	if err := servicesConfig().Validate(); err != nil {
+		t.Fatalf("complete services: %v", err)
+	}
+	cases := map[string]func(*Config){
+		"the catalog's database":   func(c *Config) { c.Services[0].Database = "hugr" },
+		"the catalog's login":      func(c *Config) { c.Services[0].Login = "hugr_catalog" },
+		"one database twice":       func(c *Config) { c.Services[1].Database = "tresor" },
+		"a namespace with a slash": func(c *Config) { c.Services[0].Secret.Namespace = "a/b" },
+		"no key":                   func(c *Config) { c.Services[0].Secret.Key = "" },
+		"a login with a dash":      func(c *Config) { c.Services[0].Login = "tre-sor" },
+	}
+	for name, change := range cases {
+		c := servicesConfig()
+		change(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestGrantID(t *testing.T) {
 	if grantID("group:A") == grantID("group:a") {
 		t.Error("two principals that read alike share a grant id")

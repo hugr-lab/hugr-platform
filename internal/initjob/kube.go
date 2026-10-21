@@ -3,6 +3,7 @@ package initjob
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -13,6 +14,39 @@ type KubeSecret struct {
 	Client    kubernetes.Interface
 	Namespace string
 	Name      string
+}
+
+// ServiceSecrets keeps the services' database passwords: a Secret is made once and never overwritten.
+type ServiceSecrets interface {
+	// Exists says whether the Secret is there (its login was made by an earlier run).
+	Exists(ctx context.Context, ref SecretRef) (bool, error)
+	// Create makes the Secret with the one key; an existing one is an error.
+	Create(ctx context.Context, ref SecretRef, value string) error
+}
+
+// KubeServiceSecrets is the cluster's: the Job's Role in each service's namespace allows get and create.
+type KubeServiceSecrets struct {
+	Client kubernetes.Interface
+}
+
+// Exists reads the Secret's presence, never its data.
+func (k KubeServiceSecrets) Exists(ctx context.Context, ref SecretRef) (bool, error) {
+	_, err := k.Client.CoreV1().Secrets(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// Create makes the Secret, labelled as the Job's.
+func (k KubeServiceSecrets) Create(ctx context.Context, ref SecretRef, value string) error {
+	_, err := k.Client.CoreV1().Secrets(ref.Namespace).Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace,
+			Labels: map[string]string{"app.kubernetes.io/managed-by": "hugr-init", "app.kubernetes.io/part-of": "hugr"}},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{ref.Key: []byte(value)},
+	}, metav1.CreateOptions{})
+	return err
 }
 
 // Delete removes the Secret; one already gone is no error (a run again).
