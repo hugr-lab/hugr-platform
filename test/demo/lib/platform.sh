@@ -47,7 +47,8 @@ global:
     tresorScope: "$TRESOR_SCOPE"
   clusterIssuer: {url: "$CLUSTER_ISSUER", private: $private}
   keys:
-    vault: {address: "$VAULT_ADDRESS"}
+    mode: $KEYS_MODE
+    vault: {address: "$([ "$KEYS_MODE" = internal ] || echo "$VAULT_ADDRESS")"}
   duckdbVersion: "$DUCKDB_VERSION"
 hugr-platform:
   operator:
@@ -134,14 +135,39 @@ teardown() {
 	k kustomize "$HERE/overlay" | k delete -f - --ignore-not-found --timeout=300s >/dev/null 2>&1 || true
 	k delete -k "$ROOT/config/policy" --ignore-not-found >/dev/null 2>&1 || true
 	k delete clusterrolebinding hugr-demo-tresor-issuer-discovery --ignore-not-found >/dev/null 2>&1 || true
-	k delete namespace hugr "$TRESOR_NS" "$KISTA_NS" tresor kista --ignore-not-found --wait --timeout=300s >/dev/null ||
+	k delete namespace hugr "$TRESOR_NS" "$KISTA_NS" "$OPENBAO_NS" tresor kista --ignore-not-found --wait --timeout=300s \
+		>/dev/null ||
 		fail "the last run's namespaces are still being deleted"
 	drop_databases
 }
 
+# chart_release: the umbrella's helm upgrade --install with the run's values - the install, and check 11's upgrade
+chart_release() {
+	# the database, the vault and Keycloak are the run's CA's; Entra is the system roots'
+	local cas=(--set-file "global.database.caCert=$WORK/ca.crt")
+	[ "$KEYS_MODE" = internal ] || cas+=(--set-file "global.keys.vault.caCert=$WORK/ca.crt")
+	[ "$IDP_NAME" != Keycloak ] || cas+=(--set-file "global.idp.caCert=$WORK/ca.crt")
+	# this checkout's platform chart, packaged beside the pinned tresor-server and kista
+	helm_ dependency build "$ROOT/charts/hugr" >"$WORK/chart-deps.log" 2>&1 || {
+		cat "$WORK/chart-deps.log" >&2
+		fail "the umbrella's dependencies"
+	}
+	if ! helm_ upgrade --install hugr "$ROOT/charts/hugr" -n hugr -f "$WORK/chart-values.yaml" "${cas[@]}" \
+		--wait --timeout 900s >"$WORK/chart-helm.log" 2>&1; then
+		cat "$WORK/chart-helm.log" >&2
+		local ns
+		for ns in hugr "$TRESOR_NS" "$KISTA_NS" "$OPENBAO_NS"; do k -n "$ns" get pods -o wide >&2 || true; done
+		k -n hugr logs -l app.kubernetes.io/component=init --tail 40 --prefix 2>&1 | redact >&2 || true
+		k -n "$OPENBAO_NS" logs -l app.kubernetes.io/component=init --tail 40 --prefix 2>&1 | redact >&2 || true
+		k -n "$TRESOR_NS" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix 2>&1 | redact >&2 || true
+		k -n "$KISTA_NS" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix 2>&1 | redact >&2 || true
+		fail "the umbrella chart did not install"
+	fi
+}
+
 install_chart() {
 	install_cert_manager
-	step "the umbrella chart hugr: the operator, tresor-server and kista in their namespaces, hugr-init, the groups"
+	step "the umbrella chart hugr: the operator, tresor-server, kista and the key store ($KEYS_MODE), hugr-init, the groups"
 	teardown
 	namespace hugr
 	# the run's CA is the platform's internal CA: what the platform's Issuer signs - the operator's certificate, the
@@ -156,26 +182,9 @@ install_chart() {
 	CLUSTER_ISSUER="$(k get --raw /.well-known/openid-configuration |
 		python3 -c 'import json, sys; print(json.load(sys.stdin)["issuer"])')" || fail "the cluster's ServiceAccount issuer"
 	chart_values >"$WORK/chart-values.yaml"
-	# the database, the vault and Keycloak are the run's CA's; Entra is the system roots'
-	local cas=(--set-file "global.database.caCert=$WORK/ca.crt" --set-file "global.keys.vault.caCert=$WORK/ca.crt")
-	[ "$IDP_NAME" != Keycloak ] || cas+=(--set-file "global.idp.caCert=$WORK/ca.crt")
 	# the nodes' logs are kept from here on, each from its pod's start
 	rm -rf "$WORK/logs"
-	# this checkout's platform chart, packaged beside the pinned tresor-server and kista
-	helm_ dependency build "$ROOT/charts/hugr" >"$WORK/chart-deps.log" 2>&1 || {
-		cat "$WORK/chart-deps.log" >&2
-		fail "the umbrella's dependencies"
-	}
-	if ! helm_ upgrade --install hugr "$ROOT/charts/hugr" -n hugr -f "$WORK/chart-values.yaml" "${cas[@]}" \
-		--wait --timeout 900s >"$WORK/chart-helm.log" 2>&1; then
-		cat "$WORK/chart-helm.log" >&2
-		local ns
-		for ns in hugr "$TRESOR_NS" "$KISTA_NS"; do k -n "$ns" get pods -o wide >&2 || true; done
-		k -n hugr logs -l app.kubernetes.io/component=init --tail 40 --prefix 2>&1 | redact >&2 || true
-		k -n "$TRESOR_NS" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix 2>&1 | redact >&2 || true
-		k -n "$KISTA_NS" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix 2>&1 | redact >&2 || true
-		fail "the umbrella chart did not install"
-	fi
+	chart_release
 	rollout hugr hugr-platform
 	# a group the webhook judges answers through the operator's Service: a dry run of one
 	webhook_answers() {
@@ -188,7 +197,9 @@ YAML
 		! grep -q 'failed calling webhook' "$WORK/webhook.err"
 	}
 	eventually 60 "the webhook answers" webhook_answers
-	ok "the release hugr: the operator serves (the node API, the webhook, the console), tresor at https://$TRESOR_HOST, kista at $KISTA_PREFIX; hugr-init made the databases and the catalog's secret"
+	local keys="the demo's OpenBao at $VAULT_ADDRESS"
+	[ "$KEYS_MODE" = external ] || keys="the umbrella's OpenBao in $OPENBAO_NS, set up by hugr-init"
+	ok "the release hugr: the operator serves (the node API, the webhook, the console), tresor at https://$TRESOR_HOST, kista at $KISTA_PREFIX, the keys in $keys; hugr-init made the databases and the catalog's secret"
 }
 
 install_platform() {

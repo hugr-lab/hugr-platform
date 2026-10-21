@@ -1,7 +1,8 @@
-# The hugr platform with its services (hugr-platform spec 005, the umbrella): the platform in the release's namespace,
-# tresor-server and kista each in a namespace of its own. An install's facts are written once, under global; the
-# services' values below read them (their charts render config through tpl). No credential belongs in these values:
-# the database administrator's comes once in a Secret hugr-init deletes, the services' own logins are made at install.
+# The hugr platform with its services (hugr-platform spec 005, the umbrella): the platform in the release's namespace;
+# tresor-server, kista and (with keys.mode internal) OpenBao each in a namespace of its own. An install's facts are
+# written once, under global; the services' values below read them (their charts render config through tpl). No
+# credential belongs in these values: the database administrator's comes once in a Secret hugr-init deletes, the
+# services' own logins are made at install.
 # Prerequisites in the cluster: cert-manager and its csi-driver, and a PostgreSQL 18 server (external, for now).
 
 global:
@@ -9,6 +10,7 @@ global:
   namespaces:
     tresor: hugr-tresor
     kista: hugr-kista
+    openbao: hugr-openbao # keys.mode internal
 
   # The PostgreSQL server (18 or later) of the policy catalog, tresor's state and kista's store: each gets a database
   # and a login of its own, made by hugr-init with the administrator's credential - a Secret of the release's
@@ -45,14 +47,18 @@ global:
     url: "" # required
     private: true
 
-  # The key store: kista's channel key and tresor's KEK. external: the organisation's HashiCorp Vault or OpenBao,
-  # Transit keys and Kubernetes-auth roles the organisation made for kista's and tresor's ServiceAccounts. internal
-  # (OpenBao in the cluster) and secret come in later steps (spec 005)
+  # The key store: kista's channel key and tresor's KEK.
+  #   internal: OpenBao in its own namespace (openbao below), its storage a database of the PostgreSQL server, opened
+  #     by a static key made once (the cluster's etcd is the root of trust); hugr-init gives it the keys, policies and
+  #     roles below on every release
+  #   external: the organisation's HashiCorp Vault or OpenBao, with the Transit keys and the Kubernetes-auth roles below
+  #     made by the organisation for kista's and tresor's ServiceAccounts
+  #   secret comes in a later step (spec 005)
   keys:
-    mode: external
+    mode: internal
     vault:
-      address: "" # https://vault.example:8200
-      # the vault's CA when it is private, PEM; empty: the system roots
+      address: "" # external: https://vault.example:8200
+      # external: the vault's CA when it is private, PEM; empty: the system roots
       caCert: ""
       transitMount: transit
       # the Transit keys: kista signs its channel with one, tresor wraps its data keys with the other
@@ -106,6 +112,15 @@ hugr-platform:
       adminSecret: hugr-init-db-admin
   groups: []
 
+# --- the internal key store (keys.mode internal): OpenBao, in global.namespaces.openbao ------------------------------
+openbao:
+  image: {repository: ghcr.io/openbao/openbao, tag: "2.7.1", pullPolicy: IfNotPresent}
+  # HA on the PostgreSQL storage: one active, the others standby (a pod's SIGTERM hands the lock over)
+  replicas: 2
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
 # --- tresor-server (its values; config rendered through tpl) -------------------------------------------------------
 tresor:
   # tresor-server 0.7.2 (its spec 028): config rendered through tpl - a literal {{ there is written {{ "{{" }}
@@ -135,8 +150,10 @@ tresor:
       password_file: /var/run/tresor/db/password
     keys: {kind: vault, mount: "{{ .Values.global.keys.vault.transitMount }}", key: "{{ .Values.global.keys.vault.tresorKey }}"}
     vault:
-      address: "{{ .Values.global.keys.vault.address }}"
-      ca_file: "{{ if .Values.global.keys.vault.caCert }}/var/run/tresor/cas/vault.crt{{ end }}"
+      address: >-
+        {{ if eq .Values.global.keys.mode "internal" }}https://openbao.{{ .Values.global.namespaces.openbao }}.svc:8200{{ else }}{{ .Values.global.keys.vault.address }}{{ end }}
+      ca_file: >-
+        {{ if or (eq .Values.global.keys.mode "internal") .Values.global.keys.vault.caCert }}/var/run/tresor/cas/vault.crt{{ end }}
       auth: {method: kubernetes, mount: "{{ .Values.global.keys.vault.authMount }}", role: "{{ .Values.global.keys.vault.tresorRole }}"}
     issuers:
       - issuer: "{{ .Values.global.idp.issuer }}"
@@ -175,8 +192,9 @@ kista:
   secretVolumes:
     - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
     - {name: cas, secretName: hugr-cas, mountPath: /etc/kista/secrets/cas}
+  # the audience is global.keys.vault.audience (checked)
   projectedTokens:
-    - {name: vault, mountPath: /var/run/secrets/kista/vault, audience: vault, expirationSeconds: 3600} # audience = global.keys.vault.audience (checked)
+    - {name: vault, mountPath: /var/run/secrets/kista/vault, audience: vault, expirationSeconds: 3600}
   config:
     serve: {public_url: "https://{{ .Release.Name }}-kista.{{ .Values.namespaceOverride }}.svc"}
     store:
@@ -196,11 +214,12 @@ kista:
           kind: vault
           allow: ["{{ .Values.global.keys.vault.kistaKey }}"]
           vault:
-            address: "{{ .Values.global.keys.vault.address }}"
+            address: >-
+              {{ if eq .Values.global.keys.mode "internal" }}https://openbao.{{ .Values.global.namespaces.openbao }}.svc:8200{{ else }}{{ .Values.global.keys.vault.address }}{{ end }}
             mount: "{{ .Values.global.keys.vault.transitMount }}"
-            # a private CA, or the image's system roots (an empty string is refused)
+            # the internal OpenBao's CA or a private one, else the image's system roots (an empty string is refused)
             ca_file: >-
-              {{ if .Values.global.keys.vault.caCert }}/etc/kista/secrets/cas/vault.crt{{ else }}/etc/ssl/certs/ca-certificates.crt{{ end }}
+              {{ if or (eq .Values.global.keys.mode "internal") .Values.global.keys.vault.caCert }}/etc/kista/secrets/cas/vault.crt{{ else }}/etc/ssl/certs/ca-certificates.crt{{ end }}
             software_keys: true
             auth:
               kind: kubernetes

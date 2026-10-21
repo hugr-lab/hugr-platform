@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The platform in one cluster (spec 004): the umbrella chart hugr (spec 005) - the operator, tresor-server and kista -
-# with two groups of hugr-node pods, the IdP logging the nodes in by their ServiceAccount tokens, OpenBao and
-# PostgreSQL as the organisation's vault and database - and the checks of what spec 001 and hugr-node spec 010 promise.
+# with two groups of hugr-node pods, the IdP logging the nodes in by their ServiceAccount tokens, the umbrella's own
+# OpenBao as the key store (or the demo's as the organisation's) and PostgreSQL as the organisation's database - and the
+# checks of what spec 001 and hugr-node spec 010 promise.
 #
 #   test/demo/run.sh minikube [up | check | down]   the main run, on a developer's machine (the profile hugr-demo)
 #   test/demo/run.sh kind                           CI: makes the cluster, runs everything, deletes it
@@ -21,6 +22,8 @@
 #   HUGR_DEMO_ONLY    up to a step: images, db, idp, vault, chart, platform, seed (for working on one); every run
 #                     installs the chart afresh - the services' state and the catalog with it
 #   HUGR_DEMO_NODE_CPU  a node's CPU request (1; CI's 4-core runner: 250m - the node rounds it up to 1 thread)
+#   HUGR_DEMO_KEYS    the umbrella's key store: internal (its own OpenBao, the default) or external (the demo's OpenBao
+#                     standing in for the organisation's)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$ROOT/test/demo"

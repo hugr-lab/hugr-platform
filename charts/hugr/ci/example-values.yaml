@@ -1,4 +1,5 @@
-# The example the umbrella is linted and rendered with: one platform, its services, an external PostgreSQL and Vault
+# The example the umbrella is linted and rendered with: one platform, its services, an external PostgreSQL and the
+# internal OpenBao (keys.mode internal, the default)
 global:
   database:
     host: hugr-pg.example.net
@@ -9,9 +10,6 @@ global:
     tresorScope: api://tresor/.default
   clusterIssuer:
     url: https://kubernetes.default.svc.cluster.local
-  keys:
-    vault:
-      address: https://vault.example.net:8200
   duckdbVersion: v2.0.0
 hugr-platform:
   console:

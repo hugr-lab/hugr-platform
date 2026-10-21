@@ -2,20 +2,28 @@
 service's namespace; cert-manager issues and renews the service's serving certificate from it there. No private key
 leaves its namespace. The CAs' public certificates go to the platform's namespace (hugr-services-ca), into the
 platform's bundle: the nodes, the front and hugr-init trust tresor and kista by it. */}}
-{{- $cas := list }}
-{{- range $svc, $ns := include "hugr.umbrella.services" . | fromYaml }}
+{{- $services := include "hugr.umbrella.services" . | fromYaml }}
+{{/* every CA first: the internal OpenBao's is what tresor and kista trust as their vault's */}}
+{{- $made := dict }}
+{{- range $svc, $ns := $services }}
 {{- $name := printf "%s-ca" $svc }}
 {{- $existing := lookup "v1" "Secret" $ns $name }}
-{{- $crt := "" }}
-{{- $key := "" }}
 {{- if and $existing $existing.data }}
-{{- $crt = index $existing.data "tls.crt" | b64dec }}
-{{- $key = index $existing.data "tls.key" | b64dec }}
+{{- $_ := set $made $svc (dict "crt" (index $existing.data "tls.crt" | b64dec) "key" (index $existing.data "tls.key" | b64dec)) }}
 {{- else }}
 {{- $ca := genCA (printf "hugr %s CA" $svc) 3650 }}
-{{- $crt = $ca.Cert }}
-{{- $key = $ca.Key }}
+{{- $_ := set $made $svc (dict "crt" $ca.Cert "key" $ca.Key) }}
 {{- end }}
+{{- end }}
+{{- $vaultCA := .Values.global.keys.vault.caCert }}
+{{- if eq .Values.global.keys.mode "internal" }}
+{{- $vaultCA = (index $made "openbao").crt }}
+{{- end }}
+{{- $cas := list }}
+{{- range $svc, $ns := $services }}
+{{- $name := printf "%s-ca" $svc }}
+{{- $crt := (index $made $svc).crt }}
+{{- $key := (index $made $svc).key }}
 {{- $cas = append $cas $crt }}
 ---
 apiVersion: v1
@@ -72,7 +80,7 @@ metadata:
 type: Opaque
 stringData:
   database.crt: {{ $.Values.global.database.caCert | quote }}
-  vault.crt: {{ $.Values.global.keys.vault.caCert | quote }}
+  vault.crt: {{ $vaultCA | quote }}
   idp.crt: {{ $.Values.global.idp.caCert | quote }}
 {{- end }}
 ---

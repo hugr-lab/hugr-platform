@@ -115,9 +115,10 @@ seated it by the label the node wrote into its cookie or connection id.
 
 ### The platform with its services: the chart `hugr`
 
-`charts/hugr` (spec 005) installs the platform together with tresor-server and kista, each in a namespace of its own
-(`hugr-tresor`, `hugr-kista`; made by the release and kept when it goes, with their volumes). It pins their charts
-(tresor-server 0.7.2, kista 0.1.2) and wires them from one set of facts under `global`:
+`charts/hugr` (spec 005) installs the platform together with tresor-server, kista and its key store, each in a
+namespace of its own (`hugr-tresor`, `hugr-kista`, `hugr-openbao`; made by the release and kept when it goes, with
+their volumes). It pins their charts (tresor-server 0.7.2, kista 0.1.2) and wires them from one set of facts under
+`global`:
 
 - **TLS**: each service gets a CA of its own, made once in its namespace; cert-manager issues its serving certificate
   there. The CAs' public certificates go into the platform's bundle, so the nodes, the front and `hugr-init` trust
@@ -126,10 +127,17 @@ seated it by the label the node wrote into its cookie or connection id.
   databases`) makes tresor's and kista's databases and logins before they start, each password in a Secret of that
   service's namespace. Then `hugr-init` makes the catalog's, as above. The administrator's Secret (`hugr-init-db-admin`
   in the release's namespace) is made once by the installer.
-- **The keys**: the organisation's HashiCorp Vault or OpenBao (`global.keys.mode: external`). It holds two Transit
-  keys: kista signs its channel with `hugr-channel` (RSA), and tresor wraps its data keys with `hugr-tresor`. It also
-  holds a Kubernetes-auth role for each service's ServiceAccount (`hugr-kista` in `hugr-kista`, `tresor` in
-  `hugr-tresor`), bound to the audience `vault`.
+- **The keys**: two Transit keys - kista signs its channel with `hugr-channel` (RSA), tresor wraps its data keys with
+  `hugr-tresor` - and a Kubernetes-auth role for each service's ServiceAccount (`hugr-kista` in `hugr-kista`, `tresor`
+  in `hugr-tresor`), bound to the audience `vault`. Where they live is `global.keys.mode`:
+  - `internal` (the default): OpenBao of the release in `hugr-openbao`. Two replicas in HA, its storage a fourth
+    database on the same PostgreSQL server, opened by a static key made once at install (`openbao-seal`; the cluster's
+    etcd is the root of trust). `hugr-init --phase openbao` initialises it once - the recovery key in
+    `openbao-recovery`, the root token revoked - and on every release logs in as its own role and makes the keys,
+    policies and roles. The break-glass is a loopback-only listener in the pod (`bao operator generate-root
+    -address=http://127.0.0.1:8210` with the recovery key).
+  - `external`: the organisation's HashiCorp Vault or OpenBao (`global.keys.vault.address`, its CA in `caCert`),
+    where the organisation made the keys and roles above.
 - **The IdP and the cluster's issuer**: `global.idp` (its private CA, if any, in `caCert`) and `global.clusterIssuer`,
   whose URL `kubectl get --raw /.well-known/openid-configuration` gives.
 - **kista's bootstrap**: the tenant `hugr`, the signed channel `platform` for the node's DuckDB (`global.duckdbVersion`:
@@ -145,7 +153,8 @@ helm upgrade --install hugr charts/hugr -n hugr --create-namespace -f my-values.
 `charts/hugr/ci/example-values.yaml` is a whole set of values. The values hold no credential. A node restarts until
 kista holds the extensions its catalog needs (postgres_scanner for a PostgreSQL catalog), mirrored from an upstream
 (`kista.config.bootstrap.upstreams`) or published into the channel (`kista admin release add`). The demo
-(`test/demo`) installs through this chart, its OpenBao and its PostgreSQL standing in for the organisation's.
+(`test/demo`) installs through this chart, its PostgreSQL standing in for the organisation's; `HUGR_DEMO_KEYS=external`
+puts its own OpenBao in the organisation vault's place.
 
 Business Source License 1.1 (see `LICENSE`): production use is allowed, except offering it to third parties as a
 hosted or managed service. Each version changes to Apache-2.0 four years after its release.

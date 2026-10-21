@@ -56,7 +56,8 @@ provider_down() {
 	}
 	minikube -p "$DEMO_PROFILE" update-context >/dev/null 2>&1 || fail "the profile's kube context"
 	# waited for: an up right after finds no namespace being deleted
-	k delete namespace hugr idp hugr-tresor hugr-kista openbao db tresor kista --ignore-not-found --timeout=300s \
+	k delete namespace hugr idp hugr-tresor hugr-kista hugr-openbao openbao db tresor kista --ignore-not-found \
+		--timeout=300s \
 		>/dev/null || fail "deleting the namespaces"
 	down_cluster_scoped
 	ok "the demo's namespaces and cluster-wide objects are deleted; the profile $DEMO_PROFILE stays"

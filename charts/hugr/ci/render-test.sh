@@ -49,6 +49,31 @@ refuses "a tresor namespace other than global's" "tresor.namespaceOverride must 
 	--set tresor.namespaceOverride=elsewhere
 refuses "a vault audience other than global's" "tresor.vaultToken.audience must be global.keys.vault.audience" \
 	--set tresor.vaultToken.audience=other
-refuses "a keys mode not built yet" "external is the one built so far" --set global.keys.mode=internal
+# tresor's chart refuses these first (a subchart renders before the umbrella's checks): either refusal holds
+refuses "a keys mode not built yet" "config.vault.address is required" --set global.keys.mode=secret
+refuses "an external vault without its address" "config.vault.address is required" --set global.keys.mode=external
+renders "an external vault is the services' address" '^ +address: https://vault[.]example[.]net:8200$' \
+	--set global.keys.mode=external --set global.keys.vault.address=https://vault.example.net:8200
+renders "the internal OpenBao is tresor's vault" '^ +address: https://openbao[.]hugr-openbao[.]svc:8200$'
+renders "the internal OpenBao's CA is the services' vault CA" '^ +ca_file: /etc/kista/secrets/cas/vault[.]crt$'
+renders "the internal OpenBao opens by a static key" 'current_key += "file:///openbao/seal/key"'
+renders "the internal OpenBao's standbys forward every request" '^ +disable_standby_reads = true$'
+renders "the internal OpenBao has a database of its own" 'secret: [{]namespace: hugr-openbao, name: openbao-db, key: password[}]'
+renders "the internal OpenBao's Job binds kista's role to its ServiceAccount" '^ +serviceAccount: "hugr-kista"$'
+# OpenBao's CA is a CA of the umbrella's own, the one in tresor's and kista's vault.crt: the same certificate
+render --show-only templates/services-ca.yaml >"$OUT" || fail "the CAs: the render failed"
+python3 - "$OUT" <<'PY2' || fail "the services' vault.crt is not OpenBao's CA"
+import base64, re, sys
+text = open(sys.argv[1]).read()
+docs = text.split("\n---")
+ca = [d for d in docs if "name: openbao-ca" in d][0]
+crt = base64.b64decode(re.search(r"tls.crt: (\S+)", ca).group(1)).decode().strip()
+vaults = [d for d in docs if "name: hugr-cas" in d and ("namespace: hugr-kista" in d or "namespace: hugr-tresor" in d)]
+assert len(vaults) == 2, len(vaults)
+for d in vaults:
+    v = re.search(r'vault.crt: "((?:[^"\\]|\\.)*)"', d).group(1).encode().decode("unicode_escape").strip()
+    assert v == crt, "a vault.crt differs from OpenBao's CA"
+PY2
+echo "ok: the services' vault.crt is the internal OpenBao's CA"
 refuses "a database without a host" "global.database.host is required" --set global.database.host=
 echo "PASS: the umbrella's renders"

@@ -31,10 +31,13 @@ so they are written twice there - checked here), and the install's required fact
 {{- if not (hasPrefix "https://" $g.clusterIssuer.url) }}
 {{- fail "global.clusterIssuer.url is the cluster's ServiceAccount issuer (kubectl get --raw /.well-known/openid-configuration)" }}
 {{- end }}
-{{- if ne $g.keys.mode "external" }}
-{{- fail "global.keys.mode: external is the one built so far (internal and secret follow, spec 005)" }}
+{{- if not (has $g.keys.mode (list "internal" "external")) }}
+{{- fail "global.keys.mode is internal or external (secret follows, spec 005)" }}
 {{- end }}
-{{- if not (hasPrefix "https://" $g.keys.vault.address) }}
-{{- fail "global.keys.vault.address is the vault's https URL" }}
+{{- if and (eq $g.keys.mode "external") (not (hasPrefix "https://" $g.keys.vault.address)) }}
+{{- fail "global.keys.vault.address is the organisation vault's https URL (keys.mode external)" }}
+{{- end }}
+{{- if and (eq $g.keys.mode "internal") (not .Values.tresor.fullnameOverride) }}
+{{- fail "tresor.fullnameOverride names tresor's ServiceAccount, which the internal OpenBao binds its role to" }}
 {{- end }}
 {{- $_ := required "global.duckdbVersion is required: the node's DuckDB version, kista's channel serves it" $g.duckdbVersion }}
