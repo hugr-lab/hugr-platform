@@ -18,7 +18,7 @@ dependencies:
     repository: file://../hugr-platform
   - name: tresor-server
     alias: tresor
-    version: 0.7.1
+    version: 0.7.2
     repository: oci://ghcr.io/hugr-lab/charts
   - name: kista
     version: 0.1.1

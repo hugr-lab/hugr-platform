@@ -103,6 +103,8 @@ hugr-platform:
 
 # --- tresor-server (its values; config rendered through tpl) -------------------------------------------------------
 tresor:
+  # tresor-server 0.7.2 (its spec 028): config rendered through tpl - a literal {{ there is written {{ "{{" }}
+  configTemplate: true
   namespaceOverride: hugr-tresor # = global.namespaces.tresor (checked)
   fullnameOverride: tresor
   replicas: 2
