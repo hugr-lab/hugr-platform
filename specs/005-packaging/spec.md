@@ -223,6 +223,18 @@ password was set by a run that failed before its write is set again by the next 
 - a PR that touches `charts/` or the workflow dry-runs it: `helm lint --strict`, `helm template` over the example
   values, and the demo.
 
+Built (2026-10-21):
+- **Jobs.** `release.yml` has `chart` (lint, render, package at the tag's version, the appVersion checked) and
+  `image` (both platforms, built without push, the amd64 one scanned by Trivy: a fixed HIGH or CRITICAL fails it).
+  It also runs `demo.yml`, reusable now. `publish` runs on a tag only, after all three.
+- **What is published.** The image gets an SBOM, provenance and a cosign keyless signature, verified at once; the
+  chart is pushed to OCI and signed the same way.
+- **The build.** The image's build stage cross-compiles (`--platform=$BUILDPLATFORM`, `GOOS`/`GOARCH` from the
+  target), so arm64 builds without emulation.
+- **What the demo tests** is the tag's commit through the chart, building its own operator image from it: the
+  workflow's Dockerfile, not the pushed bytes.
+- **After the first release**, the owner makes the two packages public on GitHub (ghcr makes a new package private).
+
 ### Stage A: the demo through the chart
 
 - **Install**: `install_operator` and `install_platform` become one `helm upgrade --install` with
