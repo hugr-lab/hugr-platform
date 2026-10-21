@@ -1,6 +1,6 @@
 module github.com/hugr-lab/hugr-platform
 
-go 1.26.1
+go 1.27.3
 
 require (
 	github.com/apache/arrow-go/v18 v18.8.0
