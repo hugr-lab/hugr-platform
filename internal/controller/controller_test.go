@@ -8,6 +8,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,6 +75,28 @@ func TestAggregate(t *testing.T) {
 	}
 	if Aggregate(nil).GroupKnown != nil {
 		t.Error("no node reported: known stays unsaid")
+	}
+}
+
+// spec 008: the live nodes counted per build, the newest catalog stamp any reads; a lost node and a node of an older pin
+// (no build reported) count for neither
+func TestAggregateBuilds(t *testing.T) {
+	fleet := Aggregate([]NodeState{
+		{Name: "a", Summary: nodeproto.Summary{Build: "v0.2.0", DuckDBVersion: "v2.0.0", CatalogSchema: 22, CatalogMinReader: 21}},
+		{Name: "b", Summary: nodeproto.Summary{Build: "v0.3.0", DuckDBVersion: "v2.0.1", CatalogSchema: 23, CatalogMinReader: 22}},
+		{Name: "c", Summary: nodeproto.Summary{Build: "v0.2.0", DuckDBVersion: "v2.0.0", CatalogSchema: 22, CatalogMinReader: 21}},
+		{Name: "d", Summary: nodeproto.Summary{}},
+		{Name: "e", Lost: true, Summary: nodeproto.Summary{Build: "v0.4.0", CatalogSchema: 30}},
+	})
+	want := []v1alpha1.BuildCount{{Build: "v0.2.0", DuckDB: "v2.0.0", Nodes: 2}, {Build: "v0.3.0", DuckDB: "v2.0.1", Nodes: 1}}
+	if !equality.Semantic.DeepEqual(fleet.Builds, want) {
+		t.Errorf("builds %+v, want %+v", fleet.Builds, want)
+	}
+	if fleet.Catalog == nil || fleet.Catalog.Schema != 23 || fleet.Catalog.MinReader != 22 {
+		t.Errorf("the catalog's stamp is the newest a live node read: %+v", fleet.Catalog)
+	}
+	if none := Aggregate([]NodeState{{Name: "d"}}); none.Builds != nil || none.Catalog != nil {
+		t.Errorf("a node of an older pin says no build: %+v", none)
 	}
 }
 

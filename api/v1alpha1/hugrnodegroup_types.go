@@ -98,6 +98,23 @@ type ProfileStatus struct {
 	NeedsRestart []string `json:"needsRestart,omitempty"`
 }
 
+// BuildCount is how many of a group's live nodes report one build.
+type BuildCount struct {
+	// Build is the hugr_node build the nodes report.
+	Build string `json:"build"`
+	// DuckDB is the DuckDB release they run.
+	// +optional
+	DuckDB string `json:"duckdb,omitempty"`
+	// Nodes reporting it.
+	Nodes int32 `json:"nodes"`
+}
+
+// CatalogStamp is the policy catalog's schema version and the oldest build that may read it (duckdb-acl spec 094).
+type CatalogStamp struct {
+	Schema    int64 `json:"schema"`
+	MinReader int64 `json:"minReader"`
+}
+
 // HugrNodeGroupStatus is the group's state, aggregated from its Deployment and its nodes' Leases.
 type HugrNodeGroupStatus struct {
 	// +optional
@@ -114,6 +131,12 @@ type HugrNodeGroupStatus struct {
 	// ResourceGroupKnown says whether the nodes find their resource group in the policy (nil: no node reported).
 	// +optional
 	ResourceGroupKnown *bool `json:"resourceGroupKnown,omitempty"`
+	// Builds counts the live nodes per build they report (spec 008): during an upgrade, two.
+	// +optional
+	Builds []BuildCount `json:"builds,omitempty"`
+	// Catalog is the policy catalog's schema as the live nodes report it: the newest stamp any of them read.
+	// +optional
+	Catalog *CatalogStamp `json:"catalog,omitempty"`
 	// Conditions: Ready, Refused (past the plan), Draining (the resource group is gone).
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

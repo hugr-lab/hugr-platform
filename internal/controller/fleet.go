@@ -38,6 +38,8 @@ type Fleet struct {
 	Profile    v1alpha1.ProfileStatus
 	Lost       []string
 	GroupKnown *bool
+	Builds     []v1alpha1.BuildCount
+	Catalog    *v1alpha1.CatalogStamp
 }
 
 // Aggregate the live nodes: the target is the highest any reports, applied is how many have it, who needs a restart;
@@ -68,7 +70,11 @@ func Aggregate(nodes []NodeState) Fleet {
 				fleet.GroupKnown = &known
 			}
 		}
+		if n.Summary.CatalogSchema > 0 && (fleet.Catalog == nil || n.Summary.CatalogSchema > fleet.Catalog.Schema) {
+			fleet.Catalog = &v1alpha1.CatalogStamp{Schema: n.Summary.CatalogSchema, MinReader: n.Summary.CatalogMinReader}
+		}
 	}
+	fleet.Builds = BuildsOf(live)
 	sort.Strings(fleet.Lost)
 	sort.Strings(fleet.Profile.NeedsRestart)
 	return fleet
@@ -83,4 +89,27 @@ func setCondition(status *v1alpha1.HugrNodeGroupStatus, generation int64, kind s
 // equalStatus ignores the conditions' transition times, which SetStatusCondition keeps when nothing changed.
 func equalStatus(a, b *v1alpha1.HugrNodeGroupStatus) bool {
 	return equality.Semantic.DeepEqual(a, b)
+}
+
+// BuildsOf the live nodes that report one (spec 008): a count per build and DuckDB release, in their order.
+func BuildsOf(live []NodeState) []v1alpha1.BuildCount {
+	counts := map[v1alpha1.BuildCount]int32{}
+	for _, n := range live {
+		if n.Summary.Build == "" {
+			continue
+		}
+		counts[v1alpha1.BuildCount{Build: n.Summary.Build, DuckDB: n.Summary.DuckDBVersion}]++
+	}
+	var out []v1alpha1.BuildCount
+	for key, nodes := range counts {
+		key.Nodes = nodes
+		out = append(out, key)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Build != out[j].Build {
+			return out[i].Build < out[j].Build
+		}
+		return out[i].DuckDB < out[j].DuckDB
+	})
+	return out
 }

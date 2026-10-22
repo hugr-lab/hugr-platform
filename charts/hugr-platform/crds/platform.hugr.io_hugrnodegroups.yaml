@@ -164,6 +164,42 @@ spec:
             description: HugrNodeGroupStatus is the group's state, aggregated from
               its Deployment and its nodes' Leases.
             properties:
+              builds:
+                description: 'Builds counts the live nodes per build they report (spec
+                  008): during an upgrade, two.'
+                items:
+                  description: BuildCount is how many of a group's live nodes report
+                    one build.
+                  properties:
+                    build:
+                      description: Build is the hugr_node build the nodes report.
+                      type: string
+                    duckdb:
+                      description: DuckDB is the DuckDB release they run.
+                      type: string
+                    nodes:
+                      description: Nodes reporting it.
+                      format: int32
+                      type: integer
+                  required:
+                  - build
+                  - nodes
+                  type: object
+                type: array
+              catalog:
+                description: 'Catalog is the policy catalog''s schema as the live
+                  nodes report it: the newest stamp any of them read.'
+                properties:
+                  minReader:
+                    format: int64
+                    type: integer
+                  schema:
+                    format: int64
+                    type: integer
+                required:
+                - minReader
+                - schema
+                type: object
               conditions:
                 description: 'Conditions: Ready, Refused (past the plan), Draining
                   (the resource group is gone).'
