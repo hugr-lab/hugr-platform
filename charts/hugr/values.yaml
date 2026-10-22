@@ -165,7 +165,10 @@ tresor:
       # a list of your own keeps this entry (checked)
       admins:
         - "subject:{{ .Values.global.clusterIssuer.url }}|system:serviceaccount:{{ .Release.Namespace }}:hugr-init"
-      # the nodes act for their sessions: an actor per group's identity, client:<its client id at the IdP>
+      # the nodes act for their sessions: one rule by the role every group's identity carries, so a group made later
+      # needs nothing here (tresor-server 0.7.5, its spec 031):
+      #   - {principal: "role:<the nodes' role>", issuer: "<global.idp.issuer>", verbs: [use]}
+      # Whoever can give that role at the IdP lets its client act for every user: give it to the nodes' accounts only.
       actors: []
 
 # --- its own kista (install.kista; its values, config rendered through tpl) -----------------------------------------

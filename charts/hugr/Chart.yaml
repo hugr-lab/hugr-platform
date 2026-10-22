@@ -19,7 +19,7 @@ dependencies:
   # its own tresor and kista, only when no address is given and install says so (spec 005 step 3)
   - name: tresor-server
     alias: tresor
-    version: 0.7.3
+    version: 0.7.5
     repository: oci://ghcr.io/hugr-lab/charts
     condition: install.tresor
   - name: kista

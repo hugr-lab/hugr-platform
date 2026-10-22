@@ -231,7 +231,8 @@ same version.
 
 - **Its dependencies:**
   - `hugr-platform`, this repository's chart, packaged together;
-  - `tresor-server` 0.7.3 and `kista` 0.1.4, from `oci://ghcr.io/hugr-lab/charts`, both signed. Both render their
+  - `tresor-server` 0.7.5 and `kista` 0.1.4, from `oci://ghcr.io/hugr-lab/charts`, both signed (verified with cosign
+    against their release workflows on the tags, 2026-10-22). Both render their
     `config` through `tpl` (`configTemplate: true`; their specs 028 and 0025), so the umbrella's values name its
     global facts there;
     - kista 0.1.4 (2026-10-22; image `sha256:68d1ddc6…` and chart `sha256:a0037d96…`, both checked here) adds an
@@ -304,7 +305,8 @@ same version.
   - tresor:
     - its issuers: the organisation's IdP, and the cluster's ServiceAccount issuer for `hugr-init` (whose URL the form
       gives: an API server's issuer is not readable at template time);
-    - `hugr-init` among its administrators, by subject, and the groups' identities as its actors;
+    - `hugr-init` among its administrators, by subject, and the nodes' role as its one actor rule (tresor-server
+      0.7.5: every group's identity carries the role, spec 006);
     - its state on the external PostgreSQL, and its KEK from the key store.
   - kista: its `bootstrap` - the tenant, the channel for the node's duckdb, the upstreams (core, community, our public
     channel, and an Enterest tenant when the form names one) - its store on the external PostgreSQL, and its channel

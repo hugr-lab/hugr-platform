@@ -169,7 +169,7 @@ export function Group() {
               <div><dt className="eyebrow">Answers as</dt><dd className="mono break-all">{group.identity.tlsName}</dd></div>
             </dl>
             <p className="text-sm text-ink-muted">
-              To act for its sessions in tresor, the identity must be one of tresor's actors: its client id is listed in tresor's configuration (spec 006 asks tresor to name actors by role).
+              To act for its sessions in tresor, the identity holds the nodes' role that tresor's actor rule names (tresor-server 0.7.5 and later); an older tresor lists each client id instead.
             </p>
           </section>
           {rights.policy && <PolicySection group={group} read={fleet.at?.getTime()} onChanged={fleet.reload} />}

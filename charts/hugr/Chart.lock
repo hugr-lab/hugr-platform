@@ -4,9 +4,9 @@ dependencies:
   version: 0.1.0
 - name: tresor-server
   repository: oci://ghcr.io/hugr-lab/charts
-  version: 0.7.3
+  version: 0.7.5
 - name: kista
   repository: oci://ghcr.io/hugr-lab/charts
   version: 0.1.4
-digest: sha256:607170e1da6173a87005a0e1fccffb1befaf1626c97c6466b1fcb08b99033562
-generated: "2026-10-22T09:41:53.133966+02:00"
+digest: sha256:74d204028ea295192cf5466ea872b7c5289e9e5adab70a2dc7700c8bed7b2ee1
+generated: "2026-10-22T11:59:20.400903+02:00"

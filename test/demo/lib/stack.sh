@@ -13,7 +13,7 @@ TRESOR_HOST="tresor.$TRESOR_NS.svc:443"
 KISTA_PREFIX="https://hugr-kista.$KISTA_NS.svc/hugr/platform"
 GROUPS_=(a b)
 # spec 006: a group the console makes in check 13 - its identity given beforehand, as an installation gives one (the IdP's
-# client, tresor's actor), the group itself not the chart's
+# client holding the nodes' role, which tresor's one actor rule names), the group itself not the chart's
 CONSOLE_GROUP=c
 IDENTITIES_=("${GROUPS_[@]}" "$CONSOLE_GROUP")
 NODE_CPU="${HUGR_DEMO_NODE_CPU:-1}"

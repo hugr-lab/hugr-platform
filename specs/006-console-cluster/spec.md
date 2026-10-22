@@ -93,11 +93,12 @@ failure (a write that timed out may have run).
 A node logs in to tresor by its group's identity. Two things must be there for it to work:
 1. **The catalog's secret is granted by role** (`hugrInit.tresor.grants`, `role:...`). An identity that carries that
    role in the IdP is covered, with nothing to change in tresor.
-2. **Acting for sessions** (duckdb-acl's `ACT_FOR_SESSIONS`) needs the node among tresor's `policy.actors`. That list
-   is tresor-server's static configuration (`ActorVerbs` matches `client:<its client id>`; the demo writes one entry per
-   group into tresor's values). A group made from the console, with an identity the list does not name, logs in but
-   cannot act for its sessions until tresor's configuration is changed and tresor restarted. With tresor-server's actor by
-   role (decision 1) the rule names the nodes' role once, and the group's identity carrying that role is enough.
+2. **Acting for sessions** (duckdb-acl's `ACT_FOR_SESSIONS`) needs the node among tresor's `policy.actors`, which is
+   tresor-server's static configuration. Before 0.7.5 an entry named one client id, so a group made from the console
+   could not act for its sessions until tresor's configuration was changed and tresor restarted. Since 0.7.5 one rule
+   names the nodes' role (decision 1), and the group's identity holding it is enough. The platform's nodes do not turn
+   acting for sessions on yet, so no demo check reads it; the demo's tresor starts with the rule, which its config check
+   would refuse if it were wrong.
 
 ## Security
 
@@ -125,10 +126,12 @@ A node logs in to tresor by its group's identity. Two things must be there for i
 
 ## Decisions (owner, 2026-10-22)
 
-1. **tresor's actors by role.** tresor-server is asked for an actor named by a role (relayed 2026-10-22, its product
-   gap: `config.go` refuses an actor that is not `client:<id>`). Then every group whose identity carries the nodes' role
-   acts for sessions, and a new group needs nothing in tresor. Until that release the installation lists the group's
-   client id in tresor's actors, and the console says so on the group's page.
+1. **tresor's actors by role.** tresor-server was asked for an actor named by a role (relayed 2026-10-22, its product
+   gap: `config.go` refused an actor that is not `client:<id>`); it shipped the same day in tresor-server 0.7.5 (its
+   spec 031: `{principal: role:<name>, issuer: <one of issuers>, verbs}`, service tokens only, a client's own rule wins).
+   The umbrella pins 0.7.5 and the demo's tresor names `role:hugr_node` once; every group's identity holds the role, so
+   a new group needs nothing in tresor. Whoever can give the role at the IdP lets its client act for every user: only the
+   nodes' service accounts hold it.
 2. **The identity is given, not made.** The console asks for an existing identity's client id and shows the subject it
    must trust. Making one needs a right in the IdP, which is the recipe's or the orchestrator's.
 3. **A delete drains and keeps the policy's resource group.** Removing it from the policy is its own action.

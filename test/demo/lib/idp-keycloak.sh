@@ -80,12 +80,13 @@ for g in groups:
                   "attributes": {"jwt.credential.issuer": "k8s", "jwt.credential.sub": subject},
                   "protocolMappers": [aud("duckdb-secrets"), groups_claim, client_id]})
     # every node's identity is in one group: tresor grants the nodes' secrets to it (the owner, 2026-10-18)
+    # and holds the nodes' role, the one tresor's actor rule names (tresor-server 0.7.5): only these accounts hold it
     node_users.append({"username": f"service-account-hugr-node-{g}", "enabled": True, "serviceAccountClientId": subject,
-                       "groups": ["/hugr-nodes"]})
+                       "groups": ["/hugr-nodes"], "realmRoles": ["hugr_node"]})
 realm = {
     "realm": "hugr", "enabled": True, "eventsEnabled": True, "enabledEventTypes": ["CLIENT_LOGIN", "CLIENT_LOGIN_ERROR"],
-    "roles": {"realm": [{"name": n} for n in ["analyst_a", "analyst_b", "platform_admin", "node_breakglass", "demo_seeder",
-                                              "secrets_admin"]]},
+    "roles": {"realm": [{"name": n} for n in ["hugr_node", "analyst_a", "analyst_b", "platform_admin", "node_breakglass",
+                                              "demo_seeder", "secrets_admin"]]},
     "groups": [{"name": "hugr-nodes", "path": "/hugr-nodes"}],
     # the cluster's ServiceAccount issuer: Keycloak reads its keys with its own ServiceAccount token
     "identityProviders": [{"alias": "k8s", "providerId": "kubernetes", "enabled": True, "config": {"issuer": sa_issuer}}],

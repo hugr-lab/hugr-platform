@@ -41,12 +41,8 @@ service_cas() {
 }
 
 tresor_values() {
-	local private=false actors="" g
+	local private=false
 	case "$CLUSTER_ISSUER" in https://kubernetes.default.svc*) private=true ;; esac
-	for g in "${IDENTITIES_[@]}"; do
-		actors="$actors
-      - {principal: 'client:$(group_client_id "$g")', verbs: [use]}"
-	done
 	cat <<YAML
 namespaceOverride: $TRESOR_NS
 fullnameOverride: tresor
@@ -94,8 +90,10 @@ config:
       - "subject:$CLUSTER_ISSUER|system:serviceaccount:hugr:hugr-init"
       - role:demo_seeder
       - role:secrets_admin
-    # the nodes act for their sessions (ACT_FOR_SESSIONS); an actor is a service, client:<id>
-    actors:$actors
+    # the nodes act for their sessions (ACT_FOR_SESSIONS): one rule by the role every group's identity carries, the
+    # console's group c's too (tresor-server 0.7.5, spec 031); only the nodes' service accounts hold it
+    actors:
+      - {principal: "role:hugr_node", issuer: "$IDP_ISSUER", verbs: [use]}
 YAML
 }
 
