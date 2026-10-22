@@ -159,6 +159,9 @@ jobs:
       run: |
         cd packages/duckdb-wasm
         npm version "2.0.0-hugr.${TAG#duckdb-wasm-}" --no-git-tag-version --allow-same-version
+        # the extensions shipped with it are importable: a bundler resolves only what exports names
+        node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("package.json")); p.exports["./dist/extensions/*"]="./dist/extensions/*"; fs.writeFileSync("package.json", JSON.stringify(p, null, 2)+"\n")'
+        grep -q '"./dist/extensions/\*"' package.json
         npm pack
         mkdir -p "$GITHUB_WORKSPACE/out"
         mv duckdb-duckdb-wasm-*.tgz "$GITHUB_WORKSPACE/out/"
