@@ -285,9 +285,15 @@ same version.
       - **The services**: tresor and kista reach `https://openbao.<ns>.svc:8200` by the umbrella's OpenBao CA (their
         `vault.crt`); the default is `keys.mode: internal`.
   - **`secret`**: kista's channel key and tresor's KEK as Secrets of their own namespaces, made once at install. It
-    is the lightest of the three and is an explicit choice. tresor takes a KEK from a Secret today; kista refuses a key
-    from a Secret on purpose, so this mode waits for kista's opt-in (a product gap, relayed 2026-10-21).
-  - **Azure** (stage B): Azure Key Vault for both, by workload identity.
+    is the lightest of the three and is an explicit choice. tresor takes a KEK from a Secret today; kista takes one
+    since 0.1.3 (its spec 0026, `kubesecret`).
+    - **Deferred** (the owner, 2026-10-21). It saves only OpenBao's pods: both modes rest on etcd, since OpenBao's
+      seal is a Secret too. It also changes the structure of tresor's and kista's configs (`keys` local and a
+      `kubesecret` source, not vault), which their charts' string templates cannot switch. So it would need a values
+      overlay, plus a check that an upgrade keeps the mode the install recorded.
+  - **Azure** (stage B): Azure Key Vault for both, by workload identity. Both products have it already: kista's
+    `azurekv` source (RSA-HSM outside dev, so a Premium vault) and tresor's `keys: {kind: azurekeyvault}`. The
+    Marketplace form writes that structure itself.
 - **The wiring** the umbrella writes into its dependencies' values. Each item is a value the form fills or a
   default:
   - tresor:
@@ -311,8 +317,19 @@ same version.
   - tresor and kista cannot read their own login from tresor: each password is a generated value in a Secret of that
     service's namespace, mounted as the service's `password_file`. These two passwords are the only ones at rest, each in its own service's namespace. For PostgreSQL
     outside a cloud's IAM this is the only way for now (the owner, 2026-10-21). On Azure (stage B) both log in with
-    Entra and hold no password. Later, tresor and kista read their database passwords from the key store (a Vault),
-    a product gap of each.
+    Entra and hold no password.
+  - **Rotating a database password is not the platform's** (the owner, 2026-10-21).
+    - Where rotation is wanted, the answer is a managed database that takes tokens: Azure SQL or Azure Database for
+      PostgreSQL with Entra, RDS with IAM, Cloud SQL with IAM. tresor (`state.auth: entra|aws|gcp`) and kista
+      (`store.login.kind: entra|aws|gcp`) log in with their identities there, so nothing is stored and nothing
+      rotates. tresor stores its state on SQL Server too (`state.kind: sqlserver`), and so does kista
+      (`store.kind: sqlserver`).
+    - Elsewhere the two passwords stay in their Secrets. Rotating them is the organisation's own setup, for example
+      a Vault database engine's static role synced into the same Secret by its operator. Both services read
+      `password_file` again for each new connection, and `hugr-init` never touches a Secret that exists, so such a
+      rotation needs nothing of the platform.
+    - OpenBao's database engine (tresor's leases, kista's static role, both supported since tresor 0.7.2 and kista
+      0.1.3) is at most an option offered later.
   - Order: tresor's and kista's databases must exist before their pods are ready, while `hugr-init`'s write into
     tresor needs tresor up. So `hugr-init` runs twice: as a Job of the release (tresor's and kista's databases and
     their Secrets, by a Role in each of their namespaces), then as the platform's hook (the catalog's database, its
@@ -322,7 +339,7 @@ same version.
      it, its OpenBao and its PostgreSQL as the external ones.
   2. `keys.mode: internal` (OpenBao).
   3. `database.mode: internal` (CloudNativePG).
-  4. `keys.mode: secret`, once kista takes a key from a Secret.
+  4. `keys.mode: secret` - deferred (above).
   5. the release publishes the umbrella beside `hugr-platform`.
 
   **Step 1, built (2026-10-21).** The chart, its render tests (`charts/hugr/ci/render-test.sh`, run by `make chart`)
@@ -416,6 +433,13 @@ Built (2026-10-21):
   - **The policy catalog on Azure SQL**: a node logs in by its group's Entra token through mssql and the linked `azure`
     extension (mssql reads a token per connection), so `hugr_policy_catalog` in tresor names the host and the
     database only. Still to verify: the group's workload identity reaching the `azure` extension's credential chain.
+    - **Checked 2026-10-21 (mssql-extension a7c320e):** a node logs in to Azure SQL by Entra today, as a service
+      principal (`PROVIDER service_principal`; mssql gets and renews the tokens itself). The principal's client secret
+      is then the one credential, and it lives only in tresor, in `hugr_policy_catalog`. mssql also takes a token from
+      the Azure CLI, an interactive login, the environment or a given token. What it lacks is the login with no secret
+      at all: a pod's workload identity (`AZURE_FEDERATED_TOKEN_FILE`), and its `managed_identity` provider is "not yet
+      implemented". That would remove the client secret too: a product gap for mssql-extension, to relay when stage B
+      starts.
   - **The policy catalog on PostgreSQL** has one gap. An Entra token lives about an hour, and postgres_scanner takes
     its password once, so a new connection after that fails. Two ways close it: postgres_scanner re-reading a token as
     the password per connection (a patch of ours), or a dynamic secret in tresor that hands out a fresh token ("CREATE
