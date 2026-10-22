@@ -1,0 +1,131 @@
+# spec 007: DuckDB in the console's SQL page - duckdb-wasm on DuckDB v2.0.0, built from a pinned commit of its main
+# (web/console/duckdb-wasm.pin) until its npm package is published. The bindings can LOAD extensions, checking their
+# signature (quack from the DuckDB repository); the npm tarball is a release asset the console's package-lock names
+# by its integrity. A PR builds it; main publishes it once per pin.
+name: duckdb-wasm
+on:
+  push:
+    branches: [main]
+    paths: [web/console/duckdb-wasm.pin, .github/workflows/duckdb-wasm.yml]
+  pull_request:
+    paths: [web/console/duckdb-wasm.pin, .github/workflows/duckdb-wasm.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  EMSCRIPTEN_VERSION: '6.0.9' # duckdb-wasm's own, at the pin
+concurrency:
+  group: duckdb-wasm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.pin.outputs.ref }}
+      tag: ${{ steps.pin.outputs.tag }}
+    steps:
+    - uses: actions/checkout@v4
+    - id: pin
+      run: |
+        ref="$(tr -d ' \n' < web/console/duckdb-wasm.pin)"
+        [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the pin is a commit of duckdb/duckdb-wasm"; exit 1; }
+        echo "ref=$ref" >>"$GITHUB_OUTPUT"
+        echo "tag=duckdb-wasm-${ref:0:12}" >>"$GITHUB_OUTPUT"
+
+  bindings:
+    needs: pin
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+        - {name: base, platform: wasm_eh}
+        - {name: threads, platform: wasm_threads}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: duckdb/duckdb-wasm
+        ref: ${{ needs.pin.outputs.ref }}
+        submodules: true
+        fetch-depth: 0
+    - run: sudo apt-get update && sudo apt-get install -y wabt ninja-build
+    - run: make apply_patches
+    - uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: ${{ env.EMSCRIPTEN_VERSION }}
+    - name: Build the ${{ matrix.name }} bindings, extensions loadable
+      env:
+        # DuckDB >= v2.0 takes its version from here: the extensions load from /v2.0.0/<platform>/
+        OVERRIDE_GIT_DESCRIBE: v2.0.0
+        DUCKDB_PLATFORM: ${{ matrix.platform }}
+        DUCKDB_WASM_LOADABLE_EXTENSIONS: 1 # LOAD of extensions; DuckDB checks their signature itself
+        DUCKDB_WASM_VERSION: 2.0.0-hugr.${{ needs.pin.outputs.tag }}
+        USE_GENERATED_EXPORTED_LIST: 'no'
+        GEN: ninja
+      run: ./scripts/wasm_build_lib.sh relsize ${{ matrix.name }}
+    - uses: actions/upload-artifact@v4
+      with:
+        name: bindings-${{ matrix.name }}
+        path: |
+          packages/duckdb-wasm/src/bindings/duckdb-${{ matrix.name }}.js
+          packages/duckdb-wasm/src/bindings/duckdb-${{ matrix.name }}.wasm
+        if-no-files-found: error
+        retention-days: 3
+
+  package:
+    needs: [pin, bindings]
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: duckdb/duckdb-wasm
+        ref: ${{ needs.pin.outputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '18.x'
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: bindings-*
+        path: packages/duckdb-wasm/src/bindings/
+        merge-multiple: true
+    - run: yarn install --frozen-lockfile
+    - run: yarn workspace @duckdb/duckdb-wasm build:release
+    - name: Pack
+      env:
+        TAG: ${{ needs.pin.outputs.tag }}
+      run: |
+        cd packages/duckdb-wasm
+        npm version "2.0.0-hugr.${TAG#duckdb-wasm-}" --no-git-tag-version --allow-same-version
+        npm pack
+        mkdir -p "$GITHUB_WORKSPACE/out"
+        mv duckdb-duckdb-wasm-*.tgz "$GITHUB_WORKSPACE/out/"
+        cd "$GITHUB_WORKSPACE/out" && sha256sum ./*.tgz | tee SHA256SUMS
+    - uses: actions/upload-artifact@v4
+      with:
+        name: package
+        path: out/
+        if-no-files-found: error
+        retention-days: 7
+
+  release:
+    needs: [pin, package]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: package
+        path: out/
+    - name: Publish once per pin
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ needs.pin.outputs.tag }}
+        REF: ${{ needs.pin.outputs.ref }}
+      run: |
+        if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          echo "$TAG is published already"; exit 0
+        fi
+        gh release create "$TAG" out/* -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+          --title "duckdb-wasm at $REF (DuckDB v2.0.0)" \
+          --notes "duckdb-wasm built from duckdb/duckdb-wasm@$REF on DuckDB v2.0.0, its bindings able to LOAD signed extensions - the console's SQL page (spec 007) until duckdb-wasm publishes its own."
