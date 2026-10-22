@@ -399,7 +399,7 @@ func TestFirstPolicyFields(t *testing.T) {
 	first := func() *v1alpha1.HugrPlatform {
 		p := platform()
 		p.Name = "first"
-		p.Spec.Console = &v1alpha1.ConsoleSpec{ClientID: "console-app", Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr"}}
+		p.Spec.Console = &v1alpha1.ConsoleSpec{ClientID: "console-app", Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr", Tresor: "api://tresor"}}
 		p.Spec.FirstPolicy = &v1alpha1.FirstPolicySpec{
 			Issuer:         v1alpha1.FirstPolicyIssuer{Name: "corp", RolesClaim: "roles"},
 			Administrators: "hugr-admins",

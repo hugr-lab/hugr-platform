@@ -20,7 +20,7 @@ function signedIn() {
     user: { access_token: string; refresh_token?: string; expired: boolean }
     m: { metadataService: { getTokenEndpoint(): Promise<string> }; signinSilent(): Promise<unknown> }
   }
-  internals.user = { access_token: 'nodes-token', refresh_token: 'refresh', expired: false }
+  internals.user = { access_token: 'nodes-token', refresh_token: 'refresh', expired: false, profile: { sub: 'alice' } } as never
   internals.m.metadataService.getTokenEndpoint = async () => 'https://login.example.org/token'
   return { session, internals }
 }
@@ -69,6 +69,32 @@ describe('a token per audience', () => {
     await expect(session.getToken('api://tresor')).rejects.toBeInstanceOf(SessionEnded)
     internals.user.expired = true
     await expect(session.getToken('api://nodes')).rejects.toBeInstanceOf(SessionEnded)
+  })
+})
+
+describe('another person in the same page (spec 009)', () => {
+  const asSet = (s: Session) => s as unknown as { set(u: unknown): void }
+  it("drops the last person's tokens of their own audience when another signs in, keeps them for the same", async () => {
+    const { session } = signedIn()
+    let asked = 0
+    vi.stubGlobal('fetch', vi.fn(async () => tokenAnswer(`t${++asked}`, 3600)))
+    expect(await session.getToken('api://tresor')).toBe('t1')
+    // the same person signed in again (a renewal): the held token stays
+    asSet(session).set({ access_token: 'n2', refresh_token: 'r2', expired: false, profile: { sub: 'alice' } })
+    expect(await session.getToken('api://tresor')).toBe('t1')
+    // another person: asked afresh, by their refresh token
+    asSet(session).set({ access_token: 'n3', refresh_token: 'r3', expired: false, profile: { sub: 'bob' } })
+    expect(await session.getToken('api://tresor')).toBe('t2')
+  })
+  it('never hands out a token asked for the last person once another signed in', async () => {
+    const { session } = signedIn()
+    let release: (r: Response) => void = () => undefined
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { release = resolve })))
+    const pending = session.getToken('api://tresor')
+    await Promise.resolve()
+    asSet(session).set({ access_token: 'n2', refresh_token: 'r2', expired: false, profile: { sub: 'bob' } })
+    release(tokenAnswer('alice-tresor', 3600))
+    await expect(pending).rejects.toBeInstanceOf(SessionEnded)
   })
 })
 

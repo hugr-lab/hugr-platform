@@ -51,6 +51,12 @@ tlsSecret: tresor-tls
 service: {port: 443}
 clusterIssuer: {enabled: $private}
 vaultToken: {enabled: true, audience: vault}
+$([ -z "$TRESOR_EXCHANGE_CLIENT" ] || cat <<EXCHANGE
+exchangeToken: {enabled: true, audience: "$IDP_FEDERATION_AUDIENCE"}
+# the exchange posts to the IdP's token endpoint by the system's roots, never the issuer's ca_file: the run's CA beside them
+env: [{name: SSL_CERT_DIR, value: /var/run/tresor/cas}]
+EXCHANGE
+)
 resources: {requests: {cpu: 10m, memory: 32Mi}}
 extraVolumes:
   - {name: db, secret: {secretName: tresor-db}}
@@ -78,6 +84,16 @@ config:
       ca_file: "$([ "$IDP_NAME" != Keycloak ] || echo /var/run/tresor/cas/idp.crt)"
       service: {claim: "$TRESOR_SERVICE_CLAIM"}
       service_flows: [client_credentials, private_key_jwt, federated]
+$([ -z "$TRESOR_EXCHANGE_CLIENT" ] || cat <<EXCHANGE
+      # the doors' secret (spec 009): a token minted for its reader, the service authenticated by its own projected
+      # ServiceAccount token - no secret
+      exchange:
+        client_id: "$TRESOR_EXCHANGE_CLIENT"
+        client_auth: file
+        assertion_file: /var/run/tresor/idp-token/token
+        omit_client_id: true
+EXCHANGE
+)
     - issuer: "$CLUSTER_ISSUER"
       audience: duckdb-secrets
       ca_file: "$([ "$private" = false ] || echo /var/run/tresor/cluster/ca.crt)"

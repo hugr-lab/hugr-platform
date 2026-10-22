@@ -51,13 +51,18 @@ func main() {
 		consoleURL = flag.String("console", "", "instead of -sql: a console API URL (spec 003), reached through a port-forward")
 		method     = flag.String("method", "GET", "the console call's method")
 		body       = flag.String("body", "", "the console call's JSON body")
+		door       = flag.String("door", "", "with -console (its origin): the doors' secret read through the console's "+
+			"/tresor, its minted token then the bearer of the console's me (spec 009)")
 	)
 	flag.Parse()
 	idp := tokenRequest{url: *tokenURL, host: *tokenHost, client: *client, secretFile: *secretFile, scope: *scope}
 	var err error
-	if *consoleURL != "" {
+	switch {
+	case *door != "":
+		err = doorThroughTresor(idp, *consoleURL, *door, *serverName, *caFile)
+	case *consoleURL != "":
 		err = console(idp, *consoleURL, *method, *body, *serverName, *caFile)
-	} else {
+	default:
 		err = run(idp, *node, *serverName, *caFile, *sql, *hold)
 	}
 	if err != nil {
@@ -185,6 +190,96 @@ func console(idp tokenRequest, target, method, body, serverName, caFile string) 
 	}
 	fmt.Println(strings.TrimSpace(string(answer)))
 	return nil
+}
+
+// doorThroughTresor reads the doors' secret as the principal through the console's /tresor (spec 009): its token must be
+// one tresor minted for the principal - not the principal's own - and the console's Authorization header the same
+// token; then the console's me with that token, its answer to stdout. No token is printed.
+func doorThroughTresor(idp tokenRequest, origin, name, serverName, caFile string) error {
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return errors.New("the CA file holds no certificate")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	own, err := clientCredentials(ctx, idp, pool)
+	if err != nil {
+		return fmt.Errorf("the principal's token: %w", err)
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12,
+		RootCAs: pool, ServerName: serverName}}}
+	get := func(target, token string) ([]byte, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("%s answered %d: %s", req.URL.Path, resp.StatusCode, redact(strings.TrimSpace(string(answer))))
+		}
+		return answer, nil
+	}
+	raw, err := get(strings.TrimRight(origin, "/")+"/tresor/v1/secrets/"+url.PathEscape(name), own)
+	if err != nil {
+		return err
+	}
+	var secret struct {
+		Type   string                     `json:"type"`
+		Params map[string]json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &secret); err != nil {
+		return errors.New("the doors' secret is no JSON object")
+	}
+	minted := stringParam(secret.Params["token"])
+	var headers struct {
+		Value map[string]string `json:"value"`
+	}
+	_ = json.Unmarshal(secret.Params["extra_http_headers"], &headers)
+	switch {
+	case secret.Type != "quack":
+		return fmt.Errorf("the doors' secret is of type %q, not quack", secret.Type)
+	case minted == "":
+		return errors.New("the doors' secret carries no token")
+	case minted == own:
+		return errors.New("the doors' token is the principal's own, not one tresor minted")
+	case headers.Value["Authorization"] != "Bearer "+minted:
+		return errors.New("the doors' Authorization header is not the minted token")
+	}
+	me, err := get(strings.TrimRight(origin, "/")+"/api/v1/console/me", minted)
+	if err != nil {
+		return fmt.Errorf("the console with the minted token: %w", err)
+	}
+	if strings.Contains(string(me), minted) || strings.Contains(string(me), own) {
+		return errors.New("the console's answer carries a token")
+	}
+	fmt.Println(strings.TrimSpace(string(me)))
+	return nil
+}
+
+// stringParam is a tresor parameter's string: bare, or typed ({"type": "VARCHAR", "value": ...})
+func stringParam(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var typed struct {
+		Value string `json:"value"`
+	}
+	_ = json.Unmarshal(raw, &typed)
+	return typed.Value
 }
 
 func valueString(column arrow.Array, row int) string {

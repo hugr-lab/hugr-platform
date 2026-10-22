@@ -42,6 +42,15 @@ renders "the given channel is the platform's repository" '^    prefix: https://k
 renders "hugr-init writes into the given tresor" 'url: "https://tresor[.]example[.]net:443"'
 renders "hugr-init makes the catalog on the given server" 'host: "hugr-pg[.]example[.]net"'
 renders "the given parts' private CAs reach the platform's bundle" 'hugr-private-cas/repository[.]crt'
+# spec 009: the doors' secret, its token minted for the nodes' audience (the console's), required
+renders "hugr-init writes the doors' secret for the nodes' API's client id" '^      audience: "00000000-0000-0000-0000-00000000a001"$'
+renders "the doors' secret names the doors" 'scopes: \["quack:console[.]hugr[.]example:443","quack:hugr[.]example:9494"\]'
+refuses "an install naming no door" "hugrInit.door.scopes names the quack doors" --set 'hugr-platform.hugrInit.door.scopes=null'
+refuses "an install naming nobody at the doors" "hugrInit.door.grants names who may use" \
+	--set 'hugr-platform.hugrInit.door.grants=null'
+refuses "Entra's api:// URI as the doors' audience" "not its api:// URI" --set 'hugr-platform.hugrInit.door.audience='
+renders "the doors' audience defaults to the nodes' (Keycloak)" '^      audience: "hugr"$' \
+	--set 'hugr-platform.hugrInit.door.audience=' --set 'hugr-platform.platform.spec.console.audiences.nodes=hugr'
 refuses "a tresor neither given nor its own" "global.tresor.host is required" --set global.tresor.host=
 refuses "a channel neither given nor its own" "global.repository.prefix is required" --set global.repository.prefix=
 refuses "a database neither given nor its own" "global.database.host is required" --set global.database.host=

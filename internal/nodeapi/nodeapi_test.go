@@ -150,7 +150,7 @@ func TestBootstrapFirstPolicy(t *testing.T) {
 	if err := w.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: "hugr"}, &platform); err != nil {
 		t.Fatal(err)
 	}
-	platform.Spec.Console = &v1alpha1.ConsoleSpec{ClientID: "console-app", Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr"}}
+	platform.Spec.Console = &v1alpha1.ConsoleSpec{ClientID: "console-app", Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr", Tresor: "api://tresor"}}
 	platform.Spec.FirstPolicy = &v1alpha1.FirstPolicySpec{
 		Issuer:         v1alpha1.FirstPolicyIssuer{Name: "corp", RolesClaim: "roles"},
 		Administrators: "hugr-admins", DefaultGroup: "bi",

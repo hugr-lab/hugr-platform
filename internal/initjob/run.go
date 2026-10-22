@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -18,6 +19,7 @@ import (
 type SecretsService interface {
 	Discover(ctx context.Context) error
 	Exists(ctx context.Context, name string) (bool, error)
+	Describe(ctx context.Context, name string) (*Descriptor, error)
 	Create(ctx context.Context, name string, s Secret) error
 	Grant(ctx context.Context, name, id, principal string) error
 }
@@ -73,13 +75,98 @@ func Run(ctx context.Context, c *Config, tresor SecretsService, newDatabase func
 		}
 	}
 	log.Info("the catalog's login is granted", "secret", name, "principals", len(c.Tresor.Grants))
+	// the database administrator's credential goes as soon as the catalog is done: the doors need none of it
 	if admin != nil {
 		if err := admin.Delete(ctx); err != nil {
 			return fmt.Errorf("hugr-init: the database administrator's Secret was not deleted: %w", err)
 		}
 		log.Info("the database administrator's Secret is deleted", "secret", c.Catalog.Admin.SecretName)
 	}
+	return door(ctx, c, tresor, log)
+}
+
+// door writes the doors' secret once and grants its use at every run, as the catalog's. An existing one (the
+// administrator's, an earlier run's) is left as it is - granted only while it is a quack secret within the doors
+// named: a stale one with a broader scope, or another secret by that name, is never handed to people.
+func door(ctx context.Context, c *Config, tresor SecretsService, log *slog.Logger) error {
+	name := c.Door.Secret
+	existing, err := tresor.Describe(ctx, name)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		if problem := outsideDoors(existing, c.Door.Scopes); problem != "" {
+			return fmt.Errorf("hugr-init: %s in tresor %s: nothing granted - delete it, or name its doors in "+
+				"door.scopes", name, problem)
+		}
+		log.Info("the doors' secret is in tresor already: left as it is", "secret", name)
+	} else {
+		err := tresor.Create(ctx, name, doorSecret(c))
+		switch {
+		case errors.Is(err, ErrExists):
+			// written meanwhile, or an entry the listing does not show (a service login): judged as any existing one
+			existing, err = tresor.Describe(ctx, name)
+			if err != nil {
+				return err
+			}
+			if existing == nil {
+				return fmt.Errorf("hugr-init: %s is taken in tresor by an entry its listing does not show: nothing "+
+					"granted - name the doors' secret otherwise (door.secret)", name)
+			}
+			if problem := outsideDoors(existing, c.Door.Scopes); problem != "" {
+				return fmt.Errorf("hugr-init: %s in tresor %s: nothing granted - delete it, or name its doors in "+
+					"door.scopes", name, problem)
+			}
+		case err != nil:
+			return fmt.Errorf("hugr-init: tresor: %w", err)
+		default:
+			log.Info("the doors' secret is in tresor", "secret", name, "doors", len(c.Door.Scopes))
+		}
+	}
+	for _, principal := range c.Door.Grants {
+		if err := tresor.Grant(ctx, name, grantID(principal), principal); err != nil {
+			return fmt.Errorf("hugr-init: tresor: %w", err)
+		}
+	}
+	log.Info("the doors' secret is granted", "secret", name, "principals", len(c.Door.Grants))
 	return nil
+}
+
+// outsideDoors says how an existing secret is not the doors' (empty: it is): another type, or a scope beyond them.
+func outsideDoors(d *Descriptor, doors []string) string {
+	if d.Type != "quack" {
+		return fmt.Sprintf("is of type %q, not quack", d.Type)
+	}
+	if len(d.Scope) == 0 {
+		return "has no scope: it would go to every quack server"
+	}
+	if !d.Dynamic {
+		return "carries a fixed value, not one made for its reader: one credential would go to everyone granted"
+	}
+	for _, scope := range d.Scope {
+		if !slices.Contains(doors, scope) {
+			return fmt.Sprintf("names %q, which door.scopes does not", scope)
+		}
+	}
+	return ""
+}
+
+// doorSecret is a quack secret of no value of its own: tresor mints its token for the reader, for the nodes'
+// audience, at each read (tresor-server's generated parameters) - as the door's token, and as the bearer the
+// console's /quack admits a signed-in person by (spec 007). One exchange makes both.
+func doorSecret(c *Config) Secret {
+	return Secret{
+		Type:     "quack",
+		Provider: "config",
+		Scope:    append([]string{}, c.Door.Scopes...),
+		Params: map[string]any{
+			"token": "mint+exchange://" + c.Door.Audience,
+			"extra_http_headers": map[string]any{"type": "MAP(VARCHAR, VARCHAR)",
+				"value": map[string]string{"Authorization": "Bearer ${exchange://" + c.Door.Audience + "}"}},
+		},
+		RedactKeys: []string{"token", "extra_http_headers"},
+		Comment:    "the platform's quack doors: a token minted for the reader, made by hugr-init (spec 009)",
+	}
 }
 
 // catalogSecret is the login as the nodes read it: a postgres secret, the password redacted. Its keys are libpq's own

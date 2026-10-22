@@ -17,7 +17,7 @@ export interface Config {
   issuer: string
   clientID: string
   scopes: string[]
-  audiences: { nodes: string; tresor?: string; kista?: string }
+  audiences: { nodes: string; tresor: string; kista?: string }
   mounts: Record<string, Mount>
   links: Link[]
 }

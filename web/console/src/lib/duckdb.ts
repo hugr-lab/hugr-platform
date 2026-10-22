@@ -1,7 +1,8 @@
 // The SQL page's DuckDB (spec 007): duckdb-wasm in a worker of the console's own origin, loaded when the page is first
 // used. It attaches the platform as a quack client does: a quack URI has no path, so the client posts to the console's
-// own /quack, which forwards to the platform's door. The node behind the door judges every statement under the
-// person's token; nothing in the page enforces anything.
+// own /quack, which forwards to the platform's door. The door's secret comes from tresor (spec 009), which the console
+// serves under its own /tresor: the page hands tresor the person's token for tresor and holds no credential of its own.
+// The node behind the door judges every statement under the person's token; nothing in the page enforces anything.
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
 
 /** what the page reads of an answer before it cuts it, and says so */
@@ -16,17 +17,28 @@ export interface Answer {
   cut?: string
 }
 
-let opened: Promise<AsyncDuckDBConnection> | undefined
+interface Opened {
+  db: AsyncDuckDB
+  conn: AsyncDuckDBConnection
+  /** tresor attached on this DuckDB, once */
+  attached?: Promise<unknown>
+}
 
-async function open(): Promise<AsyncDuckDBConnection> {
+let opened: Promise<Opened> | undefined
+/** whom the page's DuckDB holds tresor for: tresor keeps a door's minted token for its next lookup, whoever asks, so
+ * another person gets a DuckDB of their own */
+let holder: string | undefined
+
+async function open(): Promise<Opened> {
   const duckdb = await import('@duckdb/duckdb-wasm')
   const wasm = (await import('@duckdb/duckdb-wasm/dist/duckdb-base.wasm?url')).default
   const script = (await import('@duckdb/duckdb-wasm/dist/duckdb-browser-base.worker.js?url')).default
-  // quack built with one change (no heartbeat thread without pthreads, duckdb/duckdb-quack#328) and the httpfs its HTTP
-  // needs, both shipped with the package and served from the console's own origin: unsigned, as nothing DuckDB signed
-  // connects from this build
+  // quack built with one change (no heartbeat thread without pthreads, duckdb/duckdb-quack#328), the httpfs its HTTP
+  // needs and tresor (whose wasm build no release carries yet), shipped with the package and served from the console's
+  // own origin: unsigned, as nothing DuckDB signed connects from this build
   const httpfs = (await import('@duckdb/duckdb-wasm/dist/extensions/httpfs.duckdb_extension.wasm?url')).default
   const quack = (await import('@duckdb/duckdb-wasm/dist/extensions/quack.duckdb_extension.wasm?url')).default
+  const tresor = (await import('@duckdb/duckdb-wasm/dist/extensions/tresor.duckdb_extension.wasm?url')).default
   const db: AsyncDuckDB = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(script))
   await db.instantiate(wasm)
   await db.open({ path: ':memory:', allowUnsignedExtensions: true })
@@ -34,18 +46,56 @@ async function open(): Promise<AsyncDuckDBConnection> {
   // no extension from elsewhere: DuckDB-wasm would fetch a known one it autoloads, and only the CSP would stop it
   await conn.query('SET autoinstall_known_extensions = false')
   await conn.query('SET autoload_known_extensions = false')
-  for (const extension of [httpfs, quack]) {
+  for (const extension of [httpfs, quack, tresor]) {
     await conn.query(`LOAD ${literal(new URL(extension, window.location.href).href)}`)
   }
   // nothing changes the page's DuckDB after this: no LOAD, no setting (the person's text never runs here anyway)
   await conn.query('SET lock_configuration = true')
-  return conn
+  return { db, conn }
+}
+
+/** the page's DuckDB ended: the next run opens one afresh */
+function close() {
+  const was = opened
+  opened = undefined
+  holder = undefined
+  void was?.then(({ db }) => db.terminate()).catch(() => undefined)
+}
+
+/** whether the page's DuckDB must end before this token's run: it holds tresor for another person, or the token names
+ * nobody (an opaque one: every run its own) */
+export const changes = (holding: string | undefined, who: string) => holding !== undefined && (who === '' || who !== holding)
+
+/** the token's iss|sub, read and never verified (the page only tells one person from another); '' when it names none */
+export function personOf(token: string): string {
+  try {
+    const part = (token.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/')
+    const claims = JSON.parse(atob(part.padEnd(Math.ceil(part.length / 4) * 4, '=')))
+    return typeof claims.iss === 'string' && typeof claims.sub === 'string' ? `${claims.iss}|${claims.sub}` : ''
+  } catch {
+    return ''
+  }
 }
 
 /** the platform's door as quack names it: the console's own host and port */
 export function doorURI(location: { hostname: string; port: string; protocol: string }): string {
   const port = location.port || (location.protocol === 'https:' ? '443' : '80')
   return `quack:${location.hostname}:${port}`
+}
+
+/** tresor as the console serves it (spec 009): the console's own origin, under /tresor */
+export function tresorService(location: { host: string }): string {
+  return `tresor:${location.host}/tresor`
+}
+
+/** the catalog the page attaches tresor as: the door's secret is found in its storage */
+export const TRESOR = 'hugr_tresor'
+
+/** the door's secret DuckDB would use, if tresor's (which_secret's storage); else what the platform must give */
+export function doorSecret(uri: string, storages: string[]): string {
+  if (storages.some((s) => s.toLowerCase() === TRESOR)) return TRESOR
+  throw new Error(`tresor serves you no secret for ${uri}: the door's secret (hugr_door) must name it in its scope ` +
+    '(the install\'s door.scopes) and grant you its use (door.grants)')
 }
 
 /** a value as an SQL string literal of the page's own DuckDB */
@@ -81,19 +131,55 @@ export function bounded(columns: string[], rows: Iterable<(string | null)[]>): A
   return out
 }
 
-/** runs the statement through the platform's door, as the person: the token goes into the page's quack secret for the
- * door and as the console's header (the console forwards only a signed-in person's requests). DuckDB writes every
- * value as text (a DECIMAL's scale, a date, a list, a 64-bit integer as they are); the answer is read batch by batch and
- * the read stops at the page's bounds. */
-export async function run(sql: string, token: string, native: boolean): Promise<Answer> {
+/** what enter() asks of a connection: its prepared statements and its queries */
+export type Conn = Pick<AsyncDuckDBConnection, 'prepare' | 'query'>
+/** a DuckDB of the page's as enter() needs it: its connection, and whether tresor is attached there */
+export type Seat = { conn: Conn; attached?: Promise<unknown> }
+
+/** hands tresor the person's token (each run: tresor takes the newest at its next call), attaches it once, and finds the
+ * door's secret there. The token is a parameter, never in a statement's text (tresor spec 043); the issuer is named,
+ * as tresor-server lists every issuer it trusts - the cluster's too. */
+export async function enter(seat: Seat, token: string, issuer: string, location: { host: string; hostname: string;
+  port: string; protocol: string }): Promise<void> {
+  const { conn } = seat
+  const service = tresorService(location)
+  const uri = doorURI(location)
+  const hand = await conn.prepare('FROM tresor_web_token(?, ?, issuer := ?)')
+  try {
+    await hand.query(service, token, issuer)
+  } finally {
+    await hand.close()
+  }
+  seat.attached ??= conn.query(`ATTACH IF NOT EXISTS ${literal(service)} AS ${TRESOR} (ISSUER ${literal(issuer)})`)
+    .catch((e) => {
+      seat.attached = undefined
+      throw e
+    })
+  await seat.attached
+  const which = await conn.prepare("SELECT storage FROM which_secret(?, 'quack')")
+  try {
+    const found = await which.query(uri)
+    doorSecret(uri, found.toArray().map((r) => String(r.storage)))
+  } finally {
+    await which.close()
+  }
+}
+
+/** runs the statement through the platform's door, as the person: the door's secret is tresor's, a token tresor mints
+ * for the person (spec 009). DuckDB writes every value as text (a DECIMAL's scale, a date, a list, a 64-bit integer as
+ * they are); the answer is read batch by batch and the read stops at the page's bounds. */
+export async function run(sql: string, tresorToken: string, issuer: string, native: boolean): Promise<Answer> {
+  const who = personOf(tresorToken)
+  if (changes(holder, who)) close()
   opened ??= open().catch((e) => {
     opened = undefined
     throw e
   })
-  const conn = await opened
+  const seat = await opened
+  const { conn } = seat
+  holder = who
   const uri = doorURI(window.location)
-  await conn.query(`CREATE OR REPLACE SECRET hugr_door (TYPE quack, SCOPE ${literal(uri)}, TOKEN ${literal(token)}, ` +
-    `EXTRA_HTTP_HEADERS MAP {'Authorization': ${literal('Bearer ' + token)}})`)
+  await enter(seat, tresorToken, issuer, window.location)
   // TLS as the page's own: quack goes without it to a local address by default, and the console's origin is https
   const statement = await conn.prepare('SELECT COLUMNS(*)::VARCHAR FROM ' +
     `(FROM quack_query(?, ?, disable_ssl := ?) LIMIT ${ROWS_MAX + 1})`)

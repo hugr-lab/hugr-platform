@@ -96,6 +96,16 @@ hugrInit:
     url: "" # tresor-server's base, https (its discovery is <url>/.well-known/duckdb-secrets)
     audience: duckdb-secrets # the audience of the cluster issuer's entry in tresor-server's config
     grants: [] # the groups' identities in tresor, given use of the secret: role:... or group:...
+  # the doors' secret (spec 009): a quack secret whose token tresor mints for its reader, for the nodes - how people
+  # (the console's SQL page, DBeaver, the CLI) pass the platform's quack doors with no credential of their own.
+  # Written once, granted at every run; an existing one is left as it is.
+  door:
+    secret: hugr_door
+    audience: "" # the nodes' audience the reader's token is exchanged for; default platform.spec.console.audiences.nodes
+    # (on Entra required: the nodes' API's client id, a GUID - On-Behalf-Of mints by it)
+    scopes: [] # required: quack:<host>:<port> of each door people reach - the console's and the front's public ones
+    grants: [] # required: the people's roles or groups in tresor, given use of it: role:... or group:... - never the nodes'
+    allowLoopback: false # a scope may name a loopback address: a demo's stand on one machine only
   catalog:
     engine: postgres # PostgreSQL 18 or later
     host: ""

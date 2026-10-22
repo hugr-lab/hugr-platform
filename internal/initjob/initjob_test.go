@@ -22,16 +22,20 @@ func testConfig() *Config {
 		Catalog: CatalogConfig{Secret: "hugr_policy_catalog", Engine: "postgres", Host: "pg.db.svc", Port: 5432,
 			Database: "hugr", Login: "hugr_catalog", SSLMode: "disable",
 			Admin: AdminConfig{SecretName: "hugr-init-db-admin", Dir: "/a", Database: "postgres"}},
+		Door: DoorConfig{Secret: "hugr_door", Audience: "api://hugr",
+			Scopes: []string{"quack:console.example.org:443", "quack:hugr.example.org:9494"},
+			Grants: []string{"role:platform_admin"}},
 	}
 }
 
 // fakeTresor records what the Job asks
 type fakeTresor struct {
-	exists    bool
+	exists    bool        // the catalog's secret
+	door      *Descriptor // the doors' secret, if there is one
 	createErr error
 	grantErr  error
-	created   *Secret
-	grants    map[string]string // id -> principal
+	created   map[string]*Secret
+	grants    map[string]map[string]string // secret -> id -> principal
 	calls     []string
 }
 
@@ -39,27 +43,46 @@ func (f *fakeTresor) Discover(context.Context) error {
 	f.calls = append(f.calls, "discover")
 	return nil
 }
-func (f *fakeTresor) Exists(context.Context, string) (bool, error) {
+func (f *fakeTresor) Exists(_ context.Context, _ string) (bool, error) {
 	f.calls = append(f.calls, "exists")
 	return f.exists, nil
 }
-func (f *fakeTresor) Create(_ context.Context, _ string, s Secret) error {
+func (f *fakeTresor) Describe(_ context.Context, name string) (*Descriptor, error) {
+	f.calls = append(f.calls, "describe")
+	if name != "hugr_door" {
+		return nil, nil
+	}
+	return f.door, nil
+}
+
+// theDoors is the doors' secret as the test configuration names it
+func theDoors() *Descriptor {
+	return &Descriptor{Name: "hugr_door", Type: "quack", Dynamic: true,
+		Scope: []string{"quack:hugr.example.org:9494", "quack:console.example.org:443"}}
+}
+func (f *fakeTresor) Create(_ context.Context, name string, s Secret) error {
 	f.calls = append(f.calls, "create")
 	if f.createErr != nil {
 		return f.createErr
 	}
-	f.created = &s
+	if f.created == nil {
+		f.created = map[string]*Secret{}
+	}
+	f.created[name] = &s
 	return nil
 }
-func (f *fakeTresor) Grant(_ context.Context, _, id, principal string) error {
+func (f *fakeTresor) Grant(_ context.Context, name, id, principal string) error {
 	f.calls = append(f.calls, "grant")
 	if f.grantErr != nil {
 		return f.grantErr
 	}
 	if f.grants == nil {
-		f.grants = map[string]string{}
+		f.grants = map[string]map[string]string{}
 	}
-	f.grants[id] = principal
+	if f.grants[name] == nil {
+		f.grants[name] = map[string]string{}
+	}
+	f.grants[name][id] = principal
 	return nil
 }
 
@@ -95,25 +118,38 @@ func TestRunFresh(t *testing.T) {
 	if err != nil || len(raw) != 32 {
 		t.Errorf("the login's password is not 32 random bytes, base64url")
 	}
-	s := tr.created
+	s := tr.created["hugr_policy_catalog"]
 	if s == nil || s.Type != "postgres" || s.Params["password"] != db.password || s.Params["user"] != "hugr_catalog" ||
 		s.Params["host"] != "pg.db.svc" || s.Params["port"] != "5432" || s.Params["dbname"] != "hugr" ||
 		s.Params["sslmode"] != "disable" || s.Params["sslrootcert"] != nil || len(s.RedactKeys) != 1 ||
 		s.RedactKeys[0] != "password" {
 		t.Errorf("the secret written: %+v", s)
 	}
-	if len(tr.grants) != 2 {
+	if len(tr.grants["hugr_policy_catalog"]) != 2 {
 		t.Errorf("the grants: %v", tr.grants)
 	}
-	for id, p := range tr.grants {
+	for id, p := range tr.grants["hugr_policy_catalog"] {
 		if id != grantID(p) || !strings.HasPrefix(id, "hugr-init-") {
 			t.Errorf("grant %q for %q is not the Job's id", id, p)
 		}
 	}
+	// the doors' secret (spec 009): a token minted for the reader, for the nodes, sent only to the doors named
+	d := tr.created["hugr_door"]
+	headers, _ := d.Params["extra_http_headers"].(map[string]any)
+	value, _ := headers["value"].(map[string]string)
+	if d == nil || d.Type != "quack" || d.Provider != "config" || d.Params["token"] != "mint+exchange://api://hugr" ||
+		headers["type"] != "MAP(VARCHAR, VARCHAR)" || len(value) != 1 ||
+		value["Authorization"] != "Bearer ${exchange://api://hugr}" ||
+		strings.Join(d.Scope, ",") != "quack:console.example.org:443,quack:hugr.example.org:9494" || len(d.Params) != 2 {
+		t.Errorf("the doors' secret: %+v", d)
+	}
+	if g := tr.grants["hugr_door"]; len(g) != 1 || g[grantID("role:platform_admin")] != "role:platform_admin" {
+		t.Errorf("the doors' grants: %v", g)
+	}
 	if !admin.deleted {
 		t.Error("the administrator's Secret was kept")
 	}
-	if strings.Join(tr.calls, ",") != "discover,exists,create,grant,grant" {
+	if strings.Join(tr.calls, ",") != "discover,exists,create,grant,grant,describe,create,grant" {
 		t.Errorf("the order: %v", tr.calls)
 	}
 	// a verified connection: the node's CA bundle is the secret's root
@@ -123,20 +159,135 @@ func TestRunFresh(t *testing.T) {
 	}
 }
 
-// TestRunAgain: a run after the secret exists touches neither the database nor the secret, and grants again
+// TestRunAgain: a run after the secrets exist touches neither the database nor a secret, and grants again
 func TestRunAgain(t *testing.T) {
-	tr, admin := &fakeTresor{exists: true}, &fakeAdmin{}
+	tr, admin := &fakeTresor{exists: true, door: theDoors()}, &fakeAdmin{}
 	made := false
 	err := Run(context.Background(), testConfig(), tr, func() (Database, error) { made = true; return &fakeDatabase{}, nil },
 		admin, quiet())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if made || tr.created != nil {
-		t.Error("a run after the secret exists made the login again")
+	if made || len(tr.created) != 0 {
+		t.Error("a run after the secrets exist made one again")
 	}
-	if len(tr.grants) != 2 || !admin.deleted {
+	if len(tr.grants["hugr_policy_catalog"]) != 2 || len(tr.grants["hugr_door"]) != 1 || !admin.deleted {
 		t.Errorf("a run again: grants %v, admin deleted %v", tr.grants, admin.deleted)
+	}
+	// the doors' secret an administrator wrote (or changed) is theirs: a run with the catalog's made writes only that
+	tr = &fakeTresor{door: &Descriptor{Name: "hugr_door", Type: "quack", Dynamic: true,
+		Scope: []string{"quack:console.example.org:443"}}}
+	if err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil },
+		&fakeAdmin{}, quiet()); err != nil {
+		t.Fatal(err)
+	}
+	if tr.created["hugr_door"] != nil || tr.created["hugr_policy_catalog"] == nil || len(tr.grants["hugr_door"]) != 1 {
+		t.Errorf("an existing doors' secret: created %v, grants %v", tr.created, tr.grants)
+	}
+}
+
+// TestRunDoorNotOurs: an existing secret by the doors' name that is not the doors' - another type, a scope beyond the
+// doors named, no scope - is granted to nobody, the run fails saying why; the catalog's work and the administrator's
+// Secret's deletion are done before it
+func TestRunDoorNotOurs(t *testing.T) {
+	for name, d := range map[string]*Descriptor{
+		"another type":   {Name: "hugr_door", Type: "http", Dynamic: true, Scope: []string{"quack:console.example.org:443"}},
+		"a broader door": {Name: "hugr_door", Type: "quack", Dynamic: true, Scope: []string{"quack:console.example.org:4"}},
+		"another door":   {Name: "hugr_door", Type: "quack", Dynamic: true, Scope: []string{"quack:elsewhere.example:443"}},
+		"no scope":       {Name: "hugr_door", Type: "quack", Dynamic: true},
+		"a fixed token":  {Name: "hugr_door", Type: "quack", Scope: []string{"quack:console.example.org:443"}},
+	} {
+		tr, admin := &fakeTresor{door: d}, &fakeAdmin{}
+		err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil }, admin,
+			quiet())
+		if err == nil || !strings.Contains(err.Error(), "nothing granted") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if len(tr.grants["hugr_door"]) != 0 || tr.created["hugr_door"] != nil {
+			t.Errorf("%s: the secret was granted or written: %v", name, tr.grants)
+		}
+		if tr.created["hugr_policy_catalog"] == nil || !admin.deleted {
+			t.Errorf("%s: the catalog's part was not done first", name)
+		}
+	}
+	// the doors' write failing leaves no administrator's credential behind either
+	tr, admin := &fakeTresor{}, &fakeAdmin{}
+	tr.grantErr = nil
+	failing := &failingDoor{fakeTresor: tr}
+	if err := Run(context.Background(), testConfig(), failing, func() (Database, error) { return &fakeDatabase{}, nil },
+		admin, quiet()); err == nil || !admin.deleted {
+		t.Errorf("a failed doors' write: %v, admin deleted %v", err, admin.deleted)
+	}
+}
+
+// TestRunDoorTakenUnseen: the doors' write refused as taken (412) though the listing showed none - written meanwhile,
+// or an entry the listing hides (a service login): judged before any grant, never granted unseen
+func TestRunDoorTakenUnseen(t *testing.T) {
+	for name, after := range map[string]*Descriptor{
+		"hidden from the listing":   nil,
+		"another's, not the doors'": {Name: "hugr_door", Type: "quack", Scope: []string{"quack:console.example.org:443"}},
+	} {
+		tr := &takenDoor{fakeTresor: &fakeTresor{}, after: after}
+		err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil },
+			&fakeAdmin{}, quiet())
+		if err == nil || len(tr.grants["hugr_door"]) != 0 {
+			t.Errorf("%s: %v, grants %v", name, err, tr.grants)
+		}
+	}
+	// written meanwhile by another run, as ours: granted
+	tr := &takenDoor{fakeTresor: &fakeTresor{}, after: theDoors()}
+	if err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil },
+		&fakeAdmin{}, quiet()); err != nil || len(tr.grants["hugr_door"]) != 1 {
+		t.Errorf("the doors' secret written meanwhile: %v, grants %v", err, tr.grants)
+	}
+}
+
+// takenDoor answers the doors' write with ErrExists, then describes it as after
+type takenDoor struct {
+	*fakeTresor
+	after   *Descriptor
+	refused bool
+}
+
+func (f *takenDoor) Create(ctx context.Context, name string, s Secret) error {
+	if name == "hugr_door" {
+		f.refused = true
+		return ErrExists
+	}
+	return f.fakeTresor.Create(ctx, name, s)
+}
+
+func (f *takenDoor) Describe(ctx context.Context, name string) (*Descriptor, error) {
+	if name == "hugr_door" && f.refused {
+		return f.after, nil
+	}
+	return f.fakeTresor.Describe(ctx, name)
+}
+
+// failingDoor refuses the doors' write only
+type failingDoor struct{ *fakeTresor }
+
+func (f *failingDoor) Create(ctx context.Context, name string, s Secret) error {
+	if name == "hugr_door" {
+		return errors.New("422")
+	}
+	return f.fakeTresor.Create(ctx, name, s)
+}
+
+// TestLoadDefaults: the doors' secret is hugr_door unless named
+func TestLoadDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `tresor: {url: "https://tresor.example", tokenFile: /t, grants: ["group:hugr-nodes"]}
+catalog: {secret: hugr_policy_catalog, engine: postgres, host: pg.db.svc, database: hugr, login: hugr_catalog,
+  admin: {secretName: hugr-init-db-admin, dir: /a}}
+door: {audience: "api://hugr", scopes: ["quack:console.example.org:443"], grants: ["role:platform_admin"]}
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil || c.Door.Secret != "hugr_door" {
+		t.Fatalf("the doors' default name: %v %+v", err, c)
 	}
 }
 
@@ -161,7 +312,7 @@ func TestRunFailures(t *testing.T) {
 		if admin.deleted {
 			t.Errorf("%s: the administrator's Secret was deleted", name)
 		}
-		if tc.db.err != nil && tc.tr.created != nil {
+		if tc.db.err != nil && len(tc.tr.created) != 0 {
 			t.Errorf("%s: a secret was written for a login the database refused", name)
 		}
 	}
@@ -190,11 +341,32 @@ func TestConfigValidate(t *testing.T) {
 	if err := testConfig().Validate(); err != nil {
 		t.Fatalf("a complete configuration: %v", err)
 	}
+	stand := testConfig()
+	stand.Door.Scopes, stand.Door.AllowLoopback = []string{"quack:127.0.0.1:8444", "quack:localhost:65535"}, true
+	if err := stand.Validate(); err != nil {
+		t.Errorf("a demo stand's loopback doors, allowed: %v", err)
+	}
 	cases := map[string]func(*Config){
 		"tresor over http":        func(c *Config) { c.Tresor.URL = "http://tresor" },
 		"tresor's userinfo":       func(c *Config) { c.Tresor.URL = "https://u:p@tresor" },
 		"no token file":           func(c *Config) { c.Tresor.TokenFile = "" },
 		"no grant":                func(c *Config) { c.Tresor.Grants = nil },
+		"no door":                 func(c *Config) { c.Door.Scopes = nil },
+		"a door in upper case":    func(c *Config) { c.Door.Scopes = []string{"quack:Console.example.org:443"} },
+		"a door on port 0":        func(c *Config) { c.Door.Scopes = []string{"quack:c.example:0"} },
+		"a door past 65535":       func(c *Config) { c.Door.Scopes = []string{"quack:c.example:70000"} },
+		"a loopback door":         func(c *Config) { c.Door.Scopes = []string{"quack:127.0.0.1:8444"} },
+		"localhost as a door":     func(c *Config) { c.Door.Scopes = []string{"quack:localhost:8444"} },
+		"the nodes at the doors":  func(c *Config) { c.Door.Grants = []string{"group:hugr-nodes"} },
+		"a door with a path":      func(c *Config) { c.Door.Scopes = []string{"quack:c.example:443/x"} },
+		"a door with no port":     func(c *Config) { c.Door.Scopes = []string{"quack:c.example"} },
+		"a door of another type":  func(c *Config) { c.Door.Scopes = []string{"https://c.example:443"} },
+		"nobody at the doors":     func(c *Config) { c.Door.Grants = nil },
+		"a door grant to a user":  func(c *Config) { c.Door.Grants = []string{"user:x"} },
+		"no audience":             func(c *Config) { c.Door.Audience = "" },
+		"an audience with braces": func(c *Config) { c.Door.Audience = "x}${claim://sub" },
+		"an audience with query":  func(c *Config) { c.Door.Audience = "api://hugr?scope=x" },
+		"the door as the catalog": func(c *Config) { c.Door.Secret = c.Catalog.Secret },
 		"a grant to a subject":    func(c *Config) { c.Tresor.Grants = []string{"subject:x|y"} },
 		"another engine":          func(c *Config) { c.Catalog.Engine = "mssql" },
 		"a host with a space":     func(c *Config) { c.Catalog.Host = "pg db" },

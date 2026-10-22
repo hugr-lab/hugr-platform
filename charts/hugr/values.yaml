@@ -118,6 +118,11 @@ hugr-platform:
       url: >-
         https://{{ default (printf "tresor.%s.svc" .Values.global.namespaces.tresor) .Values.global.tresor.host }}
       grants: [] # required: the groups' identities in tresor (role:… or group:…)
+    # the doors' secret (spec 009): how people pass the platform's quack doors through tresor - a token it mints for
+    # them. Required: the doors' public addresses, quack:<host>:<port> (the console's, the front's), and who uses them
+    door:
+      scopes: []
+      grants: [] # the people's roles or groups in tresor (role:… or group:…)
     catalog:
       host: >-
         {{ default (printf "postgres.%s.svc" .Values.global.namespaces.database) .Values.global.database.host }}

@@ -13,7 +13,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@duckdb/duckdb-wasm": "https://github.com/hugr-lab/hugr-platform/releases/download/duckdb-wasm-51ee2cc4e22e-quack-4f4b4c0/duckdb-duckdb-wasm-2.0.0-hugr.51ee2cc4e22e-quack-4f4b4c0.tgz",
+    "@duckdb/duckdb-wasm": "https://github.com/hugr-lab/hugr-platform/releases/download/duckdb-wasm-51ee2cc4e22e-quack-4f4b4c0-tresor-40274ef/duckdb-duckdb-wasm-2.0.0-hugr.51ee2cc4e22e-quack-4f4b4c0-tresor-40274ef.tgz",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/manrope": "^5.3.0",
     "lucide-react": "^0.474.0",

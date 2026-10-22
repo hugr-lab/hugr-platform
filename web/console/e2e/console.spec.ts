@@ -167,8 +167,8 @@ test('an admin reads the policy: a catalog, a role and what it reads (spec 007)'
   await expect(admin.getByRole('region', { name: 'Issuers' }).locator('tbody tr').first()).toBeVisible()
 })
 
-test('a statement through the platform\'s quack door, from DuckDB in the page (spec 007)', async ({ browser }) => {
-  test.setTimeout(120_000) // the page loads DuckDB and quack the first time
+test('a statement through the platform\'s quack door, from DuckDB in the page, its secret tresor\'s (specs 007, 009)', async ({ browser }) => {
+  test.setTimeout(120_000) // the page loads DuckDB, quack and tresor the first time
   const admin = await signIn(browser, 'admin', env('E2E_ADMIN_PW'))
   await admin.getByRole('link', { name: 'SQL', exact: true }).click()
   await admin.getByLabel('Statement').fill('SELECT 42 AS answer')
@@ -189,8 +189,13 @@ test('a statement through the platform\'s quack door, from DuckDB in the page (s
   await expect(answer.getByRole('cell', { name: '1', exact: true })).toBeVisible()
   await shot(admin, 'sql')
 
-  // ops: as itself only - no NATIVE offered
+  // ops: as itself only - no NATIVE offered; and no use of the doors' secret in tresor (spec 009), so the page runs
+  // nothing and says what is missing - no other way in
   const ops = await signIn(browser, 'ops', env('E2E_OPS_PW'))
   await ops.getByRole('link', { name: 'SQL', exact: true }).click()
   await expect(ops.getByText('ACL NATIVE', { exact: true })).toHaveCount(0)
+  await ops.getByLabel('Statement').fill('SELECT 42 AS answer')
+  await ops.getByRole('button', { name: 'Run' }).click()
+  await expect(ops.getByText(/tresor serves you no secret for quack:127\.0\.0\.1:\d+/)).toBeVisible({ timeout: 90_000 })
+  await expect(ops.getByRole('region', { name: 'The answer' })).toHaveCount(0)
 })

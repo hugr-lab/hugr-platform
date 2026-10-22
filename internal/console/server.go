@@ -172,6 +172,9 @@ func (s *Server) Handler() http.Handler {
 	})
 	for _, m := range s.Mounts {
 		mux.Handle(m.Prefix+"/", m.Handler())
+		if m.Discovery != "" {
+			mux.Handle("GET "+m.Prefix+m.Discovery, m.DiscoveryHandler())
+		}
 	}
 	if s.Web != nil {
 		mux.Handle("/", s.Web)

@@ -33,6 +33,9 @@ type Mount struct {
 	Upstream func(ctx context.Context) (*url.URL, error)
 	// Paths of the service that may be reached.
 	Paths []string
+	// Discovery is the path of a discovery document the console answers itself, its api replaced by the console's
+	// base (spec 009: tresor's duckdb-secrets); empty: none.
+	Discovery string
 	// Roots verify the service's certificate (the platform's CA bundle; nil: the system's).
 	Roots func(ctx context.Context) (*x509.CertPool, error)
 	// Unbounded: the service answers when its work is done (the quack door: a statement's first batch takes as long as
@@ -192,7 +195,8 @@ func (m *Mount) responseTimeout() time.Duration {
 // TresorMount and KistaMount with the platform's paths.
 func TresorMount(platform func(context.Context) (*v1alpha1.HugrPlatform, error),
 	roots func(context.Context) (*x509.CertPool, error)) *Mount {
-	return &Mount{Prefix: "/tresor", Upstream: TresorUpstream(platform), Paths: tresorPaths, Roots: roots}
+	return &Mount{Prefix: "/tresor", Upstream: TresorUpstream(platform), Paths: tresorPaths, Roots: roots,
+		Discovery: "/.well-known/duckdb-secrets"}
 }
 
 // KistaMount is kista's.

@@ -256,6 +256,16 @@ console_api() {
 		-secret-file "$WORK/secrets/principal-$principal" -server-name hugr-platform-console.hugr.svc -ca "$WORK/ca.crt" \
 		-method "$method" -body "$body" -console "https://127.0.0.1:$port$path"
 }
+# console_door <principal>: the doors' secret read as the principal through the console's /tresor, then the console's me
+# with the token tresor minted for it (spec 009) - the me's JSON; no token is printed
+console_door() {
+	local port
+	port="$(console_port)" || return 1
+	# shellcheck disable=SC2046 # the IdP's flags are words
+	bounded 120 "$CHECKER" $(token_flags) $([ -z "$TRESOR_SCOPE" ] || echo "-scope $TRESOR_SCOPE") \
+		-client "$(principal_id "$1")" -secret-file "$WORK/secrets/principal-$1" \
+		-server-name hugr-platform-console.hugr.svc -ca "$WORK/ca.crt" -console "https://127.0.0.1:$port" -door hugr_door
+}
 # console_get <path>: what the console serves to anyone - its config, a mounted console's module
 console_get() {
 	curl -fsS --max-time 60 --cacert "$WORK/ca.crt" \
@@ -405,6 +415,21 @@ check_console() {
 	out="$(console_api seeder GET /tresor/v1/whoami "" "$TRESOR_SCOPE")" || fail "tresor's whoami through the console's mount"
 	json_true "$out" "'role:demo_seeder' in r['roles']" || fail "tresor's whoami of the seeder names no demo_seeder"
 	ok "tresor's console mounted (its module, its API answered the seeder through the mount); kista's module served through its mount"
+
+	# the doors through tresor (spec 009): tresor's discovery answered under the console's own /tresor, and the doors'
+	# secret hugr-init wrote gives the admin a token tresor mints for the nodes - which the node behind the console takes
+	# as the admin's, through the policy's client for tresor
+	out="$(console_get /tresor/.well-known/duckdb-secrets)" || fail "tresor's discovery through the console"
+	json_true "$out" "r['api'] == 'https://hugr-platform-console.hugr.svc/tresor' and r['protocol'] == 'duckdb-secrets/1'" ||
+		fail "tresor's discovery through the console: $out"
+	if [ -n "$TRESOR_EXCHANGE_CLIENT" ]; then
+		me="$(console_door admin)" || fail "the doors' secret through tresor"
+		json_true "$me" "all(b in r['rights']['bundles'] for b in ('cluster', 'policy', 'passthrough'))" ||
+			fail "the doors' minted token's rights: $me"
+		ok "the doors through tresor: its discovery under the console's /tresor; hugr_door read by the admin there is a token tresor minted for the nodes, and the console's node takes it as the admin's (cluster, policy, passthrough)"
+	else
+		ok "tresor's discovery under the console's /tresor; the doors' token (On-Behalf-Of) is not set up on $IDP_NAME"
+	fi
 
 	# the console holds no session on any node: each of its calls was one of its own, ended with it (spec 003) - on the
 	# call's way out, which may trail its last batch by a moment

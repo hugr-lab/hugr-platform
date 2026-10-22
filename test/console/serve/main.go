@@ -49,8 +49,10 @@ func main() {
 	flag.StringVar(&clientID, "client-id", "hugr-console", "the console's public client")
 	flag.StringVar(&audience, "audience", "hugr-nodes", "the nodes' audience")
 	flag.StringVar(&dist, "dist", "web/console/dist", "the web build")
-	var quack string
+	var quack, tresorHost, tresorAudience string
 	flag.StringVar(&quack, "quack", "", "the node's quack door (https://host:port) the console's /quack forwards to (spec 007)")
+	flag.StringVar(&tresorHost, "tresor", "", "tresor-server's host:port, mounted under /tresor (spec 009)")
+	flag.StringVar(&tresorAudience, "tresor-audience", "duckdb-secrets", "tresor's audience")
 	flag.Parse()
 	group, address, _ := strings.Cut(nodeFlag, "=")
 	host, portText, _ := strings.Cut(address, ":")
@@ -69,12 +71,13 @@ func main() {
 	_ = v1alpha1.AddToScheme(scheme)
 	platform := &v1alpha1.HugrPlatform{ObjectMeta: metav1.ObjectMeta{Name: "e2e", Namespace: "hugr"},
 		Spec: v1alpha1.HugrPlatformSpec{IdP: v1alpha1.IdPSpec{Issuer: issuer},
-			Tresor:     v1alpha1.TresorSpec{Host: "tresor.invalid:443"},
+			Tresor:     v1alpha1.TresorSpec{Host: tresorHost},
 			Repository: v1alpha1.RepositorySpec{Prefix: "https://kista.invalid/corp/prod"},
 			Sizes: map[string]v1alpha1.SizeSpec{"small": {Resources: corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")}}}},
 			Plan: v1alpha1.PlanSpec{MaxNodes: 4, Sizes: []string{"small"}},
-			Console: &v1alpha1.ConsoleSpec{ClientID: clientID, Audiences: v1alpha1.ConsoleAudiences{Nodes: audience},
+			Console: &v1alpha1.ConsoleSpec{ClientID: clientID, Audiences: v1alpha1.ConsoleAudiences{Nodes: audience,
+				Tresor: tresorAudience},
 				Links: []v1alpha1.ConsoleLink{{Kind: "telemetry", Name: "Grafana (an example link)",
 					URL: "https://grafana.example.org/explore?node={node}"}}}}}
 	g := &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Name: group, Namespace: "hugr"},
@@ -105,6 +108,10 @@ func main() {
 		Kube:        madeUpKube{label: label, group: group},
 		Web:         web,
 		Log:         log,
+		// spec 009: tresor, its discovery answered by the console - the page's way to the door's secret
+		Mounts: []*console.Mount{console.TresorMount(func(context.Context) (*v1alpha1.HugrPlatform, error) {
+			return platform.DeepCopy(), nil
+		}, func(context.Context) (*x509.CertPool, error) { return roots, nil })},
 	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {

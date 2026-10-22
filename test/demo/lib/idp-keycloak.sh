@@ -27,6 +27,8 @@ TRESOR_SERVICE_CLAIM=client_id
 NODES_PRINCIPAL=group:hugr-nodes
 HUGR_AUDIENCE=hugr
 HUGR_ROLES_CLAIM=realm_access.roles
+# tresor's exchange client (spec 009): the doors' token tresor mints carries it as its azp - the policy's client tresor
+TRESOR_EXCHANGE_CLIENT=duckdb-secrets
 KC_PORT=""
 
 # the client is named by its subject: the flow sends client_id, and Keycloak's federated authentication takes only
@@ -54,9 +56,10 @@ install_idp() {
 	# the console stand's person (spec 003: `run.sh <provider> console`) - a password made for the run, never printed
 	secret_file person-operator openssl rand -hex 16 >/dev/null
 	# the secrets are read from their files: neither an argument nor the environment carries one
-	python3 - "$WORK/realm.json" "$WORK/secrets" "$sa_issuer" "https://127.0.0.1:$STAND_CONSOLE_PORT" "${IDENTITIES_[@]}" <<'PY'
+	python3 - "$WORK/realm.json" "$WORK/secrets" "$sa_issuer" "https://127.0.0.1:$STAND_CONSOLE_PORT" \
+		"system:serviceaccount:$TRESOR_NS:tresor" "${IDENTITIES_[@]}" <<'PY'
 import json, os, sys
-out, secrets, sa_issuer, console, groups = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
+out, secrets, sa_issuer, console, tresor_sa, groups = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6:]
 # console: the console stand's forwarded origin (stand.sh)
 secret = lambda p: open(os.path.join(secrets, "principal-" + p)).read().strip()
 aud = lambda audience: {"name": "aud-" + audience, "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
@@ -65,9 +68,9 @@ aud = lambda audience: {"name": "aud-" + audience, "protocol": "openid-connect",
 client_id = {"name": "client_id", "protocol": "openid-connect", "protocolMapper": "oidc-usersessionmodel-note-mapper",
              "config": {"user.session.note": "client_id", "claim.name": "client_id", "access.token.claim": "true",
                         "jsonType.label": "String"}}
-def caller(cid, secret, audience):
+def caller(cid, secret, *audiences):
     return {"clientId": cid, "secret": secret, "publicClient": False, "standardFlowEnabled": False,
-            "serviceAccountsEnabled": True, "protocolMappers": [aud(audience), client_id]}
+            "serviceAccountsEnabled": True, "protocolMappers": [aud(a) for a in audiences] + [client_id]}
 groups_claim = {"name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
                 "config": {"claim.name": "groups", "full.path": "false", "access.token.claim": "true"}}
 nodes, node_users = [], []
@@ -94,12 +97,25 @@ realm = {
         caller("demo-seeder", secret("seeder"), "duckdb-secrets"),
         caller("demo-analyst-a", secret("analyst-a"), "hugr"),
         caller("demo-analyst-b", secret("analyst-b"), "hugr"),
-        caller("demo-admin", secret("admin"), "hugr"),
+        # the admin reads the doors' secret through the console's /tresor too, as the SQL page does (spec 009)
+        caller("demo-admin", secret("admin"), "hugr", "duckdb-secrets"),
         caller("demo-breakglass", secret("breakglass"), "hugr"),
         {"clientId": "hugr-console", "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
          "redirectUris": [console + "/*"], "webOrigins": [console],
          "attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": console + "/*"},
          "protocolMappers": [aud("hugr"), aud("duckdb-secrets")]},
+        # tresor-server's exchange client (spec 009): it mints the doors' token for its reader. Named as tresor's
+        # audience - Keycloak exchanges only for a client the subject token is meant for - and authenticated by
+        # tresor's projected ServiceAccount token (no secret; tresor sends no client_id). It may ask the nodes'
+        # audience, the client hugr here: the minted token's azp is duckdb-secrets, the policy's client tresor
+        {"clientId": "duckdb-secrets", "publicClient": False, "standardFlowEnabled": False,
+         "serviceAccountsEnabled": False, "clientAuthenticatorType": "federated-jwt",
+         "attributes": {"jwt.credential.issuer": "k8s", "jwt.credential.sub": tresor_sa,
+                        "standard.token.exchange.enabled": "true"},
+         "protocolMappers": [{"name": "aud-hugr-client", "protocol": "openid-connect",
+                              "protocolMapper": "oidc-audience-mapper",
+                              "config": {"included.client.audience": "hugr", "access.token.claim": "true"}}]},
+        {"clientId": "hugr", "publicClient": False, "standardFlowEnabled": False},
     ],
     # the console's public client (spec 003): a browser signs a person in by PKCE on this machine's forwarded port; the
     # token carries the nodes' audience and tresor's (Keycloak puts both in one token)

@@ -92,6 +92,37 @@ tresor-server's ServiceAccount reads the issuer's discovery by the ClusterRole `
 which Kubernetes binds to every ServiceAccount by default (a cluster that removed that binding needs one for it). A
 run again (`helm upgrade`) only grants: the database and the secret stay as they are.
 
+`hugr-init` also writes the doors' secret, `hugr_door` (spec 009): a quack secret whose token tresor mints for
+whoever reads it, for the nodes' audience. The console's SQL page, DBeaver and the CLI pass the platform's quack doors
+with it and hold no credential of their own. A platform always has tresor. The chart requires two values:
+
+- `hugrInit.door.scopes`: the doors people reach, `quack:<host>:<port>` each - the console's and the front's public
+  addresses, which the platform does not know;
+- `hugrInit.door.grants`: who may use it, `role:…` or `group:…` in tresor - never the nodes' identities.
+
+A scope's host is in lower case; a loopback host is refused (`hugrInit.door.allowLoopback` for a demo's stand). An
+existing `hugr_door` is granted only while it is a `quack` secret within the scopes named. The grants are written
+again at every run: revoke one in the values.
+
+tresor-server mints by an exchange client at the IdP (its issuer's `exchange`; tresor-server's
+[token exchange](https://hugr-lab.github.io/tresor-server/token-exchange)). On Keycloak:
+
+- the client is named as tresor's audience - Keycloak exchanges only when the requesting client is in the caller's
+  token's audience;
+- it has standard token exchange enabled, and the nodes' audience available to it: an audience mapper naming a
+  client of the realm (an exchange's audience is a client id; a custom audience string is refused);
+- it authenticates by tresor's projected ServiceAccount token: tresor-server's `exchangeToken` (its audience the
+  realm's issuer) and the issuer's `exchange: {client_auth: file, omit_client_id: true}` - no secret;
+- tresor trusts a private IdP's CA for the token endpoint by `SSL_CERT_DIR` (the issuer's `ca_file` covers discovery
+  and keys only).
+
+On Entra the exchange is On-Behalf-Of, with tresor's application delegated the nodes' API, and `hugrInit.door.audience`
+is that API's client id (a GUID; the chart refuses an `api://` URI).
+
+A minted token's `azp` is that client's, so the policy needs a client for it: `spec.firstPolicy.clients:
+[{name: tresor, clientID: <the exchange client>}]`. A catalog that already has its policy gets it by hand
+(`CREATE CLIENT … AZP (…)`, then the administrators' `MAP CLAIM … FROM CLIENT`).
+
 A platform installed from nothing has an empty policy catalog. `spec.firstPolicy` names what the first node writes
 into it (spec 005, hugr-node spec 015): the IdP, the applications whose tokens count (the console's always), the
 roles-claim value of the administrators and the default group. Its resource groups are the groups'. A node writes it

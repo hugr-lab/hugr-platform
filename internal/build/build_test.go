@@ -210,7 +210,7 @@ func TestFirstPolicy(t *testing.T) {
 		t.Error("a first policy without the console is built")
 	}
 	platform.Spec.Console = &v1alpha1.ConsoleSpec{ClientID: "console-app",
-		Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr"}}
+		Audiences: v1alpha1.ConsoleAudiences{Nodes: "api://hugr", Tresor: "api://tresor"}}
 	bi := *group
 	bi.Name, bi.Spec.ResourceGroup = "bi", "bi-prod"
 	twin := *group

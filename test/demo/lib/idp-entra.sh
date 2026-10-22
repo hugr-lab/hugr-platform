@@ -13,6 +13,8 @@ TRESOR_ROLES_CLAIM=roles
 TRESOR_GROUPS_CLAIM=""
 TRESOR_SERVICE_CLAIM=azp
 NODES_PRINCIPAL=role:hugr_node
+# tresor's On-Behalf-Of for the doors (spec 009) is not set up on Entra yet: no exchange client, no policy client
+TRESOR_EXCHANGE_CLIENT=""
 HUGR_ROLES_CLAIM=roles
 
 entra_get() { cat "$WORK/entra/$1" 2>/dev/null || true; }
