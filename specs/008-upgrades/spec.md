@@ -138,6 +138,38 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
   `catalog-*`). A key the latest report leaves out is removed, so a value never outlives the build that wrote it, and
   a node's string is kept to 128 bytes. A group's status gains `builds` (live nodes per build and DuckDB release)
   and `catalog` (the newest stamp a live node read).
+- **The phased rollout** (this repository):
+  - **The state.** `status.image` is the image every group runs when no rollout is under way. `status.upgrade`
+    holds `from`, `to`, `phase` (Preconditions, Canary, Groups, Complete, Blocked, Paused), the `group` rolling, the
+    groups `moved`, `migrate`, `resume` (the phase a blocked or paused rollout returns to), `reason` and
+    `startedAt`.
+  - **Who decides.** `internal/upgrade` is pure: `Decide` takes the target, the last status and what each group runs,
+    and returns the next status. The `UpgradeReconciler` reads the world every 5 s and writes the two fields with a
+    merge patch.
+  - **Who applies.** The group reconciler builds each Deployment with `upgrade.ImageFor`: the target once the rollout
+    has reached the group, and what the group runs until then. Between a new image and the rollout's first decision,
+    nothing moves.
+  - **The canary's flag.** The node API sets `catalog.migrate` only for a pod of the canary group made from the
+    target image, while the phase is Canary and the rollout migrates.
+  - **The release's facts** come from the charts: `spec.node.duckdbVersion` (the umbrella takes `global.duckdbVersion`)
+    and `catalogSchema` / `catalogMinReader` (22 / 21 for hugr-node v0.2.0, the schema of its acl, 41ec046).
+- **Decisions taken while building** (within the accepted design):
+  - **A blocked rollout stays blocked.** It continues after the administrator pauses and resumes it
+    (`spec.upgrade.paused` true, then false), or sets another image. A repository that does not answer is waited
+    for and never blocks; one that answers without an extension blocks.
+  - **The order and the canary.** The canary is the first group in the order (the first policy's default group,
+    else the group whose nodes report the default, then by name) that runs nodes. Groups of no node before it are
+    moved at once. A group is done when its Deployment rolled (every replica updated and available, no old one) and
+    every node of the new image has reported.
+  - **A wrong release fact blocks.** A new node that reports another DuckDB release, or another catalog build than
+    the release says, blocks the rollout: a mistyped value in the chart is caught at the canary.
+  - **A new target starts over.** A new image mid-rollout (the old one set back, or another release) starts a rollout
+    to it from `status.image`, and every group is rolled to it in order.
+- **Open: how an installed release's CRDs are upgraded.** Helm never upgrades `crds/`, so on an existing install the
+  API server drops the new fields until the CRDs are applied. Moving them to `templates/` (Q4) breaks the first
+  install, because the chart's own `HugrPlatform` would not map. The proposal waiting for the owner: keep `crds/`
+  for the first install, and have a pre-upgrade hook (`hugr-init --phase crds`) server-side-apply the CRDs from the
+  operator's image, with a ClusterRole limited to the two CRDs by `resourceNames`.
 
 ## Security
 

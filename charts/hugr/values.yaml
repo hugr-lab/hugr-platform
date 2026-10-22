@@ -83,8 +83,10 @@ hugr-platform:
     name: hugr
     spec:
       node:
-        # the node the release pins, its DuckDB global.duckdbVersion (hugr-node v0.2.0: DuckDB v2.0.0)
+        # the node the release pins, its DuckDB global.duckdbVersion (hugr-node v0.2.0: DuckDB v2.0.0); its catalog
+        # schema (catalogSchema, catalogMinReader) is hugr-platform's value of the same release
         image: ghcr.io/hugr-lab/hugr-node:v0.2.0
+        duckdbVersion: "{{ .Values.global.duckdbVersion }}"
       idp:
         issuer: "{{ .Values.global.idp.issuer }}"
       tresor:

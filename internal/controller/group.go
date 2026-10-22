@@ -28,6 +28,7 @@ import (
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
+	"github.com/hugr-lab/hugr-platform/internal/upgrade"
 	"github.com/hugr-lab/hugr-platform/pkg/plan"
 )
 
@@ -115,7 +116,7 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 	if refusal == "" {
-		deployment, err := build.Deployment(&platform, &group, r.Settings)
+		deployment, err := build.Deployment(r.withImage(ctx, &platform, &group), &group, r.Settings)
 		if err == nil {
 			err = r.apply(ctx, &group, deployment)
 		}
@@ -146,6 +147,24 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, applyErr // retried with backoff
 	}
 	return ctrl.Result{RequeueAfter: StatusEvery}, nil
+}
+
+// withImage is the platform as this group's Deployment is built from it: the node image the rollout gives the group
+// (spec 008) - the target once the rollout has reached it, what it runs until then.
+func (r *GroupReconciler) withImage(ctx context.Context, platform *v1alpha1.HugrPlatform,
+	group *v1alpha1.HugrNodeGroup) *v1alpha1.HugrPlatform {
+	current := ""
+	var deployment appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: build.Name(group)}, &deployment); err == nil {
+		current = build.NodeImage(&deployment.Spec.Template.Spec)
+	}
+	image := upgrade.ImageFor(platform, group.Name, current)
+	if image == platform.Spec.Node.Image {
+		return platform
+	}
+	with := platform.DeepCopy()
+	with.Spec.Node.Image = image
+	return with
 }
 
 // checkPlan answers the group's refusal ("" when it fits).

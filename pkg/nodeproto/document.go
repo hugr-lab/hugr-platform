@@ -78,6 +78,8 @@ type Repository struct {
 type Catalog struct {
 	Secret string `json:"secret"`
 	Schema string `json:"schema"`
+	// Migrate tells the upgrade's canary to migrate the catalog at its step 5 (spec 008, hugr-node spec 017)
+	Migrate bool `json:"migrate,omitempty"`
 }
 
 // Heartbeat is how often the node reports.
