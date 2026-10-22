@@ -2,15 +2,17 @@
 # (web/console/duckdb-wasm.pin) until its npm package is published, its bindings able to LOAD extensions. With it, in
 # the package's dist/extensions/, quack (and the httpfs its HTTP needs) for wasm_eh built at web/console/quack.pin by the
 # same emscripten - quack's main, which no longer starts its heartbeat thread without pthreads (duckdb/duckdb-quack#328)
-# - the page loads them unsigned from the console's own origin until DuckDB's repository carries such a quack. The npm tarball is a release asset the console's package-lock names by its
-# integrity. A PR builds it; main publishes it once per pin.
+# - the page loads them unsigned from the console's own origin until DuckDB's repository carries such a quack. And
+# tresor for wasm_eh at web/console/tresor.pin (spec 009: the page takes the door's secret from tresor), unsigned too
+# until a tresor release carries its wasm build. The npm tarball is a release asset the console's package-lock names
+# by its integrity. A PR builds it; main publishes it once per set of pins.
 name: duckdb-wasm
 on:
   push:
     branches: [main]
-    paths: [web/console/duckdb-wasm.pin, web/console/quack.pin, .github/workflows/duckdb-wasm.yml]
+    paths: [web/console/duckdb-wasm.pin, web/console/quack.pin, web/console/tresor.pin, .github/workflows/duckdb-wasm.yml]
   pull_request:
-    paths: [web/console/duckdb-wasm.pin, web/console/quack.pin, .github/workflows/duckdb-wasm.yml]
+    paths: [web/console/duckdb-wasm.pin, web/console/quack.pin, web/console/tresor.pin, .github/workflows/duckdb-wasm.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,6 +30,7 @@ jobs:
     outputs:
       ref: ${{ steps.pin.outputs.ref }}
       quack: ${{ steps.pin.outputs.quack }}
+      tresor: ${{ steps.pin.outputs.tresor }}
       tag: ${{ steps.pin.outputs.tag }}
     steps:
     - uses: actions/checkout@v4
@@ -37,10 +40,13 @@ jobs:
         [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the pin is a commit of duckdb/duckdb-wasm"; exit 1; }
         quack="$(tr -d ' \n' < web/console/quack.pin)"
         [[ "$quack" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the quack pin is a commit of duckdb/duckdb-quack"; exit 1; }
+        tresor="$(tr -d ' \n' < web/console/tresor.pin)"
+        [[ "$tresor" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the tresor pin is a commit of hugr-lab/tresor"; exit 1; }
         echo "ref=$ref" >>"$GITHUB_OUTPUT"
         echo "quack=$quack" >>"$GITHUB_OUTPUT"
-        # one release per pair of pins
-        echo "tag=duckdb-wasm-${ref:0:12}-quack-${quack:0:7}" >>"$GITHUB_OUTPUT"
+        echo "tresor=$tresor" >>"$GITHUB_OUTPUT"
+        # one release per set of pins
+        echo "tag=duckdb-wasm-${ref:0:12}-quack-${quack:0:7}-tresor-${tresor:0:7}" >>"$GITHUB_OUTPUT"
 
   bindings:
     needs: pin
@@ -129,8 +135,46 @@ jobs:
         if-no-files-found: error
         retention-days: 3
 
+  tresor:
+    needs: pin
+    runs-on: ubuntu-24.04
+    env:
+      DUCKDB_PLATFORM: wasm_eh
+      # DuckDB-wasm refuses an extension stamped with another version (tresor spec 042)
+      OVERRIDE_GIT_DESCRIBE: v2.0.0
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: hugr-lab/tresor
+        ref: ${{ needs.pin.outputs.tresor }}
+        path: tresor
+        submodules: recursive
+    # the submodule is shallow, with no tag: v2.0.0 is its commit
+    - name: DuckDB v2.0.0 under tresor
+      working-directory: tresor
+      run: test "$(git -C duckdb rev-parse HEAD)" = d54cbbe3df17e8e5ce68312f483b4155836112aa
+    - run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+    - uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: ${{ env.EMSCRIPTEN_VERSION }}
+    # tresor's own vcpkg (its Makefile's): nothing is built for wasm, OpenSSL is not for emscripten
+    - name: Build tresor for wasm_eh
+      working-directory: tresor
+      run: |
+        make vcpkg-setup
+        make wasm_eh
+    - run: |
+        mkdir -p out
+        cp tresor/build/wasm_eh/extension/tresor/tresor.duckdb_extension.wasm out/
+    - uses: actions/upload-artifact@v4
+      with:
+        name: tresor
+        path: out/
+        if-no-files-found: error
+        retention-days: 3
+
   package:
-    needs: [pin, bindings, quack]
+    needs: [pin, bindings, quack, tresor]
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
@@ -149,11 +193,16 @@ jobs:
       with:
         name: quack
         path: packages/duckdb-wasm/dist/extensions/
+    - uses: actions/download-artifact@v4
+      with:
+        name: tresor
+        path: packages/duckdb-wasm/dist/extensions/
     - run: yarn install --frozen-lockfile
     - run: yarn workspace @duckdb/duckdb-wasm build:release
     - run: |
         test -s packages/duckdb-wasm/dist/extensions/quack.duckdb_extension.wasm
         test -s packages/duckdb-wasm/dist/extensions/httpfs.duckdb_extension.wasm
+        test -s packages/duckdb-wasm/dist/extensions/tresor.duckdb_extension.wasm
     - name: Pack
       env:
         TAG: ${{ needs.pin.outputs.tag }}
@@ -190,10 +239,11 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ needs.pin.outputs.tag }}
         REF: ${{ needs.pin.outputs.ref }}
+        TRESOR: ${{ needs.pin.outputs.tresor }}
       run: |
         if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
           echo "$TAG is published already"; exit 0
         fi
         gh release create "$TAG" out/* -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
           --title "duckdb-wasm at $REF (DuckDB v2.0.0)" \
-          --notes "duckdb-wasm built from duckdb/duckdb-wasm@$REF on DuckDB v2.0.0, its bindings able to LOAD extensions, with quack (whose client connects without threads since duckdb/duckdb-quack#328) and httpfs for wasm_eh by the same emscripten - the console's SQL page (spec 007) until duckdb-wasm publishes its own."
+          --notes "duckdb-wasm built from duckdb/duckdb-wasm@$REF on DuckDB v2.0.0, its bindings able to LOAD extensions, with quack (whose client connects without threads since duckdb/duckdb-quack#328), httpfs and tresor (hugr-lab/tresor@$TRESOR) for wasm_eh by the same emscripten - the console's SQL page (specs 007, 009) until duckdb-wasm publishes its own."

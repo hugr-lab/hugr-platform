@@ -1,0 +1,148 @@
+# Spec 009: the SQL page enters the door through tresor
+
+- **Status**: accepted
+- **Date**: 2026-10-22
+- **Author**: hugr lab (the owner, 2026-10-22: "через tresor" - the general scenario: DBeaver, the CLI and DuckDB-wasm
+  take the door's credential from tresor, a page with no second login; accepted the same day, with tresor on every
+  platform)
+
+## Summary
+
+The console's SQL page (spec 007) puts the console's own token into a quack secret of the page. Now the page hands
+tresor its token for tresor's audience (`tresor_web_token`, tresor spec 043), attaches it, and the door's secret comes
+from tresor: a `quack` secret whose token tresor mints for the caller by token exchange on every read. The page writes
+no token into a secret. The same secret serves DBeaver or the CLI through the front.
+
+A platform always has tresor (the owner, 2026-10-22: the nodes share their secrets through it). A single node
+without tresor is not the platform: for it the open duckdb-acl is the simpler choice.
+
+## Problem
+
+- The page holds the credential itself: it writes the console's token into a `quack` secret before every run. That is
+  the console's way, not one a client of the platform can follow.
+- tresor (the client) now loads in DuckDB-wasm and takes a page's token with no login of its own (tresor specs 042,
+  043; their wasm build loads into our duckdb-wasm, 2026-10-22). tresor-server mints a token for the caller in any
+  parameter (`mint+exchange://<audience>`, its spec 023). Nothing of the platform uses either yet.
+- tresor-server's discovery names one `api`, its `public_url`: the nodes reach it at its own address, so the
+  console cannot make that address its own, and the page reaches only the console's origin (spec 007's CSP).
+
+## Design
+
+### The console: tresor's discovery under its origin
+
+- The console already serves tresor's `/tresor/v1/` and `/tresor/admin/v1/` (spec 003's mount, tresor's own console).
+- New: `GET /tresor/.well-known/duckdb-secrets` is the console's own answer. It reads tresor-server's discovery
+  (the mount's upstream and roots) and answers it with `api` replaced by `https://<the request's host>/tresor`.
+  Nothing else changes. The request's host is the one the page asked; a client asking with another host gets its
+  own host back, nothing more.
+  - tresor (the client) attaches `'<console host>/tresor'`: the discovery is
+    `https://<console host>/tresor/.well-known/duckdb-secrets`, then every call goes to `api`, the console's
+    `/tresor/v1/…`, which the mount forwards as today.
+  - At ATTACH tresor also reads the IdP's `openid-configuration`: the console's CSP allows the IdP already.
+- No CORS anywhere: tresor-server's spec 016 recommends this (same origin, by a proxy).
+
+### The page
+
+- duckdb-wasm's release (spec 007's workflow) also builds tresor for `wasm_eh` at a pin (`web/console/tresor.pin`,
+  tresor main 40274ef or later; emscripten 6.0.9, `OVERRIDE_GIT_DESCRIBE=v2.0.0`), shipped as
+  `dist/extensions/tresor.duckdb_extension.wasm` and loaded unsigned from the console's origin, like quack and httpfs.
+- Before each run the page:
+  1. hands tresor the person's token for that audience, renewed by the console's session as today:
+     `FROM tresor_web_token(?, ?)` with the service `<host>/tresor` and the token as parameters;
+  2. attaches it once: `ATTACH '<host>/tresor' AS tresor (TYPE tresor)`;
+  3. asks DuckDB which secret it would use for the door: `which_secret('quack:<host>:<port>', 'quack')`, and runs
+     with tresor's.
+- **One way in.** The page's own secret with the console's token (stage 1) is gone. When tresor serves no secret for
+  the door (its scope does not name this address, or the person has no `use` grant), the page runs nothing and says
+  what is missing: "tresor serves no secret for quack:<host>:<port> - hugr_door's scope (door.scopes) and a use
+  grant (door.grants)". A tresor failure (the service down, the token refused) is shown as tresor's error.
+- `console.audiences.tresor` becomes required (the CRD): the page needs a token for tresor. Every chart, example and
+  the demo set it already.
+
+### The door's secret in tresor (hugr-init)
+
+- hugr-init (spec 005) writes it beside `hugr_policy_catalog`, once, and grants `use`:
+  - `hugr_door`, type `quack`;
+  - scope: the doors people reach, an install value (`door.scopes`, e.g. `quack:console.example.org:443` and the
+    front's public `quack:hugr.example.org:9494`). The platform knows neither address: the administrator's ingress
+    and load balancer make them;
+  - params:
+    - `TOKEN 'mint+exchange://<console.audiences.nodes>'`;
+    - `EXTRA_HTTP_HEADERS MAP {'Authorization': 'Bearer ${exchange://<console.audiences.nodes>}'}`.
+      The console's `/quack` admits a signed-in person only (spec 007). One exchange covers both: tresor-server
+      caches the minted token per caller and audience.
+  - grants: an install value (`door.grants`, `role:…` / `group:…`, the people who use the platform's doors).
+- `door.scopes` and `door.grants` are required, as hugr-init's `grants` are: the umbrella chart refuses an install
+  without them.
+- An existing `hugr_door` is left as it is, as `hugr_policy_catalog` is (nothing is rewritten by itself).
+
+### The policy and the IdP
+
+- A minted token is the person's, asked by tresor-server's exchange client: its `azp` is that client's.
+  - The node counts it only through a policy client with that `azp`: the install adds one to `firstPolicy.clients`
+    (e.g. `{name: tresor, clientID: <the exchange client>}`).
+  - hugr-node spec 015 maps the administrators' claim per client, so a person keeps their rights through tresor.
+  - A catalog that already has its policy gets the client by hand (`CREATE CLIENT … AZP (…)` and the mapping), as
+    any later change.
+- tresor-server's issuer gets an `exchange` client.
+  - Keycloak:
+    - `client_auth: file`, the pod's projected ServiceAccount token, no secret;
+    - standard token exchange enabled;
+    - the nodes' audience available to it (an audience mapper).
+  - Entra: `on_behalf_of`, the nodes' API delegated to tresor's application with admin consent (tresor-server's
+    `token-exchange.md`).
+
+## Security
+
+- **The page holds no door credential.** The page's token for tresor's audience goes to tresor alone, as a prepared
+  statement's parameter (tresor spec 043). The token for the nodes is minted by tresor-server for that same person
+  and kept in the worker's memory.
+- **A minted token is the caller's own.**
+  - tresor-server exchanges the bearer of the read. Under a delegation grant it is the grant's user's.
+  - It refuses to mint for its own audience, and refuses a minted token that names it.
+- **The secret is sent only to the doors in its scope**, never to any other quack server a client connects to. The
+  scope is exact (host and port).
+- **The node judges as always.**
+  - The minted token counts only through the policy's client for tresor.
+  - An administrator reaches `platform_admin` only through that client's own mapping (duckdb-acl spec 095).
+  - Another application's token gets nothing.
+- **The discovery the console answers changes only `api`.** The issuers, the audience and the flows are
+  tresor-server's own: the console cannot widen what tresor accepts.
+
+## Testing
+
+- **Go**:
+  - the discovery: `api` rewritten to the request's host, every other field as the upstream's;
+  - the upstream down gives 502.
+- **hugr-init**:
+  - `hugr_door` written with its scopes, params and grants;
+  - its configuration refused without `door.scopes` or `door.grants`;
+  - left alone when it exists.
+- **vitest**: the page's statements (the hand-over, the ATTACH, `which_secret`), and the refusal when tresor serves
+  no secret for the door.
+- **Browser e2e** (`test/console/e2e/run.sh`) gains tresor-server (its 0.7.5 image) with a Keycloak exchange client:
+  - an admin's run uses tresor's secret, and its results match stage 1's (both modes);
+  - a person with no `use` grant gets the page's refusal naming what is missing, and nothing runs;
+  - a renewed console token is handed over at the next run.
+- **Demo** (spec 004):
+  - hugr-init writes `hugr_door` with the console's address, and the policy's tresor client is in `firstPolicy`;
+  - a statement goes through the console's door with tresor's secret for an admin: a DuckDB with tresor and quack
+    hands tresor the admin's token and attaches the console's `/tresor`;
+  - the browser part is the e2e's.
+
+## Alternatives considered
+
+- **tresor-server's `public_url` as the console's `/tresor`**: one `api` for every client, so the nodes too would
+  reach tresor through the console.
+- **CORS** (tresor-server's `cors.allowed_origins`): the page would reach tresor-server's own address, which is
+  in-cluster on most installs, and the console's CSP would open another origin.
+- **The door's secret with the console's token, kept natively** (alone, or as a fallback): the page goes on holding
+  a credential, a fallback would hide a missing grant or scope, and nothing of the general scenario is proven (the
+  owner chose tresor; a platform always has it).
+- **One broad scope (`quack:`)**: a client's every quack server would receive a token for the nodes.
+
+## Follow-ups
+
+- A third mode of the page, statements in the page's own DuckDB (tresor's `whoami`, a person's secrets), only if
+  asked.
+- The tresor helper `attachTresor` (`@hugr-lab/tresor-web`) instead of the page's statements, once it is published.
