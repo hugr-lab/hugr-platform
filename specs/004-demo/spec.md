@@ -264,6 +264,11 @@ they run once per `up` (`all` does both).
 12. **A new node image rolls group by group** (spec 008). The same build is given another name, and the platform's
     image is set to it. The default group a is the canary; b keeps its image while a rolls, then moves. The rollout
     ends Complete with `status.image` the new name, and analyst_a still reads.
+13. **A group from the console** (spec 006). The console makes group c. Its identity was given beforehand, as an
+    installation gives one: the IdP's client and tresor's actor are listed for c with a and b (`IDENTITIES_`). Its node
+    enters and drains itself while the policy lacks resource group c. The console adds c to the policy by hand, binding
+    analyst_b and node_breakglass. Then c resumes by itself, analyst_b reads on its node and analyst_a is refused there.
+    Removed from the policy, c's node drains itself again; deleted, it drains and goes, and the fleet is a and b again.
 
 Then the secrets scan (Security).
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -30,8 +29,11 @@ type Server struct {
 	Platform func(ctx context.Context) (*v1alpha1.HugrPlatform, error)
 	// Reader reads the platform's groups (the manager's cache).
 	Reader client.Reader
-	// Groups writes a group's count and restart (server-side apply as FieldOwner).
+	// Groups writes the groups: one field by server-side apply, a new group, a deletion (spec 006).
 	Groups GroupWriter
+	// NewGroupTLS is the doors' certificate of a group the console makes: the chart's own groups' (the csi-driver from
+	// the internal issuer); empty, the console makes no group.
+	NewGroupTLS v1alpha1.TLSSpec
 	// Fleet is the nodes as their EndpointSlices and Leases show them (the front's watcher, spec 002).
 	Fleet *fleet.Fleet
 	// Nodes runs a statement on a node with the person's token.
@@ -121,7 +123,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+APIPrefix+"config", s.config)
 	mux.Handle("GET "+APIPrefix+"me", s.person(nil, s.me))
 	mux.Handle("GET "+APIPrefix+"groups", s.person(func(r Rights) bool { return r.Fleet }, s.groups))
-	mux.Handle("PATCH "+APIPrefix+"groups/{group}", s.person(func(r Rights) bool { return r.Scale }, s.patchGroup))
+	// spec 006: the groups themselves - the cluster bundle's, as a scale; a group's place in the policy - the node's
+	// to judge, offered to the policy bundle
+	groupsRight := func(r Rights) bool { return r.Scale }
+	mux.Handle("POST "+APIPrefix+"groups", s.person(groupsRight, s.createGroup))
+	mux.Handle("PATCH "+APIPrefix+"groups/{group}", s.person(groupsRight, s.patchGroup))
+	mux.Handle("DELETE "+APIPrefix+"groups/{group}", s.person(groupsRight, s.deleteGroup))
+	policyRight := func(r Rights) bool { return r.Policy }
+	mux.Handle("GET "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.groupPolicy))
+	mux.Handle("POST "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.addGroupToPolicy))
+	mux.Handle("DELETE "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.removeGroupFromPolicy))
 	mux.Handle("GET "+APIPrefix+"nodes/{label}", s.person(func(r Rights) bool { return r.Fleet }, s.node))
 	mux.Handle("GET "+APIPrefix+"nodes/{label}/sessions",
 		s.person(func(r Rights) bool { return r.Sessions }, s.sessions))
@@ -346,62 +357,9 @@ func (s *Server) groups(w http.ResponseWriter, r *http.Request, _ string, _ *per
 		problem(w, http.StatusServiceUnavailable, "kubernetes", "the groups could not be read")
 		return
 	}
-	answer(w, FleetOf(platform, list.Items, view, s.now(), kube))
-}
-
-// GroupPatch is `PATCH groups/{g}`: one of a count or a restart.
-type GroupPatch struct {
-	Replicas *int32 `json:"replicas,omitempty"`
-	Restart  bool   `json:"restart,omitempty"`
-}
-
-func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, _ string, p *person) {
-	var patch GroupPatch
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&patch); err != nil || (patch.Replicas == nil) == !patch.Restart {
-		problem(w, http.StatusBadRequest, "bad_request", "send {\"replicas\": n} or {\"restart\": true}")
-		return
-	}
-	if patch.Replicas != nil && *patch.Replicas < 0 {
-		problem(w, http.StatusBadRequest, "bad_request", "replicas cannot be negative")
-		return
-	}
-	platform, err := s.Platform(r.Context())
-	if err != nil {
-		problem(w, http.StatusServiceUnavailable, "no_platform", "the platform is not read yet")
-		return
-	}
-	name := r.PathValue("group")
-	var group v1alpha1.HugrNodeGroup
-	if err := s.Reader.Get(r.Context(), client.ObjectKey{Namespace: platform.Namespace, Name: name}, &group); err != nil ||
-		group.Spec.Platform != platform.Name {
-		problem(w, http.StatusNotFound, "not_found", "no such group")
-		return
-	}
-	// always named: an apply of the console's that left the annotation out would remove what its owner set before
-	changedBy := p.subject
-	if changedBy == "" {
-		changedBy = "unknown"
-	}
-	change := GroupChange{Namespace: platform.Namespace, Name: name, ChangedBy: changedBy, Replicas: patch.Replicas}
-	if patch.Restart {
-		change.RestartedAt = s.now().UTC().Format(time.RFC3339)
-	}
-	if err := s.Groups.Change(r.Context(), change); err != nil {
-		if apierrors.IsInvalid(err) || (apierrors.IsForbidden(err) || apierrors.IsBadRequest(err)) &&
-			strings.Contains(err.Error(), "denied the request") {
-			// the webhook's reason (past the plan, a size not allowed) is the person's to read; the operator's own
-			// RBAC refusal is not (it names the ServiceAccount) - it is logged below
-			problem(w, http.StatusUnprocessableEntity, "refused", webhookMessage(err))
-			return
-		}
-		s.Log.Info("group not changed", "group", name, "error", err.Error())
-		problem(w, http.StatusServiceUnavailable, "kubernetes", "the group could not be changed")
-		return
-	}
-	s.Log.Info("group changed", "group", name, "by", p.subject, "replicas", patch.Replicas, "restart", patch.Restart)
-	w.WriteHeader(http.StatusNoContent)
+	out := FleetOf(platform, list.Items, view, s.now(), kube)
+	out.NewGroup.Available = s.NewGroupTLS.CSI != nil || s.NewGroupTLS.SecretRef != nil
+	answer(w, out)
 }
 
 // webhookMessage is the admission's reason without the API server's framing.

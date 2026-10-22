@@ -193,7 +193,8 @@ fi
 
 echo "e2e: Playwright"
 status=0
-(cd "$WEB" && E2E_CONSOLE_URL="$CONSOLE" E2E_OPS_PW="$OPS_PW" E2E_ANALYST_PW="$ANALYST_PW" E2E_SHOTS="${E2E_SHOTS:-}" \
+(cd "$WEB" && E2E_CONSOLE_URL="$CONSOLE" E2E_OPS_PW="$OPS_PW" E2E_ANALYST_PW="$ANALYST_PW" E2E_ADMIN_PW="$ADMIN_PW" \
+	E2E_SHOTS="${E2E_SHOTS:-}" \
 	npx playwright test) || status=$?
 # nothing secret in the logs
 l="$(leaked)"

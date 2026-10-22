@@ -72,6 +72,8 @@ func (f *fakeNodes) statements(statement string) int {
 type fakeWriter struct {
 	mu      sync.Mutex
 	changes []GroupChange
+	created []*v1alpha1.HugrNodeGroup
+	deleted []string
 	err     error
 }
 
@@ -79,6 +81,20 @@ func (w *fakeWriter) Change(_ context.Context, change GroupChange) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.changes = append(w.changes, change)
+	return w.err
+}
+
+func (w *fakeWriter) Create(_ context.Context, group *v1alpha1.HugrNodeGroup) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.created = append(w.created, group)
+	return w.err
+}
+
+func (w *fakeWriter) Delete(_ context.Context, namespace, name string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.deleted = append(w.deleted, namespace+"/"+name)
 	return w.err
 }
 
@@ -390,7 +406,8 @@ func TestNodePageWhenTheNodeDoesNotAnswer(t *testing.T) {
 
 func TestPatchGroup(t *testing.T) {
 	h := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
-	for _, body := range []string{`{}`, `{"replicas": 3, "restart": true}`, `{"replicas": -1}`, `{"size": "large"}`,
+	for _, body := range []string{`{}`, `{"replicas": 3, "restart": true}`, `{"replicas": -1}`, `{"size": ""}`,
+		`{"size": "small", "quack": true}`, `{"drainSeconds": -1}`, `{"drainSeconds": 86401}`, `{"tls": {}}`,
 		`not json`} {
 		if code, _, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, body); code != http.StatusBadRequest {
 			t.Errorf("%s: %d", body, code)
@@ -418,6 +435,25 @@ func TestPatchGroup(t *testing.T) {
 	}
 	if restart.Replicas != nil || restart.RestartedAt != "2026-10-19T12:00:00Z" {
 		t.Errorf("restart: %+v", restart)
+	}
+	// spec 006: the size, the doors, the drain time - one field a call
+	for _, body := range []string{`{"size": "large"}`, `{"quack": false}`, `{"drainSeconds": 0}`} {
+		if code, _, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, body); code != 204 {
+			t.Fatalf("%s: %d", body, code)
+		}
+	}
+	size, doors, drain := h.writer.changes[2], h.writer.changes[3], h.writer.changes[4]
+	if size.Size != "large" || size.Owner() != SizeFieldOwner || doors.Quack == nil || *doors.Quack ||
+		doors.Owner() != DoorsFieldOwner || drain.DrainSeconds == nil || *drain.DrainSeconds != 0 ||
+		drain.Owner() != DrainFieldOwner {
+		t.Errorf("size, doors, drain: %+v %+v %+v", size, doors, drain)
+	}
+	// the webhook's refusal is the person's to read
+	h.writer.err = apierrors.NewForbidden(schema.GroupResource{Group: "platform.hugr.io", Resource: "hugrnodegroups"},
+		"etl", errors.New(`admission webhook "vgroup.platform.hugr.io" denied the request: the size "huge" is not one the platform lists`))
+	if code, out, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, `{"size": "huge"}`); code != 422 ||
+		out["message"] != `the size "huge" is not one the platform lists` {
+		t.Errorf("a refused size: %d %v", code, out)
 	}
 }
 

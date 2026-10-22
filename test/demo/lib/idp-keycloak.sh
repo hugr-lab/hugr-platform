@@ -54,7 +54,7 @@ install_idp() {
 	# the console stand's person (spec 003: `run.sh <provider> console`) - a password made for the run, never printed
 	secret_file person-operator openssl rand -hex 16 >/dev/null
 	# the secrets are read from their files: neither an argument nor the environment carries one
-	python3 - "$WORK/realm.json" "$WORK/secrets" "$sa_issuer" "https://127.0.0.1:$STAND_CONSOLE_PORT" "${GROUPS_[@]}" <<'PY'
+	python3 - "$WORK/realm.json" "$WORK/secrets" "$sa_issuer" "https://127.0.0.1:$STAND_CONSOLE_PORT" "${IDENTITIES_[@]}" <<'PY'
 import json, os, sys
 out, secrets, sa_issuer, console, groups = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
 # console: the console stand's forwarded origin (stand.sh)

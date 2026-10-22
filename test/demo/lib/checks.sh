@@ -70,6 +70,7 @@ front_metric() {
 		awk -v s="$1" '$1 == s {v = $2} END {print v + 0}' # a series not yet counted is 0
 }
 no_pods() { [ -z "$(k -n hugr get pods -l "platform.hugr.io/group=$1" -o name)" ]; }
+no_group() { ! k -n hugr get hng "$1" >/dev/null 2>&1; }
 
 first_pod() { pods "$1" | head -1; }
 status() { k -n hugr get hng "$1" -o jsonpath="$2"; }
@@ -586,6 +587,53 @@ sys.exit(0 if "hugr-init" in managers else 1)' || fail "the CRDs were not applie
 }
 
 # check_rollout: a new node image - the same build under another name - rolls group by group (spec 008): the default
+# check_console_group: spec 006 - the console makes a group (its identity given beforehand: the IdP's client and
+# tresor's actor are the installation's), whose node drains itself until the policy has its resource group; the
+# console adds it by hand on a node under the admin's token, a principal of a role bound there is served, then the
+# group leaves the policy (its node drains itself again) and is deleted (its node drains and goes)
+check_console_group() {
+	step "13. a group from the console (spec 006): made, added to the policy by hand, serving, removed, deleted"
+	local g="$CONSOLE_GROUP" out pod got body
+	body="{\"name\": \"$g\", \"size\": \"small\", \"replicas\": 1, \"clientID\": \"$(group_client_id "$g")\", \"drainSeconds\": 10}"
+	out="$(console_api admin GET groups)" || fail "the fleet"
+	json_true "$out" "r['newGroup']['available'] and r['newGroup']['subjectPrefix'] == 'system:serviceaccount:hugr:hugr-node-'" ||
+		fail "the fleet's new group: $out"
+	if console_api analyst-a POST groups "$body" >/dev/null 2>"$WORK/console.err"; then fail "analyst_a made a group"; fi
+	grep -q 'answered 403' "$WORK/console.err" || fail "analyst_a's new group: $(cat "$WORK/console.err")"
+	console_api admin POST groups "$body" >/dev/null || fail "the console made no group $g"
+	[ "$(k -n hugr get hng "$g" -o jsonpath='{.spec.tls.csi.issuerRef.name}')" = hugr-internal ] ||
+		fail "group $g's certificate is not the chart's groups' own"
+	[ -n "$(k -n hugr get hng "$g" -o jsonpath='{.metadata.annotations.platform\.hugr\.io/changed-by}')" ] ||
+		fail "group $g does not name who made it"
+	eventually 240 "group $g's node drains itself: the policy has no resource group $g" draining_is "$g" True
+	follow_logs
+	out="$(console_api admin GET "groups/$g/policy")" || fail "group $g's place in the policy"
+	json_true "$out" "not r['inPolicy'] and r['resourceGroup'] == a[0] and 'analyst_b' in r['roles']" "$g" ||
+		fail "group $g's place in the policy: $out"
+	ok "the console made group $g (the chart's certificate, who made it named); its node entered and drains itself: the policy has no resource group $g"
+
+	out="$(console_api admin POST "groups/$g/policy" '{"roles": ["analyst_b", "node_breakglass"]}')" ||
+		fail "group $g added to the policy"
+	json_true "$out" "r['inPolicy'] and sorted(r['bound']) == ['analyst_b', 'node_breakglass']" || fail "group $g in the policy: $out"
+	eventually 120 "group $g resumes by itself" draining_is "$g" False
+	eventually 120 "group $g serves" group_ready "$g"
+	pod="$(first_pod "$g")"
+	got="$(as analyst-b "$pod" "SELECT count(*) FROM orders")" || fail "analyst_b's read on $pod"
+	[ "$got" -gt 0 ] 2>/dev/null || fail "analyst_b on $g: $got"
+	if got="$(as analyst-a "$pod" "SELECT count(*) FROM orders" 2>&1)"; then fail "analyst_a is served on $g"; fi
+	grep -q 'code = Unavailable' <<<"$got" || fail "analyst_a on $g: $got"
+	ok "the console added $g to the policy (analyst_b, node_breakglass bound): the group resumed by itself, analyst_b reads on $pod, analyst_a is refused there"
+
+	console_api admin DELETE "groups/$g/policy" >/dev/null || fail "group $g removed from the policy"
+	eventually 120 "group $g's node drains itself again" draining_is "$g" True
+	console_api admin DELETE "groups/$g" >/dev/null || fail "group $g deleted"
+	eventually 120 "the node $pod drained and went" went_drained "$pod"
+	eventually 60 "group $g is gone" no_group "$g"
+	out="$(console_api admin GET groups)" || fail "the fleet"
+	json_true "$out" "sorted(g['name'] for g in r['groups']) == ['a', 'b']" || fail "the fleet after the delete: $out"
+	ok "removed from the policy, $g's node drained itself; deleted, it drained and went, and the fleet is a and b again"
+}
+
 # group a is the canary, b waits on its image until a is done, then moves; the status ends Complete and the fleet
 # serves
 check_rollout() {
@@ -643,6 +691,7 @@ run_checks() {
 	check_policy
 	check_upgrade
 	check_rollout
+	check_console_group
 	check_no_secrets
 	echo
 	echo "PASS: the platform in one cluster ($PROVIDER)"

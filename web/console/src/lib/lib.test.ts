@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Api, ApiError } from './api'
 import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
+import { changesOf, groupName } from '../screens/GroupActions'
 import type { Fleet, Group } from './types'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -55,6 +56,20 @@ describe('the API client', () => {
     expect(inits[0].cache).toBe('no-store')
     expect(inits[0].body).toBe('{"replicas":3}')
   })
+
+  it('reads a write answered without a body, whatever its status (201 a group made)', async () => {
+    const sent: { url: string; method?: string; body?: unknown }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      sent.push({ url, method: init.method, body: init.body })
+      return new Response(null, { status: url.endsWith('/groups') ? 201 : 204 })
+    }))
+    const api = new Api({ getToken: async () => 't' }, 'a')
+    await expect(api.createGroup({ name: 'r', size: 'small', replicas: 1, clientID: 'c', quack: false })).resolves.toBeUndefined()
+    await expect(api.deleteGroup('r/../x')).resolves.toBeUndefined()
+    await expect(api.removeFromPolicy('r')).resolves.toBeUndefined()
+    expect(sent.map((s) => `${s.method} ${s.url}`)).toEqual(['POST /api/v1/console/groups',
+      'DELETE /api/v1/console/groups/r%2F..%2Fx', 'DELETE /api/v1/console/groups/r/policy'])
+  })
 })
 
 describe('the sign-in', () => {
@@ -74,6 +89,7 @@ const group = (over: Partial<Group>): Group => ({
   name: 'g', size: 'small', replicas: 2, readyReplicas: 2, resourceGroup: 'g', resourceGroupKnown: true,
   profile: { target: 1, applied: 2, needsRestart: [] }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
   identity: { serviceAccount: 'hugr-node-g', subject: '', clientID: '', tresor: '', tlsName: '' }, memoryLimitBytes: 0,
+  quack: false, drainSeconds: 300,
   ...over,
 })
 
@@ -108,10 +124,24 @@ describe('the fleet', () => {
   it('lets a group grow to the plan less what the others keep, an autoscaled one at its max', () => {
     const fleet: Fleet = {
       plan: { maxNodes: 12, sizes: [] },
+      newGroup: { available: false, subjectPrefix: '' },
       groups: [group({ name: 'a', replicas: 3 }), group({ name: 'b', replicas: 2, scaling: { mode: 'auto', min: 1, max: 5 } }),
         group({ name: 'c', replicas: 1 })],
     }
     expect(room(fleet, fleet.groups[0])).toBe(12 - 5 - 1)
     expect(room(fleet, fleet.groups[2])).toBe(12 - 3 - 5)
+  })
+})
+
+describe('a group from the console (spec 006)', () => {
+  it('sends one change per field changed, nothing when none is', () => {
+    const g = group({ size: 'small', quack: false, drainSeconds: 300 })
+    expect(changesOf(g, 'small', false, 300)).toEqual([])
+    expect(changesOf(g, 'large', true, 60)).toEqual([{ size: 'large' }, { quack: true }, { drainSeconds: 60 }])
+    expect(changesOf(g, 'small', false, 0)).toEqual([{ drainSeconds: 0 }])
+  })
+  it('takes a name the webhook takes', () => {
+    for (const ok of ['etl', 'a', 'reports-2', 'x'.repeat(36)]) expect(groupName.test(ok)).toBe(true)
+    for (const bad of ['', 'ETL', '-etl', 'etl-', 'e_tl', 'x'.repeat(37), 'a.b']) expect(groupName.test(bad)).toBe(false)
   })
 })

@@ -136,7 +136,7 @@ install_idp() {
 	entra_app hugr analyst_a analyst_b platform_admin node_breakglass
 	entra_resource tresor
 	entra_resource hugr
-	for g in "${GROUPS_[@]}"; do
+	for g in "${IDENTITIES_[@]}"; do
 		if ! azs identity show -g "$AKS_RG" -n "hugr-node-$g" -o none 2>/dev/null; then
 			# shellcheck disable=SC2046 # the tags are words
 			azs identity create -g "$AKS_RG" -n "hugr-node-$g" --tags $(aks_tags) -o none ||

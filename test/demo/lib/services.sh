@@ -43,7 +43,7 @@ service_cas() {
 tresor_values() {
 	local private=false actors="" g
 	case "$CLUSTER_ISSUER" in https://kubernetes.default.svc*) private=true ;; esac
-	for g in "${GROUPS_[@]}"; do
+	for g in "${IDENTITIES_[@]}"; do
 		actors="$actors
       - {principal: 'client:$(group_client_id "$g")', verbs: [use]}"
 	done

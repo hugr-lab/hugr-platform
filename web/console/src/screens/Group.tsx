@@ -1,10 +1,12 @@
-import { CircleAlert } from 'lucide-react'
-import { Link, useParams } from 'react-router-dom'
+import { useState } from 'react'
+import { CircleAlert, Pencil, Trash2 } from 'lucide-react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Bar, Chip, Crumbs, Header, Problem, Refresh, Stat, Status, age } from '../components/ui'
 import { useApp, useLoad } from '../lib/context'
 import { bytes, share } from '../lib/format'
 import type { NodeInfo } from '../lib/types'
 import { groupState, podReason, starting } from './Fleet'
+import { DeleteGroupDialog, EditGroupDialog, PolicySection } from './GroupActions'
 
 export function nodeState(n: NodeInfo): { mark: 'ok' | 'half' | 'off'; text: string; why?: string } {
   // the pod first: a node a scale made is in the group before it serves - starting, or not starting and why
@@ -26,14 +28,37 @@ export function nodeState(n: NodeInfo): { mark: 'ok' | 'half' | 'off'; text: str
 
 export function Group() {
   const { name = '' } = useParams()
-  const { api } = useApp()
+  const { api, rights } = useApp()
+  const navigate = useNavigate()
   const fleet = useLoad(() => api.fleet(), [api])
   const group = fleet.data?.groups.find((g) => g.name === name)
+  const [editing, setEditing] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   return (
     <>
       <Crumbs items={[{ label: 'Fleet', to: '/' }, { label: name }]} />
-      <Header title={name} lead={group && `Size ${group.size}, ${group.replicas} ${group.replicas === 1 ? 'node' : 'nodes'} wanted. Each node's row comes from its Lease, which it renews every few seconds.`}
-        actions={<Refresh at={fleet.at} loading={fleet.loading} onClick={fleet.reload} />} />
+      <Header title={name} lead={group && `Size ${group.size}, ${group.replicas} ${group.replicas === 1 ? 'node' : 'nodes'} wanted${group.quack ? ', the quack door open' : ''}, ${group.drainSeconds} s to drain. Each node's row comes from its Lease, which it renews every few seconds.`}
+        actions={
+          <div className="flex flex-wrap items-center gap-4">
+            <Refresh at={fleet.at} loading={fleet.loading} onClick={fleet.reload} />
+            {rights.scale && group && (
+              <>
+                <button type="button" className="btn-outline" onClick={() => setEditing(true)}>
+                  <Pencil size={18} aria-hidden="true" />
+                  Change
+                </button>
+                <button type="button" className="btn-quiet" onClick={() => setDeleting(true)}>
+                  <Trash2 size={18} aria-hidden="true" />
+                  Delete
+                </button>
+              </>
+            )}
+          </div>
+        } />
+      {editing && group && fleet.data && <EditGroupDialog fleet={fleet.data} group={group}
+        onDone={(changed) => { setEditing(false); if (changed) fleet.reload() }} />}
+      {deleting && group && <DeleteGroupDialog group={group}
+        onDone={(deleted) => { setDeleting(false); if (deleted) navigate('/') }} />}
       {fleet.error !== undefined && <Problem error={fleet.error} />}
       {fleet.data && !group && <Problem error={new Error('no such group')} />}
       {group && (
@@ -143,7 +168,11 @@ export function Group() {
               <div><dt className="eyebrow">Logs in to</dt><dd className="mono break-all">{group.identity.tresor || '-'}</dd></div>
               <div><dt className="eyebrow">Answers as</dt><dd className="mono break-all">{group.identity.tlsName}</dd></div>
             </dl>
+            <p className="text-sm text-ink-muted">
+              To act for its sessions in tresor, the identity must be one of tresor's actors: its client id is listed in tresor's configuration (spec 006 asks tresor to name actors by role).
+            </p>
           </section>
+          {rights.policy && <PolicySection group={group} onChanged={fleet.reload} />}
         </>
       )}
     </>

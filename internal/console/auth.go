@@ -110,15 +110,10 @@ func answering(view *fleet.View, now time.Time) []*fleet.Node {
 	return out
 }
 
-// askRights asks `platform.console_info()` with the token on an answering node. A node of another resource group
-// refuses the person and names the groups that serve it (duckdb-acl spec 096); the next try goes to one of those. A
-// node that seats no session for the token answers "authentication failed" - for a token it does not verify, but also
-// at its session cap or with its policy source failing (duckdb-acl specs 040, 044) - so the next node is asked too, and
-// the token is refused only when every node that answered refused it so.
-func askRights(ctx context.Context, nodes Caller, view *fleet.View, token string, now time.Time,
-	rnd *rand.Rand) (Info, error) {
-	// a draining node seats only the call of a person who may resume it (duckdb-acl spec 066's addendum): it is asked
-	// last, so everyone else is answered by a node that serves - and an operator still is when all of them drain
+// candidates are the answering nodes in the order a statement of the person's goes to them: a draining node seats only
+// the call of a person who may resume it (duckdb-acl spec 066's addendum), so it is asked last - everyone else is
+// answered by a node that serves, and an operator still is when all of them drain.
+func candidates(view *fleet.View, now time.Time, rnd *rand.Rand) []*fleet.Node {
 	var serving, draining []*fleet.Node
 	for _, n := range answering(view, now) {
 		if n.Lease != nil && n.Lease.Summary.Draining {
@@ -129,7 +124,17 @@ func askRights(ctx context.Context, nodes Caller, view *fleet.View, token string
 	}
 	rnd.Shuffle(len(serving), func(i, j int) { serving[i], serving[j] = serving[j], serving[i] })
 	rnd.Shuffle(len(draining), func(i, j int) { draining[i], draining[j] = draining[j], draining[i] })
-	candidates := append(serving, draining...)
+	return append(serving, draining...)
+}
+
+// askRights asks `platform.console_info()` with the token on an answering node. A node of another resource group
+// refuses the person and names the groups that serve it (duckdb-acl spec 096); the next try goes to one of those. A
+// node that seats no session for the token answers "authentication failed" - for a token it does not verify, but also
+// at its session cap or with its policy source failing (duckdb-acl specs 040, 044) - so the next node is asked too, and
+// the token is refused only when every node that answered refused it so.
+func askRights(ctx context.Context, nodes Caller, view *fleet.View, token string, now time.Time,
+	rnd *rand.Rand) (Info, error) {
+	candidates := candidates(view, now, rnd)
 	tried := map[string]bool{}
 	var groups []string
 	refusedToken, failed := 0, 0
