@@ -60,8 +60,9 @@ same `CLUSTER` statements, judged by a node.
     from the form's fields; nothing a person types reaches it as SQL:
     - an extension, a repository, a type, a secret and a setting are plain names (`[A-Za-z_][A-Za-z0-9_]*`), written
       bare;
-    - an alias and a dependency are quoted identifiers, a resource group (`IN GROUP`) a resource group's name, quoted -
-      hugr-node reads a quoted name as one (`NameValue`);
+    - an alias and a dependency are quoted identifiers - never with a comma or edge spaces: hugr-node keeps a
+      dependency list joined by commas and trims each name - and a resource group (`IN GROUP`) a resource group's
+      name, quoted; hugr-node reads a quoted name as one (`NameValue`);
     - a path, a version, a lineage name, a comment and a setting's value are string literals (the node keeps a
       setting's value as text whatever it is written as).
   - A source names a `SECRET` (never a credential: the node refuses one anyway). ATTACH's options beyond `READ_ONLY`
@@ -113,6 +114,13 @@ same `CLUSTER` statements, judged by a node.
 - **Editing the platform's spec in the console**: the chart owns it; the console's write would be undone at the next
   upgrade, or would need the chart to give up those fields.
 - **The effective profile computed in the console from the items**: a second copy of the node's override rule.
+
+## Follow-ups
+
+- **hugr-node: `CLUSTER UPDATE EXTENSION` keeps what it does not name.** Today it writes the item's comment empty and
+  resolves the repository again with no `FROM` (its grammar takes none): on a node trusting one repository the item
+  moves to it, on one trusting several every update is refused. Found by this spec's review; the console's update
+  form inherits it (a platform's nodes trust one repository, its kista channel).
 
 ## Decisions for the owner
 

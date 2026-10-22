@@ -75,10 +75,12 @@ func (c ProfileChange) statement() (string, error) {
 		b.WriteString(lit)
 		return nil
 	}
-	alias := func(value string) error {
+	// a source's name: quoted, but never with a comma or edge spaces - hugr-node keeps a dependency list joined by
+	// commas and trims each name, so such an alias could never be named as one
+	alias := func(field, value string) error {
 		q, ok := quoted(value)
-		if !ok {
-			return errors.New("the alias is required, one line")
+		if !ok || strings.Contains(value, ",") || strings.TrimSpace(value) != value {
+			return fmt.Errorf("%s is required: one line of at most 256 bytes, no comma, no space at its ends", field)
 		}
 		b.WriteString(q)
 		return nil
@@ -102,7 +104,7 @@ func (c ProfileChange) statement() (string, error) {
 		b.WriteString("CLUSTER ATTACH ")
 		if err = text("the path", c.Path); err == nil {
 			b.WriteString(" AS ")
-			err = alias(c.Alias)
+			err = alias("the alias", c.Alias)
 		}
 		if err == nil {
 			b.WriteString(" (TYPE ")
@@ -128,7 +130,7 @@ func (c ProfileChange) statement() (string, error) {
 				if i > 0 {
 					b.WriteString(", ")
 				}
-				if err = alias(a); err != nil {
+				if err = alias("a dependency", a); err != nil {
 					break
 				}
 			}
@@ -136,7 +138,7 @@ func (c ProfileChange) statement() (string, error) {
 		}
 	case "detach":
 		b.WriteString("CLUSTER DETACH ")
-		err = alias(c.Alias)
+		err = alias("the alias", c.Alias)
 		if err == nil && c.Cascade {
 			b.WriteString(" CASCADE")
 		}
@@ -207,8 +209,12 @@ func (s *Server) changeProfile(w http.ResponseWriter, r *http.Request, token str
 				out.Class, _ = m["class"].(string)
 				out.Note, _ = m["note"].(string)
 				out.AppliedHere, _ = m["applied_here"].(bool)
-				if version, ok := m["version"].(float64); ok {
-					out.Version = int64(version)
+				// a STRUCT's fields keep their types (Arrow's GetOneForMarshal): the BIGINT is an int64
+				switch v := m["version"].(type) {
+				case int64:
+					out.Version = v
+				case float64:
+					out.Version = int64(v)
 				}
 			}
 		}

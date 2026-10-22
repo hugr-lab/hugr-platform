@@ -44,17 +44,22 @@ func TestProfileStatement(t *testing.T) {
 		}
 	}
 	for name, c := range map[string]ProfileChange{
-		"no action":              {},
-		"another action":         {Action: "drop"},
-		"an extension with SQL":  {Action: "install", Extension: "x VERSION '1'; --", Version: "1"},
-		"no version":             {Action: "install", Extension: "x"},
-		"a repository path":      {Action: "install", Extension: "x", Version: "1", Repository: "https://evil"},
-		"no path":                {Action: "attach", Alias: "a", Type: "duckdb"},
-		"no alias":               {Action: "attach", Path: ":memory:", Type: "duckdb"},
-		"a type with SQL":        {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb) --"},
-		"a secret with SQL":      {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb", Secret: "s, x 1"},
-		"a line break":           {Action: "attach", Path: "a\nb", Alias: "a", Type: "duckdb"},
-		"an empty dependency":    {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb", DependsOn: []string{""}},
+		"no action":             {},
+		"another action":        {Action: "drop"},
+		"an extension with SQL": {Action: "install", Extension: "x VERSION '1'; --", Version: "1"},
+		"no version":            {Action: "install", Extension: "x"},
+		"a repository path":     {Action: "install", Extension: "x", Version: "1", Repository: "https://evil"},
+		"no path":               {Action: "attach", Alias: "a", Type: "duckdb"},
+		"no alias":              {Action: "attach", Path: ":memory:", Type: "duckdb"},
+		"a type with SQL":       {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb) --"},
+		"a secret with SQL":     {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb", Secret: "s, x 1"},
+		"a line break":          {Action: "attach", Path: "a\nb", Alias: "a", Type: "duckdb"},
+		"an empty dependency":   {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb", DependsOn: []string{""}},
+		"a comma in a dependency": {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb",
+			DependsOn: []string{"x,y"}},
+		"a comma in an alias":    {Action: "attach", Path: ":memory:", Alias: "a,b", Type: "duckdb"},
+		"an alias's edge space":  {Action: "detach", Alias: " a"},
+		"a dependency's space":   {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb", DependsOn: []string{"x "}},
 		"a setting with SQL":     {Action: "set", Setting: "threads = 1; SET x", Value: "1"},
 		"no value":               {Action: "set", Setting: "threads"},
 		"a group with SQL":       {Action: "reset", Setting: "threads", Group: "etl COMMENT 'x'"},
@@ -77,7 +82,8 @@ func TestChangeProfile(t *testing.T) {
 	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
 		if strings.HasPrefix(statement, "CLUSTER ") {
 			asked = append(asked, statement)
-			return &Result{Columns: []string{"acl_cluster_attach"}, Rows: [][]any{{map[string]any{"version": float64(7),
+			// as the pool reads a STRUCT: each field its own type, the BIGINT an int64
+			return &Result{Columns: []string{"acl_cluster_attach"}, Rows: [][]any{{map[string]any{"version": int64(7),
 				"class": "hot", "applied_here": true, "note": ""}}}}, nil
 		}
 		return answer(n, statement)

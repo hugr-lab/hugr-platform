@@ -16,7 +16,12 @@ export const actions: { value: Action; label: string }[] = [
 
 /** a name the CLUSTER grammar takes bare: an extension, a repository, a type, a secret, a setting */
 const bare = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/
-const line = (v: string | undefined) => !!v && v.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(v)
+const control = /[\u0000-\u001f\u007f-\u009f]/
+const line = (v: string | undefined) => !!v && v.length <= 1024 && !control.test(v)
+/** a source's name as the server writes it: one line of at most 256 bytes, no comma (hugr-node joins a dependency list
+ * by commas), no space at its ends */
+const sourceName = (v: string | undefined) => !!v && new TextEncoder().encode(v).length <= 256 && !control.test(v) &&
+  !v.includes(',') && v.trim() === v
 
 /** the change as the form stands, only the fields its action takes */
 export function changeOf(action: Action, f: Partial<ProfileChange>, group?: string): ProfileChange {
@@ -51,12 +56,13 @@ export function changeProblem(c: ProfileChange): string | undefined {
       return bare.test(c.extension ?? '') ? undefined : 'Name the extension (letters, digits, _).'
     case 'attach':
       if (!line(c.path)) return 'Give the source\'s path.'
-      if (!line(c.alias)) return 'Name the source (its alias).'
+      if (!sourceName(c.alias)) return 'Name the source (its alias): no comma, no space at its ends.'
       if (!bare.test(c.type ?? '')) return 'Give its type (duckdb, postgres, mssql, ...).'
       if (c.secret && !bare.test(c.secret)) return 'A secret is a plain name.'
+      if ((c.dependsOn ?? []).some((d) => !sourceName(d))) return 'A dependency names a source (its alias).'
       return undefined
     case 'detach':
-      return line(c.alias) ? undefined : 'Name the source (its alias).'
+      return sourceName(c.alias) ? undefined : 'Name the source (its alias): no comma, no space at its ends.'
     case 'set':
       if (!bare.test(c.setting ?? '')) return 'Name the setting.'
       return line(c.value) ? undefined : 'Give its value.'

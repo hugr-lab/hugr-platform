@@ -343,6 +343,10 @@ describe('a change of the profile from a form (spec 010 stage 2)', () => {
     expect(changeProblem({ action: 'set', setting: 'threads' })).toMatch(/value/)
     expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'Lake "eu"', type: 'duckdb', secret: 'ro' })).toBeUndefined()
     expect(changeProblem({ action: 'detach', alias: 'scratch' })).toBeUndefined()
+    expect(changeProblem({ action: 'detach', alias: 'a,b' })).toMatch(/comma/)
+    expect(changeProblem({ action: 'detach', alias: ' a' })).toMatch(/comma/)
+    expect(changeProblem({ action: 'detach', alias: 'x'.repeat(257) })).toMatch(/alias/)
+    expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'a', type: 'duckdb', dependsOn: ['b\u0085'] })).toMatch(/dependency/)
   })
   it('reads the node\'s answer as how the change reaches the nodes', () => {
     expect(reachOf({ version: 7, class: 'hot', appliedHere: true, note: '', node: 'n-a' })).toMatch(/version 7: applied live - n-a applied it/)
