@@ -1,6 +1,7 @@
 # spec 007: DuckDB in the console's SQL page - duckdb-wasm on DuckDB v2.0.0, built from a pinned commit of its main
 # (web/console/duckdb-wasm.pin) until its npm package is published, its bindings able to LOAD extensions. With it, in
-# the package's dist/extensions/, quack for wasm_eh built at web/console/quack.pin by the same emscripten, with one change
+# the package's dist/extensions/, quack (and the httpfs its HTTP needs) for wasm_eh built at web/console/quack.pin by the
+# same emscripten, quack with one change
 # (web/console/quack-wasm.patch: no heartbeat thread without pthreads, duckdb/duckdb-quack#328) - the page loads it
 # unsigned from the console's own origin. The npm tarball is a release asset the console's package-lock names by its
 # integrity. A PR builds it; main publishes it once per pin.
@@ -122,10 +123,13 @@ jobs:
     - name: Build quack for wasm_eh
       working-directory: quack
       run: make wasm_eh
+    # quack's HTTP in wasm is httpfs': built with it (quack's own test dependency), by the same emscripten
     - uses: actions/upload-artifact@v4
       with:
         name: quack
-        path: quack/build/wasm_eh/extension/quack/quack.duckdb_extension.wasm
+        path: |
+          quack/build/wasm_eh/extension/quack/quack.duckdb_extension.wasm
+          quack/build/wasm_eh/extension/httpfs/httpfs.duckdb_extension.wasm
         if-no-files-found: error
         retention-days: 3
 
@@ -151,7 +155,9 @@ jobs:
         path: packages/duckdb-wasm/dist/extensions/
     - run: yarn install --frozen-lockfile
     - run: yarn workspace @duckdb/duckdb-wasm build:release
-    - run: test -s packages/duckdb-wasm/dist/extensions/quack.duckdb_extension.wasm
+    - run: |
+        test -s packages/duckdb-wasm/dist/extensions/quack.duckdb_extension.wasm
+        test -s packages/duckdb-wasm/dist/extensions/httpfs.duckdb_extension.wasm
     - name: Pack
       env:
         TAG: ${{ needs.pin.outputs.tag }}
