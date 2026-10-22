@@ -47,7 +47,8 @@ jobs:
         ref: ${{ needs.pin.outputs.ref }}
         submodules: true
         fetch-depth: 0
-    - run: sudo apt-get update && sudo apt-get install -y wabt ninja-build
+    # the build script compiles with CMAKE_*_COMPILER_LAUNCHER=ccache: without it a target fails with 127
+    - run: sudo apt-get update && sudo apt-get install -y wabt ninja-build ccache
     - run: make apply_patches
     - uses: mymindstorm/setup-emsdk@v14
       with:
