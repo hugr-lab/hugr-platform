@@ -90,8 +90,19 @@ diagnose() {
 		for pod in $(k -n hugr get pods -l platform.hugr.io/group -o jsonpath='{.items[*].metadata.name}'); do
 			echo "== $pod"
 			k -n hugr logs "$pod" --tail 60
+			# a node that exited once (its start before kista had the extensions, say): why, from the last run
+			k -n hugr logs "$pod" --previous --tail 30 2>/dev/null | sed 's/^/previous: /'
 		done
 		local log
+		# a pod already gone (rolled, scaled down, deleted): its followed log is all that is left of it
+		for log in "$WORK"/logs/*.log; do
+			[ -f "$log" ] || continue
+			pod="${log##*/}"
+			pod="${pod%.log}"
+			k -n hugr get pod "$pod" >/dev/null 2>&1 && continue
+			echo "== $pod (gone: its followed log)"
+			tail -40 "$log"
+		done
 		for log in "$WORK"/forward.*.log; do
 			[ -f "$log" ] || continue
 			echo "== ${log##*/}"
