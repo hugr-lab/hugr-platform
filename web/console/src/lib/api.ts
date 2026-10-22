@@ -1,7 +1,7 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
 import type { AuditEvent, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, Rights,
-  SessionRow } from './types'
+  SessionRow, ViewPage } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -31,6 +31,9 @@ async function failure(res: Response): Promise<ApiError> {
 
 /** a path part from the browser, escaped: a label or an id never changes the route */
 const part = (s: string) => encodeURIComponent(s)
+
+/** a query string of the pairs, each escaped */
+const query = (pairs: Record<string, string>) => new URLSearchParams(pairs).toString()
 
 export class Api {
   constructor(
@@ -98,6 +101,12 @@ export class Api {
   tracing = (label: string, id: string, change: { audit?: string; profile?: string }) =>
     this.request<void>('POST', `nodes/${part(label)}/sessions/${part(id)}/tracing`, change)
   cluster = () => this.request<ClusterPage>('GET', 'cluster')
+  // spec 007: the policy's pages - a view filtered by its columns, a read function by the node's own names
+  policyView = (view: string, filters: Record<string, string> = {}, offset = 0, limit = 500) =>
+    this.request<ViewPage>('GET', `policy/views/${part(view)}?${query({ ...filters, offset: String(offset), limit: String(limit) })}`)
+  policySources = () => this.request<{ sources: string[] }>('GET', 'policy/sources')
+  policyCall = (fn: string, args: Record<string, string>) =>
+    this.request<ViewPage>('GET', `policy/functions/${part(fn)}?${query(args)}`)
 }
 
 /** the config the sign-in needs, unauthenticated */

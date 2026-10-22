@@ -42,6 +42,7 @@ test('an operator runs the fleet; an analyst sees nothing', async ({ browser }) 
   await expect(ops.getByRole('heading', { name: 'Fleet' })).toBeVisible()
   await expect(ops.getByRole('link', { name: 'etl' })).toBeVisible()
   await expect(ops.getByText('Scaling and restarting a group take the cluster right')).toBeVisible()
+  await expect(ops.getByRole('link', { name: 'Policy' })).toHaveCount(0) // observe and operate read none of the policy
   await shot(ops, 'fleet')
 
   await ops.getByRole('link', { name: 'etl' }).click()
@@ -140,4 +141,28 @@ test('an admin makes a group, places it in the policy by hand, then removes and 
   await del.getByRole('button', { name: 'Delete' }).click()
   await expect(admin.getByRole('heading', { name: 'Fleet' })).toBeVisible()
   await expect(admin.getByRole('link', { name: 'reports' })).toHaveCount(0)
+})
+
+test('an admin reads the policy: a catalog, a role and what it reads (spec 007)', async ({ browser }) => {
+  const admin = await signIn(browser, 'admin', env('E2E_ADMIN_PW'))
+  await admin.getByRole('link', { name: 'Policy' }).click()
+  await expect(admin.getByRole('heading', { name: 'Virtual catalogs' })).toBeVisible()
+  await admin.getByRole('link', { name: 'c', exact: true }).click()
+  const tables = admin.getByRole('region', { name: 'Tables and views' })
+  await expect(tables.getByRole('button', { name: 't', exact: true })).toBeVisible()
+  await tables.getByRole('button', { name: 't', exact: true }).click()
+  await expect(admin.getByRole('region', { name: 'Declared columns of t' })).toBeVisible() // an alias: none declared
+  await expect(admin.getByRole('region', { name: 'Catalog grants' }).getByText('analyst')).toBeVisible()
+  await shot(admin, 'policy-catalog')
+
+  await admin.getByRole('link', { name: 'Roles' }).click()
+  await admin.getByRole('link', { name: 'analyst', exact: true }).click()
+  await admin.getByRole('region', { name: 'Catalog grants' }).getByRole('button', { name: 'c', exact: true }).click()
+  const reads = admin.getByRole('region', { name: 'What analyst reads in c' })
+  await expect(reads.locator('tbody tr').first()).toBeVisible() // the node's effective_rights, through the console
+  await expect(reads.getByText('None.')).toHaveCount(0)
+  await shot(admin, 'policy-role')
+
+  await admin.getByRole('link', { name: 'Identity' }).click()
+  await expect(admin.getByRole('region', { name: 'Issuers' }).locator('tbody tr').first()).toBeVisible()
 })
