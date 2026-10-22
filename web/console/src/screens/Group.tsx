@@ -6,6 +6,7 @@ import { useApp, useLoad } from '../lib/context'
 import { bytes, share } from '../lib/format'
 import type { NodeInfo } from '../lib/types'
 import { groupState, podReason, starting } from './Fleet'
+import { BootstrapSection } from './Bootstrap'
 import { DeleteGroupDialog, EditGroupDialog, PolicySection } from './GroupActions'
 
 export function nodeState(n: NodeInfo): { mark: 'ok' | 'half' | 'off'; text: string; why?: string } {
@@ -173,6 +174,7 @@ export function Group() {
             </p>
           </section>
           {rights.policy && <PolicySection group={group} read={fleet.at?.getTime()} onChanged={fleet.reload} />}
+          <BootstrapSection group={group} />
         </>
       )}
     </>

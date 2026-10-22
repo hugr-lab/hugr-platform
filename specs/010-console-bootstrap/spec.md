@@ -1,6 +1,6 @@
 # Spec 010: the bootstrap in the console - what a node starts with
 
-- **Status**: draft
+- **Status**: stage 1 implemented; stage 2 accepted (2026-10-22; decisions 1-3 as proposed)
 - **Date**: 2026-10-22
 - **Author**: hugr lab (the owner, 2026-10-20, spec 003's follow-up: the bootstrap seen in the console first, edited
   later)
@@ -28,7 +28,7 @@ same `CLUSTER` statements, judged by a node.
 ### Stage 1: seen (before the release)
 
 - **`GET groups/{g}/bootstrap`** (the `fleet` right; names only - the document never holds a credential, by its own
-  contract):
+  contract). The node API and the console build it by one function (`nodeapi.NodeDocument`), so they cannot drift:
   - `document`: what a node of the group is handed now, built by the operator's own functions - the node API's
     (`build.Document`, the first policy from the namespace's groups, the rollout's `migrate` for the canary), the pod's
     label shown as `<pod>`;
@@ -84,8 +84,8 @@ same `CLUSTER` statements, judged by a node.
   - an unknown group gives 404.
 - **vitest**: the document's parts as the page shows them; a refused document first.
 - **Browser e2e**: the group's page shows the stand's document, and a person without `fleet` is refused.
-- **Demo** (check 4c): the console's document for group a equals the one a node of a fetched at its entry (its log
-  names the version and the group).
+- **Demo** (check 4c): the console's document for group a is served (its nodes run on it) and names the platform's
+  tresor, the group's own identity and the first policy's groups.
 - Stage 2:
   - the statements built from forms, with their quoting;
   - the e2e: an extension installed and removed for a group, the answer's class shown.

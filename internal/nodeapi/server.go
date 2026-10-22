@@ -79,30 +79,20 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if node == nil {
 		return
 	}
-	document := build.Document(node.Platform, node.Group, node.Pod.Name,
-		build.HeartbeatSeconds(node.Platform, node.Pod.Annotations))
-	// spec 008: the rollout's canary - a pod of the canary group made from the target image - migrates the catalog
-	if up := node.Platform.Status.Upgrade; up != nil && up.Migrate && up.Phase == upgrade.PhaseCanary &&
-		up.Group == node.Group.Name && up.To == node.Platform.Spec.Node.Image && build.NodeImage(&node.Pod.Spec) == up.To {
-		document.Catalog.Migrate = true
-	}
+	var groups []v1alpha1.HugrNodeGroup
 	if node.Platform.Spec.FirstPolicy != nil {
 		// spec 005: the first policy names the namespace's groups, so a node of any of them may write it
-		var groups v1alpha1.HugrNodeGroupList
-		if err := s.Auth.Reader.List(r.Context(), &groups, client.InNamespace(node.Platform.Namespace)); err != nil {
+		var list v1alpha1.HugrNodeGroupList
+		if err := s.Auth.Reader.List(r.Context(), &list, client.InNamespace(node.Platform.Namespace)); err != nil {
 			s.Log.Error(err, "groups not listed for the first policy", "pod", node.Pod.Name)
 			http.Error(w, "the orchestrator cannot read the platform now", http.StatusServiceUnavailable)
 			return
 		}
-		policy, err := build.FirstPolicy(node.Platform, groups.Items)
-		if err != nil {
-			s.Log.Info("bootstrap document incomplete", "group", node.Group.Name, "pod", node.Pod.Name, "reason", err.Error())
-			http.Error(w, "the platform's configuration is incomplete", http.StatusServiceUnavailable)
-			return
-		}
-		document.FirstPolicy = policy
+		groups = list.Items
 	}
-	if err := document.Validate(); err != nil {
+	document, err := NodeDocument(node.Platform, node.Group, groups, node.Pod.Name, build.NodeImage(&node.Pod.Spec),
+		build.HeartbeatSeconds(node.Platform, node.Pod.Annotations))
+	if err != nil {
 		// the installation is incomplete: the node would refuse the document, so it is not served
 		s.Log.Info("bootstrap document incomplete", "group", node.Group.Name, "pod", node.Pod.Name, "reason", err.Error())
 		http.Error(w, "the platform's configuration is incomplete", http.StatusServiceUnavailable)
@@ -110,6 +100,26 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(document)
+}
+
+// NodeDocument is what a pod of the group is served (spec 001, hugr-node spec 010), made from the pod's image: the
+// rollout's canary migrates the catalog (spec 008), and the first policy names the namespace's groups (spec 005) - or
+// why it is refused: a document the node would refuse is never served. The console shows the same (spec 010).
+func NodeDocument(platform *v1alpha1.HugrPlatform, group *v1alpha1.HugrNodeGroup, groups []v1alpha1.HugrNodeGroup,
+	pod, image string, interval int32) (nodeproto.Document, error) {
+	document := build.Document(platform, group, pod, interval)
+	if up := platform.Status.Upgrade; up != nil && up.Migrate && up.Phase == upgrade.PhaseCanary &&
+		up.Group == group.Name && up.To == platform.Spec.Node.Image && image == up.To {
+		document.Catalog.Migrate = true
+	}
+	if platform.Spec.FirstPolicy != nil {
+		policy, err := build.FirstPolicy(platform, groups)
+		if err != nil {
+			return document, err
+		}
+		document.FirstPolicy = policy
+	}
+	return document, document.Validate()
 }
 
 // heartbeat keeps a pod's report as its Lease: renewed, with a summary in its annotations.
