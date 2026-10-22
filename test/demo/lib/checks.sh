@@ -301,7 +301,7 @@ tracing_is() {
 
 check_console() {
 	step "4c. the console (spec 003): the fleet, a node's sessions and actions, a group's scale - each judged by the ACL"
-	local out me pod id held a b
+	local out me pod id held a b version
 	rm -f "$WORK/ports/console"
 	a="$(first_pod a)"
 	b="$(first_pod b)"
@@ -422,6 +422,20 @@ check_console() {
 	json_true "$out" "r['served'] and r['document']['node_group'] == 'a' and r['document']['node_label'] == '<pod>' and r['document']['tresor']['host'] == a[0] and r['document']['tresor']['identity']['client_id'] == a[1] and sorted(g['name'] for g in r['document']['first_policy']['resource_groups']) == ['a', 'b']" \
 		"$TRESOR_HOST" "$(group_client_id a)" || fail "group a's bootstrap document: $out"
 	ok "group a's bootstrap in the console: the document its nodes are served - the platform's tresor, the group's identity, the first policy's groups a and b"
+
+	# the profile from the console's form (spec 010 stage 2): a source for group b's nodes attached, then detached - each
+	# one CLUSTER statement the console built and a node judged, hot; the profile lists it between the two
+	out="$(console_api admin POST cluster/profile '{"action": "attach", "path": ":memory:", "alias": "console_scratch", "type": "duckdb", "group": "b"}')" ||
+		fail "the profile's attach from the console"
+	json_true "$out" "r['class'] == 'hot' and r['version'] > 0" || fail "the profile's attach from the console: $out"
+	version="$(json_get "$out" "r['version']")"
+	out="$(console_api admin GET cluster)" || fail "the cluster's profile"
+	json_true "$out" "any(i.get('name') == 'console_scratch' for i in r['profile']['rows'])" ||
+		fail "the profile lists no console_scratch of group b: $out"
+	out="$(console_api admin POST cluster/profile '{"action": "detach", "alias": "console_scratch", "group": "b"}')" ||
+		fail "the profile's detach from the console"
+	json_true "$out" "r['class'] == 'hot' and r['version'] > int(a[0])" "$version" || fail "the profile's detach: $out"
+	ok "the profile changed from the console's form: console_scratch attached for group b (version $version), listed, detached"
 
 	# the doors through tresor (spec 009): tresor's discovery answered under the console's own /tresor, and the doors'
 	# secret hugr-init wrote gives the admin a token tresor mints for the nodes - which the node behind the console takes

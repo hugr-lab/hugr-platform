@@ -167,6 +167,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST "+APIPrefix+"nodes/{label}/sessions/{id}/tracing",
 		s.person(func(r Rights) bool { return r.Tracing }, s.tracing))
 	mux.Handle("GET "+APIPrefix+"cluster", s.person(fleetRight, s.cluster))
+	// spec 010 stage 2: the profile changed by a CLUSTER statement, the cluster bundle's; the node judges it again
+	mux.Handle("POST "+APIPrefix+"cluster/profile", s.person(func(r Rights) bool { return r.Infrastructure }, s.changeProfile))
 	// the console keeps no session on a node (each call is one of its own): signing out forgets the rights it read
 	mux.Handle("POST "+APIPrefix+"sign-out", s.bearer(s.signOut))
 	mux.HandleFunc(APIPrefix, func(w http.ResponseWriter, _ *http.Request) {

@@ -214,6 +214,8 @@ test('a group\'s bootstrap: the document its nodes are handed (spec 010)', async
   await expect(admin.getByRole('alert')).toHaveCount(0)
   await expect(section.getByLabel('First policy')).toHaveCount(0)
   await expect(section.getByText('A standalone node keeps no cluster profile', { exact: false })).toBeVisible()
+  // and nothing to change there (spec 010 stage 2): the profile's forms are a cluster node's
+  await expect(section.getByRole('button', { name: /^Change for/ })).toHaveCount(0)
   await section.getByText('The document as a node receives it').click()
   await expect(section.getByText(/"node_label": "<pod>"/)).toBeVisible()
   await shot(admin, 'bootstrap')

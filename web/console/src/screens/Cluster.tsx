@@ -2,11 +2,16 @@ import { useState } from 'react'
 import { Header, Out, Problem, Refresh, Segmented, Status } from '../components/ui'
 import { useApp, useLoad } from '../lib/context'
 import { home, linksOf, sentence } from '../lib/format'
+import { ProfileDialog } from './ProfileDialog'
 
-/** the cluster's settings, read only (spec 003 round 2, Q10): the profile, where telemetry and lineage go */
+/** the cluster's settings (spec 003 round 2, Q10): the profile, changed by the cluster bundle (spec 010), and where
+ * telemetry and lineage go */
 export function Cluster() {
-  const { api } = useApp()
+  const { api, rights } = useApp()
   const page = useLoad(() => api.cluster(), [api])
+  const [changing, setChanging] = useState(false)
+  // a standalone node keeps no profile: nothing to change there
+  const mayChange = rights.infrastructure && rights.deployment !== 'standalone'
   const [scope, setScope] = useState('all')
   const profile = page.data?.profile
   const scopes = ['all', ...new Set((profile?.rows ?? []).map((r) => String(r.scope)))]
@@ -17,8 +22,14 @@ export function Cluster() {
   return (
     <>
       <Header title="Cluster"
-        lead={<>What every node is built from, and where its telemetry and lineage go. Read only here: the profile is written with <span className="mono">ACL CLUSTER</span> statements, the receivers by a passthrough administrator.</>}
-        actions={<Refresh at={page.at} loading={page.loading} onClick={page.reload} />} />
+        lead={<>What every node is built from, and where its telemetry and lineage go. The profile is written by <span className="mono">CLUSTER</span> statements - here one form each, judged by a node; the receivers by a passthrough administrator.</>}
+        actions={
+          <div className="flex flex-wrap items-center gap-4">
+            <Refresh at={page.at} loading={page.loading} onClick={page.reload} />
+            {mayChange && <button type="button" className="btn-outline" onClick={() => setChanging(true)}>Change the profile</button>}
+          </div>
+        } />
+      {changing && <ProfileDialog onDone={(changed) => { setChanging(false); if (changed) page.reload() }} />}
       {page.error !== undefined && <Problem error={page.error} />}
       {page.data && (
         <>
