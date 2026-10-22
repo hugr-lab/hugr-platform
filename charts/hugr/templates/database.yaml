@@ -1,0 +1,104 @@
+{{/* Its own policy catalog database (spec 005 step 3, install.catalogDatabase): one PostgreSQL 18 pod, light like the
+own tresor and kista - a StatefulSet with a volume, TLS from the database's CA (services-ca.yaml, the certificate
+database-tls), the superuser's password made once by hugr-init (postgres-superuser). hugr-init then makes the catalog's
+database and login on it, as on a given server. Only the platform's namespace reaches it. */}}
+{{- if .Values.install.catalogDatabase }}
+{{- $db := .Values.catalogDatabase }}
+{{- $ns := .Values.global.namespaces.database }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  selector: {app.kubernetes.io/name: postgres, app.kubernetes.io/component: database}
+  ports:
+    - {name: postgres, port: 5432, targetPort: postgres}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: postgres, app.kubernetes.io/component: database}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+        {{- include "hugr.umbrella.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        # the image's postgres user: the volume and the key are its group's
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: postgres
+          image: "{{ $db.image.repository }}:{{ $db.image.tag }}"
+          imagePullPolicy: {{ $db.image.pullPolicy }}
+          args: [-c, ssl=on, -c, ssl_cert_file=/var/run/postgres/tls/tls.crt, -c,
+                 ssl_key_file=/var/run/postgres/tls/tls.key, -c, password_encryption=scram-sha-256]
+          env:
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: postgres-superuser, key: password}}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          readinessProbe:
+            exec: {command: [pg_isready, -U, postgres, -h, 127.0.0.1]}
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            {{- toYaml $db.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+            - {name: tls, mountPath: /var/run/postgres/tls, readOnly: true}
+            - {name: run, mountPath: /var/run/postgresql}
+      volumes:
+        # PostgreSQL takes a key owned by root only at mode 0640, readable by its group
+        - name: tls
+          secret: {secretName: database-tls, defaultMode: 0640}
+        - name: run
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $db.storage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: {requests: {storage: {{ $db.storage.size }}}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: {{ $ns }}
+  labels:
+    {{- include "hugr.umbrella.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: postgres, app.kubernetes.io/component: database}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace }}}
+      ports:
+        - {protocol: TCP, port: 5432}
+{{- end }}

@@ -540,13 +540,11 @@ check_no_secrets() {
 		k -n hugr logs deploy/hugr-platform --tail -1
 		k -n hugr logs -l app.kubernetes.io/name=hugr-front --tail -1 --prefix
 		k -n hugr logs job/demo-seed --tail -1
-		# hugr-init's databases phase (its catalog phase's Job is gone once it succeeded)
+		# hugr-init's Jobs still there (its catalog phase's Job is gone once it succeeded)
 		k -n hugr logs -l app.kubernetes.io/component=init --tail -1 --prefix
 		# the stack's services; OpenBao's dev mode prints its own root token, on purpose (spec 004): its namespace is
 		# not read
-		# the internal OpenBao's (its server prints no token outside dev mode) and its Job
-		k -n "$OPENBAO_NS" logs -l app.kubernetes.io/component=init --tail -1 --prefix 2>/dev/null || true
-		for ns in idp "$TRESOR_NS" "$KISTA_NS" "$OPENBAO_NS" db; do
+		for ns in idp "$TRESOR_NS" "$KISTA_NS" db; do
 			for pod in $(k -n "$ns" get pods -o jsonpath='{.items[*].metadata.name}'); do
 				k -n "$ns" logs "$pod" --all-containers 2>/dev/null || true
 			done
@@ -567,30 +565,24 @@ check_no_secrets() {
 	ok "no secret of the run, no token, no private key in any log of the run (the nodes' from their start), the events or the namespace's resources; the seed's SQL is gone"
 }
 
-# check_upgrade: the release upgraded to itself (spec 008's first step): every Job of the umbrella runs again - the
-# databases phase without the administrator's Secret (the catalog phase deleted it), the internal OpenBao's by its own
-# login - and makes nothing twice; the platform serves throughout
+# check_upgrade: the release upgraded to itself (spec 008's first step): the CRDs' pre-upgrade hook applies the
+# release's CRDs, hugr-init's catalog phase runs again and makes nothing twice; the platform serves throughout
 check_upgrade() {
-	step "11. an upgrade of the release to itself: every Job runs again, nothing is made twice, the platform serves"
-	local revision want=2 out
+	step "11. an upgrade of the release to itself: the CRDs applied before it, nothing made twice, the platform serves"
+	local revision out
 	revision="$(helm_ status hugr -n hugr -o json | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"] + 1)')"
 	chart_release
-	k -n hugr wait --for=condition=complete "job/hugr-init-db-$revision" --timeout=300s >/dev/null ||
-		fail "the databases Job of revision $revision"
-	[ "$KEYS_MODE" = external ] || want=3
-	out="$(k -n hugr logs "job/hugr-init-db-$revision" 2>&1)"
-	[ "$(grep -c 'made already: left as it is' <<<"$out")" = "$want" ] ||
-		fail "the databases Job of revision $revision did not leave the $want services' logins as they were: $(redact <<<"$out")"
-	if [ "$KEYS_MODE" = internal ]; then
-		k -n "$OPENBAO_NS" wait --for=condition=complete "job/hugr-openbao-init-$revision" --timeout=300s >/dev/null ||
-			fail "the OpenBao Job of revision $revision"
-		out="$(k -n "$OPENBAO_NS" logs "job/hugr-openbao-init-$revision" 2>&1)"
-		grep -q "holds the services' keys" <<<"$out" && ! grep -q 'OpenBao initialised' <<<"$out" ||
-			fail "the OpenBao Job of revision $revision did not configure by its own login: $(redact <<<"$out")"
-	fi
+	[ "$(helm_ status hugr -n hugr -o json | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')" = "$revision" ] ||
+		fail "the release is not at revision $revision"
+	# the hook's resources are gone after it succeeded (hook-succeeded): its CRDs' field manager says it ran
+	k get crd hugrplatforms.platform.hugr.io --show-managed-fields -o json | python3 -c '
+import json, sys
+managers = {f["manager"] for f in json.load(sys.stdin)["metadata"]["managedFields"]}
+sys.exit(0 if "hugr-init" in managers else 1)' || fail "the CRDs were not applied by the pre-upgrade hook"
+	! k get clusterrole hugr-hugr-crds >/dev/null 2>&1 || fail "the hook's right outlived the upgrade"
 	out="$(as analyst-a "$(first_pod a)" "SELECT count(*) FROM orders")" || fail "analyst_a's read after the upgrade"
 	[ "$out" = 3 ] || fail "analyst_a after the upgrade: $out"
-	ok "revision $revision: the services' databases left as they were, OpenBao configured by its own login, analyst_a still reads"
+	ok "revision $revision: the CRDs applied by the pre-upgrade hook (its right gone after), analyst_a still reads"
 }
 
 # check_rollout: a new node image - the same build under another name - rolls group by group (spec 008): the default

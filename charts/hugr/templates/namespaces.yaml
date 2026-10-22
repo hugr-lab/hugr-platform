@@ -1,5 +1,6 @@
-{{/* The services' namespaces (spec 005): each service in its own - tresor holds credentials and kista reaches a signing
-key, so the platform's namespace administrator is not theirs. Kept when the release goes, with their volumes. */}}
+{{/* The own parts' namespaces (spec 005): each in its own - tresor holds credentials, kista a signing key, the
+database the catalog - so the platform's namespace administrator is not theirs. Kept when the release goes, with their
+volumes. */}}
 {{- range $svc, $ns := include "hugr.umbrella.services" . | fromYaml }}
 ---
 apiVersion: v1

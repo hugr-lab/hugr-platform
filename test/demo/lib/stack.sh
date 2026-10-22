@@ -1,21 +1,17 @@
 # shellcheck shell=bash
 # The demo's services outside the platform (spec 004, spec 005): the PostgreSQL server the umbrella chart takes as the
-# organisation's (its database.mode external), the source sales, and - with HUGR_DEMO_KEYS=external - a vault standing
-# in for the organisation's. tresor-server, kista and the internal OpenBao (keys.mode internal, the default) are the
-# umbrella's (platform.sh). Each made again by a run; its secrets are the run's (secret_value), held in
-# Kubernetes Secrets of the demo's cluster, never printed.
+# organisation's (global.database.host), the source sales, and a vault standing in for the organisation's, which
+# tresor-server and kista - installed by their own charts (services.sh) - keep their keys in. Each made again by a run;
+# its secrets are the run's (secret_value), held in Kubernetes Secrets of the demo's cluster, never printed.
 
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18}"
-# the umbrella's services: tresor in hugr-tresor, kista (the release's, hugr-kista) in hugr-kista
+# the platform's services, by their own charts (services.sh): tresor in hugr-tresor, kista (its release hugr-kista) in
+# hugr-kista
 TRESOR_NS=hugr-tresor
 KISTA_NS=hugr-kista
-OPENBAO_NS=hugr-openbao
 TRESOR_HOST="tresor.$TRESOR_NS.svc:443"
 KISTA_PREFIX="https://hugr-kista.$KISTA_NS.svc/hugr/platform"
 GROUPS_=(a b)
-# the umbrella's key store: internal (its OpenBao, the default) or external (the demo's OpenBao as the organisation's)
-KEYS_MODE="${HUGR_DEMO_KEYS:-internal}"
-case "$KEYS_MODE" in internal | external) ;; *) fail "HUGR_DEMO_KEYS is internal or external, not $KEYS_MODE" ;; esac
 NODE_CPU="${HUGR_DEMO_NODE_CPU:-1}"
 
 install_db() {
@@ -83,11 +79,11 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO sales_reader;
 GRANT SELECT ON orders TO sales_reader;
 SQL
-	ok "PostgreSQL in db, TLS by the run's CA: the source sales.orders (sales_reader); the catalog's, tresor's and kista's databases and logins are hugr-init's"
+	ok "PostgreSQL in db, TLS by the run's CA: the source sales.orders (sales_reader); tresor's and kista's databases are their installs', the catalog's hugr-init's"
 }
 
-# drop_databases: the catalog's, tresor's, kista's and the internal OpenBao's databases and logins, for an install
-# afresh (hugr-init makes them again)
+# drop_databases: the catalog's, tresor's and kista's databases and logins (and an older run's OpenBao's), for an install
+# afresh (hugr-init and services.sh make them again)
 drop_databases() {
 	local name
 	for name in hugr:hugr_catalog tresor:tresor kista:kista openbao:openbao; do
@@ -99,18 +95,13 @@ drop_databases() {
 }
 
 # --- the organisation's vault: OpenBao, the services' Transit keys and their Kubernetes-auth roles -------------------
-# What the umbrella's keys.mode external asks the organisation for (spec 005): kista signs its channel with
-# hugr-channel, tresor wraps its data keys with hugr-tresor, each logging in by its own ServiceAccount's token.
+# What tresor-server and kista, installed by their own charts, take from the organisation's vault: kista signs its
+# channel with hugr-channel, tresor wraps its data keys with hugr-tresor, each logging in by its own ServiceAccount's
+# token.
 OPENBAO_IMAGE="${OPENBAO_IMAGE:-openbao/openbao:2.7.1}"
 VAULT_ADDRESS="https://openbao.openbao.svc:8200"
 
 install_vault() {
-	[ "$KEYS_MODE" = external ] || {
-		# an external run's OpenBao, left on a kept cluster
-		k delete namespace openbao --ignore-not-found --wait=false >/dev/null 2>&1 || true
-		k delete clusterrolebinding hugr-demo-openbao-tokenreview --ignore-not-found >/dev/null 2>&1 || true
-		return 0
-	}
 	step "the vault (OpenBao): the Transit keys hugr-channel and hugr-tresor, a Kubernetes-auth role for each service"
 	namespace openbao
 	ca_cert openbao openbao.openbao.svc
@@ -202,8 +193,7 @@ path "transit/hmac/hugr-tresor/sha2-256" {
 HCL
 	bao auth list | grep -q '^kubernetes/' || bao auth enable kubernetes >/dev/null
 	bao write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc >/dev/null
-	# the umbrella's ServiceAccounts: kista's is its release's hugr-kista, tresor's its fullname tresor; the audience is
-	# the umbrella's global.keys.vault.audience
+	# the services' ServiceAccounts: kista's is its release's hugr-kista, tresor's its fullname tresor (services.sh)
 	bao write auth/kubernetes/role/kista bound_service_account_names=hugr-kista \
 		bound_service_account_namespaces="$KISTA_NS" audience=vault token_policies=kista token_ttl=1h >/dev/null
 	bao write auth/kubernetes/role/tresor bound_service_account_names=tresor \
@@ -211,7 +201,7 @@ HCL
 	ok "OpenBao in openbao at $VAULT_ADDRESS: the keys hugr-channel (kista's channel) and hugr-tresor (tresor's KEK)"
 }
 
-# --- kista: the node's extensions in the channel the umbrella's bootstrap made --------------------------------------
+# --- kista: the node's extensions in the channel its bootstrap made -------------------------------------------------
 # A node built on a commit of DuckDB's runs a dev version, which no upstream mirrors: its release's extensions are
 # published by hand, as the platform's maintainers do. Until they are, a node's catalog step fails and the node
 # restarts (its bootstrap stops at the first failing step).

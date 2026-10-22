@@ -1,0 +1,12 @@
+# Over example-values.yaml: the umbrella runs its own parts - tresor, kista and the catalog's database (spec 005 step 3)
+install: {tresor: true, kista: true, catalogDatabase: true}
+global:
+  tresor: {host: ""}
+  repository: {prefix: ""}
+  database: {host: ""}
+  etcdEncryptionAtRest: true
+tresor:
+  config:
+    policy:
+      actors:
+        - {principal: "client:00000000-0000-0000-0000-000000000001", verbs: [use]}

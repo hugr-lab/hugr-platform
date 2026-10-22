@@ -66,13 +66,13 @@ provider is the only difference between the clusters:
 | --- | --- | --- |
 | `idp` | Keycloak 26.6, TLS by the run's CA | a Deployment and a realm import (below) |
 | `openbao` | OpenBao, standing in for the organisation's vault: the Transit keys `hugr-channel` (kista's channel) and `hugr-tresor` (tresor's KEK), a Kubernetes-auth role for each service's ServiceAccount | a Deployment in dev mode, in memory, TLS by the run's CA. A restarted one has new keys, which is why every `up` installs the services afresh |
-| `hugr-tresor` | tresor-server: its state on PostgreSQL, its KEK in OpenBao | the umbrella chart `charts/hugr` (spec 005), the pinned release's image |
-| `hugr-kista` | kista: the tenant `hugr`, its signed channel `platform` for the node's duckdb, the node's extensions as its releases | the umbrella chart, the pinned release's image. Its bootstrap makes the tenant, the channel, the version and the key; every asset is added by `kista admin` (one it holds answers so). Its store is on PostgreSQL, its blobs on a volume. The channel's key is in OpenBao Transit: kista refuses a key from a mounted file by design |
-| `db` | PostgreSQL 18: the databases `hugr` (the policy catalog), `tresor` and `kista`, each with its login, all made by `hugr-init` on every `up`; and a source database `sales` | a Deployment, TLS by the run's CA (everyone connects with `verify-full`). `sales_reader` may only read `sales.orders`, so the source's login, which every node may use, cannot touch the catalog |
-| `hugr` | the operator, `HugrPlatform`, the groups `a` and `b`, `hugr-init` | the umbrella chart, the operator's image built here |
+| `hugr-tresor` | tresor-server: its state on PostgreSQL, its KEK in OpenBao | its own chart, a release of its own at the umbrella's pin (spec 005 step 3: the platform takes it by its address) |
+| `hugr-kista` | kista: the tenant `hugr`, its signed channel `platform` for the node's duckdb, the node's extensions as its releases | its own chart, a release `hugr-kista` at the umbrella's pin. Its bootstrap makes the tenant, the channel, the version and the key; every asset is added by `kista admin` (one it holds answers so). Its store is on PostgreSQL, its blobs on a volume. The channel's key is in OpenBao Transit: kista refuses a key from a mounted file by design |
+| `db` | PostgreSQL 18: the databases `hugr` (the policy catalog, made by `hugr-init`), `tresor` and `kista` (made by the run for the services' installs), each with its login, on every `up`; and a source database `sales` | a Deployment, TLS by the run's CA (everyone connects with `verify-full`). `sales_reader` may only read `sales.orders`, so the source's login, which every node may use, cannot touch the catalog |
+| `hugr` | the operator, `HugrPlatform`, the groups `a` and `b`, `hugr-init` | the umbrella chart given tresor, kista and the database by their addresses, the operator's image built here |
 
-Every `up` installs the umbrella afresh. It first deletes the groups, the release, the platform's and the services'
-namespaces, and the three databases and logins. The cluster, Keycloak, OpenBao, PostgreSQL and the images stay.
+Every `up` installs the services and the umbrella afresh. It first deletes the groups, the releases, the platform's and
+the services' namespaces, and the three databases and logins. The cluster, Keycloak, OpenBao, PostgreSQL and the images stay.
 
 Every https server of the demo's own (Keycloak, OpenBao, PostgreSQL) has a certificate of a CA made for the run. The
 CA lasts 30 days and is made again two days before its end. A certificate is kept while it has a day left and names

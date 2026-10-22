@@ -22,8 +22,6 @@
 #   HUGR_DEMO_ONLY    up to a step: images, db, idp, vault, chart, platform, seed (for working on one); every run
 #                     installs the chart afresh - the services' state and the catalog with it
 #   HUGR_DEMO_NODE_CPU  a node's CPU request (1; CI's 4-core runner: 250m - the node rounds it up to 1 thread)
-#   HUGR_DEMO_KEYS    the umbrella's key store: internal (its own OpenBao, the default) or external (the demo's OpenBao
-#                     standing in for the organisation's)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$ROOT/test/demo"
@@ -45,6 +43,7 @@ trap 'stop_forwards' EXIT
 . "$HERE/lib/common.sh"
 . "$HERE/lib/images.sh"
 . "$HERE/lib/stack.sh"
+. "$HERE/lib/services.sh"
 . "$HERE/lib/seed.sh"
 . "$HERE/lib/platform.sh"
 . "$HERE/lib/checks.sh"

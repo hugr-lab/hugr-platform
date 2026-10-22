@@ -1,9 +1,9 @@
-{{/* Each service's own CA (the owner, 2026-10-21): made once at install and kept across upgrades (lookup), in the
-service's namespace; cert-manager issues and renews the service's serving certificate from it there. No private key
-leaves its namespace. The CAs' public certificates go to the platform's namespace (hugr-services-ca), into the
-platform's bundle: the nodes, the front and hugr-init trust tresor and kista by it. */}}
+{{/* Each own part's CA (the owner, 2026-10-21): made once at install and kept across upgrades (lookup), in the part's
+namespace; cert-manager issues and renews the part's serving certificate from it there. No private key leaves its
+namespace. The CAs' public certificates go to the platform's namespace (hugr-services-ca), into the platform's bundle:
+the nodes, the front and hugr-init trust the own tresor, kista and database by it; the given parts' private CAs go
+there too (hugr-private-cas). */}}
 {{- $services := include "hugr.umbrella.services" . | fromYaml }}
-{{/* every CA first: the internal OpenBao's is what tresor and kista trust as their vault's */}}
 {{- $made := dict }}
 {{- range $svc, $ns := $services }}
 {{- $name := printf "%s-ca" $svc }}
@@ -14,10 +14,6 @@ platform's bundle: the nodes, the front and hugr-init trust tresor and kista by 
 {{- $ca := genCA (printf "hugr %s CA" $svc) 3650 }}
 {{- $_ := set $made $svc (dict "crt" $ca.Cert "key" $ca.Key) }}
 {{- end }}
-{{- end }}
-{{- $vaultCA := .Values.global.keys.vault.caCert }}
-{{- if eq .Values.global.keys.mode "internal" }}
-{{- $vaultCA = (index $made "openbao").crt }}
 {{- end }}
 {{- $cas := list }}
 {{- range $svc, $ns := $services }}
@@ -68,8 +64,9 @@ spec:
   dnsNames:
     - {{ include "hugr.umbrella.serviceHost" (dict "root" $ "service" $svc) }}
     - {{ include "hugr.umbrella.serviceHost" (dict "root" $ "service" $svc) }}.cluster.local
+{{- if eq $svc "tresor" }}
 ---
-# the private CAs the service trusts (its database's, the vault's, the IdP's; public certificates, no credential)
+# the private CA tresor trusts the IdP by (a public certificate, no credential)
 apiVersion: v1
 kind: Secret
 metadata:
@@ -79,9 +76,8 @@ metadata:
     {{- include "hugr.umbrella.labels" $ | nindent 4 }}
 type: Opaque
 stringData:
-  database.crt: {{ $.Values.global.database.caCert | quote }}
-  vault.crt: {{ $vaultCA | quote }}
   idp.crt: {{ $.Values.global.idp.caCert | quote }}
+{{- end }}
 {{- end }}
 ---
 apiVersion: v1
@@ -97,7 +93,7 @@ data:
     {{- . | trim | nindent 4 }}
     {{- end }}
 ---
-# the database's and the IdP's private CAs, for the platform's bundle (an empty key adds nothing)
+# the given parts' and the IdP's private CAs, for the platform's bundle (an empty key adds nothing)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -106,5 +102,7 @@ metadata:
   labels:
     {{- include "hugr.umbrella.labels" . | nindent 4 }}
 data:
+  tresor.crt: {{ .Values.global.tresor.caCert | quote }}
+  repository.crt: {{ .Values.global.repository.caCert | quote }}
   database.crt: {{ .Values.global.database.caCert | quote }}
   idp.crt: {{ .Values.global.idp.caCert | quote }}

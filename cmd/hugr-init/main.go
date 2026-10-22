@@ -1,8 +1,7 @@
 // hugr-init is the platform's install Job (spec 005): the policy catalog's database and login, the login into tresor
 // as the catalog's secret, its grants to the groups' identities, then the database administrator's Secret deleted.
-// --phase databases (a Job of the umbrella, before the services start) makes their (tresor's, kista's) databases first.
-// --phase openbao (the umbrella's internal key store) initialises OpenBao once and gives it the services' keys,
-// policies and roles on every run.
+// --phase secrets (a Job of the umbrella) makes its own parts' secrets once: its tresor's KEK, its kista's channel key,
+// its catalog database's superuser (spec 005 step 3).
 // --phase crds (a pre-upgrade hook, spec 008) applies the release's CRDs, which Helm never upgrades from crds/.
 package main
 
@@ -27,8 +26,8 @@ import (
 func main() {
 	config := flag.String("config", "/etc/hugr-init/config.yaml", "the Job's configuration")
 	phase := flag.String("phase", "catalog",
-		"catalog (the catalog's secret, its grants), databases (the services'), openbao (the internal key store) or "+
-			"crds (the release's CRDs, before an upgrade)")
+		"catalog (the catalog's secret, its grants), secrets (the umbrella's own parts') or crds (the release's CRDs, "+
+			"before an upgrade)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(*config, *phase, log); err != nil {
@@ -39,8 +38,8 @@ func main() {
 }
 
 func run(path, phase string, log *slog.Logger) error {
-	if phase == "openbao" {
-		return runOpenBao(path, log)
+	if phase == "secrets" {
+		return runSecrets(path, log)
 	}
 	if phase == "crds" {
 		return runCRDs(log)
@@ -54,16 +53,8 @@ func run(path, phase string, log *slog.Logger) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	newDatabase := func() (initjob.Database, error) { return initjob.NewPostgres(c.Catalog, c.Tresor.CAFile) }
-	switch phase {
-	case "databases":
-		client, err := kubeClient()
-		if err != nil {
-			return err
-		}
-		return initjob.RunDatabases(ctx, c, newDatabase, initjob.KubeServiceSecrets{Client: client}, log)
-	case "catalog":
-	default:
-		return fmt.Errorf("hugr-init: --phase is catalog, databases, openbao or crds, not %q", phase)
+	if phase != "catalog" {
+		return fmt.Errorf("hugr-init: --phase is catalog, secrets or crds, not %q", phase)
 	}
 	tresor, err := initjob.NewTresor(c.Tresor.URL, c.Tresor.TokenFile, c.Tresor.CAFile)
 	if err != nil {
@@ -88,25 +79,21 @@ func run(path, phase string, log *slog.Logger) error {
 	return initjob.Run(ctx, c, tresor, newDatabase, admin, log)
 }
 
-func runOpenBao(path string, log *slog.Logger) error {
-	c, err := initjob.LoadOpenBao(path)
+// runSecrets: the umbrella's own parts' secrets, each made once (spec 005 step 3)
+func runSecrets(path string, log *slog.Logger) error {
+	c, err := initjob.LoadSecrets(path)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	bao, err := initjob.NewOpenBao(c.URL, c.CAFile)
-	if err != nil {
-		return err
-	}
 	client, err := kubeClient()
 	if err != nil {
 		return err
 	}
-	return initjob.RunOpenBao(ctx, c, bao, initjob.KubeRecovery{Client: client, Namespace: c.Namespace,
-		Name: c.RecoverySecret}, log)
+	return initjob.RunSecrets(ctx, c, initjob.KubeSecrets{Client: client}, log)
 }
 
 func kubeClient() (kubernetes.Interface, error) {
