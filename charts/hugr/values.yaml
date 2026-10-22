@@ -182,7 +182,7 @@ tresor:
 
 # --- kista (its values; config rendered through tpl) ---------------------------------------------------------------
 kista:
-  # kista 0.1.2 (its spec 0025): each string of config holding {{ rendered by tpl, within the string; one rendering
+  # kista 0.1.4 (its spec 0025): each string of config holding {{ rendered by tpl, within the string; one rendering
   # empty is refused
   configTemplate: true
   namespaceOverride: hugr-kista # = global.namespaces.kista (checked)

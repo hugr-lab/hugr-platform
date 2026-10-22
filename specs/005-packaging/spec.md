@@ -231,9 +231,14 @@ same version.
 
 - **Its dependencies:**
   - `hugr-platform`, this repository's chart, packaged together;
-  - `tresor-server` 0.7.3 and `kista` 0.1.2, from `oci://ghcr.io/hugr-lab/charts`, both signed. Both render their
+  - `tresor-server` 0.7.3 and `kista` 0.1.4, from `oci://ghcr.io/hugr-lab/charts`, both signed. Both render their
     `config` through `tpl` (`configTemplate: true`; their specs 028 and 0025), so the umbrella's values name its
     global facts there;
+    - kista 0.1.4 (2026-10-22; image `sha256:68d1ddc6…` and chart `sha256:a0037d96…`, both checked here) adds an
+      expected licence holder per tenant (its spec 0028) and licence managers (0029). Its migration 0029 makes the
+      store readable from build 29 on, so an upgrade stops every older replica first: the umbrella's kista is one
+      replica with `Recreate`, which does. It also refuses to start with a `role:`, `group:` or `client:` principal
+      among `server_admins` when its server issuer names no matching claim; the umbrella and the demo set no such list;
   - optionally `openbao`, below.
 - **The namespaces.** The release's namespace is the platform's. tresor, kista and an internal OpenBao each go into a
   namespace of their own (their charts' `namespaceOverride`): `<prefix>-tresor`, `<prefix>-kista`, `<prefix>-openbao`.
