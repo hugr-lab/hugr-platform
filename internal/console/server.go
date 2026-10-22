@@ -518,6 +518,10 @@ func personMessage(err error) string {
 // nodeProblem answers a failed node call: the node's message, never more.
 func nodeProblem(w http.ResponseWriter, err error) {
 	var refused *NodeError
+	if errors.Is(err, errTimedOut) {
+		problem(w, http.StatusGatewayTimeout, "node_timeout", "the node did not answer in time")
+		return
+	}
 	if !errors.As(err, &refused) {
 		problem(w, http.StatusServiceUnavailable, "node_unreachable", "the node does not answer")
 		return

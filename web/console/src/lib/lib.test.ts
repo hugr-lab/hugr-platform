@@ -3,6 +3,7 @@ import { Api, ApiError } from './api'
 import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
+import { caps, cell, readsPolicy } from './policy'
 import type { Fleet, Group } from './types'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -158,5 +159,32 @@ describe('a group from the console (spec 006)', () => {
     const fleet: Fleet = { plan: { maxNodes: 12, sizes: ['small'] }, newGroup: { available: true, subjectPrefix: '' },
       groups: [group({ replicas: 3 }), group({ name: 'b', replicas: 1, scaling: { mode: 'auto', min: 1, max: 5 } })] }
     expect(freeNodes(fleet)).toBe(4)
+  })
+})
+
+describe('the policy pages (spec 007)', () => {
+  it('shows a value as a cell: a list joined, a set of flags as its true ones, nothing as a dash', () => {
+    expect(cell(null)).toBe('-')
+    expect(cell(true)).toBe('yes')
+    expect(cell(['a', 'b'])).toBe('a, b')
+    expect(cell({ select: true, insert: false })).toBe('select')
+    expect(cell({ select: false })).toBe('none')
+    expect(cell({ a: 1 })).toBe('{"a":1}')
+    expect(cell(3)).toBe('3')
+  })
+  it("says what unstated caps mean, never a dash that reads as none", () => {
+    expect(caps(null, 'unstated: every data capability')).toBe('unstated: every data capability')
+    expect(caps([], 'x')).toBe('none')
+    expect(caps({ select: true }, 'x')).toBe('select')
+  })
+  it('offers the Policy by the parts a person reads', () => {
+    const r = (views: string[], functions: string[] = []) => ({ fleet: true, sessions: false, endSession: false,
+      drain: false, resume: false, tracing: false, scale: false, policy: false, infrastructure: false, events: false,
+      drift: false, profile: false, effective: false, deployment: 'cluster', bundles: [], views, functions })
+    expect(readsPolicy(r(['node_load', 'sessions']))).toBe(false)
+    expect(readsPolicy(r(['catalogs']))).toBe(true)
+    expect(readsPolicy(r(['clients']))).toBe(true)
+    expect(readsPolicy(r(['keys']))).toBe(false) // read only from a catalog's page
+    expect(readsPolicy(r([], ['exposures']))).toBe(true)
   })
 })

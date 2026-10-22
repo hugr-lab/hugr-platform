@@ -15,7 +15,7 @@ func policyReader(h *harness, info *Result) {
 		switch {
 		case statement == stmtInfo:
 			return info, nil
-		case statement == `SELECT * FROM platform."grants"`:
+		case statement == `SELECT * FROM platform."grants" LIMIT 100001`:
 			return &Result{Columns: []string{"role", "catalog", "caps"}, Rows: [][]any{
 				{"analyst", "sales", map[string]any{"select": true}}, {"analyst", "hr", nil},
 				{"admin", "sales", nil}}}, nil
@@ -64,7 +64,7 @@ func TestPolicyView(t *testing.T) {
 		}
 	}
 	for _, c := range h.nodes.calls {
-		if c.statement != stmtInfo && c.statement != `SELECT * FROM platform."grants"` {
+		if c.statement != stmtInfo && c.statement != `SELECT * FROM platform."grants" LIMIT 100001` {
 			t.Errorf("a statement not asked for: %q", c.statement)
 		}
 	}
@@ -90,6 +90,15 @@ func TestPolicyCall(t *testing.T) {
 		if code, _, _ := h.do(t, "GET", APIPrefix+path, opsToken, ""); code != want {
 			t.Errorf("%s: %d, want %d", path, code, want)
 		}
+	}
+	// a catalog as the node compares it (an ASCII fold), written in the node's spelling
+	h.do(t, "GET", APIPrefix+"policy/functions/effective_rights?role=analyst&catalog=SALES", opsToken, "")
+	if h.nodes.statements(`SELECT * FROM platform."effective_rights"('analyst', 'sales')`) != 1 {
+		t.Errorf("a catalog's spelling is the node's: %v", h.nodes.calls)
+	}
+	// a role exactly
+	if code, _, _ := h.do(t, "GET", APIPrefix+"policy/functions/effective_rights?role=ANALYST&catalog=sales", opsToken, ""); code != 422 {
+		t.Errorf("a role compares exactly: %d", code)
 	}
 	code, out, _ = h.do(t, "GET", APIPrefix+"policy/functions/exposures?source=a.b", opsToken, "")
 	if code != 200 || h.nodes.statements(`SELECT * FROM platform."exposures"('a.b')`) != 1 {
@@ -133,5 +142,38 @@ func TestKeyParts(t *testing.T) {
 		if _, ok := literal(in); ok {
 			t.Errorf("%q is not written", in)
 		}
+	}
+}
+
+func TestPolicyViewBounds(t *testing.T) {
+	h := newHarness(t, policyReaderInfo, node("hugr-node-etl-a", "etl"))
+	h.nodes.answer = func(_ fleet.Node, statement string) (*Result, error) {
+		if statement == stmtInfo {
+			return policyReaderInfo, nil
+		}
+		rows := make([][]any, viewRowsMax+1)
+		for i := range rows {
+			rows[i] = []any{"r", int64(i % 2), true}
+		}
+		return &Result{Columns: []string{"role", "pos", "flag"}, Rows: rows}, nil
+	}
+	code, out, _ := h.do(t, "GET", APIPrefix+"policy/views/grants?limit=1", opsToken, "")
+	if code != 200 || out["truncated"] != true || out["total"] != float64(viewRowsMax) {
+		t.Errorf("a view past the bound is cut there and says so: %d %v", code, out["total"])
+	}
+	// a filter on a number or a flag compares its text
+	if _, out, _ := h.do(t, "GET", APIPrefix+"policy/views/grants?pos=1&flag=true&limit=1", opsToken, ""); out["total"] != float64(viewRowsMax/2) {
+		t.Errorf("a filter on a number: %v", out["total"])
+	}
+}
+
+func TestPolicyCallNeedsItsLists(t *testing.T) {
+	// effective_rights held by name, the views its arguments are checked against not read: said, not the node's refusal
+	info := infoRow([]string{"observe"}, []string{"grants"}, []string{"effective_rights"})
+	h := newHarness(t, info, node("hugr-node-etl-a", "etl"))
+	policyReader(h, info)
+	code, out, _ := h.do(t, "GET", APIPrefix+"policy/functions/effective_rights?role=analyst&catalog=sales", opsToken, "")
+	if code != 403 || !strings.Contains(out["message"].(string), "platform.roles") {
+		t.Errorf("%d %v", code, out)
 	}
 }

@@ -91,6 +91,8 @@ func (s *Server) onNode(ctx context.Context, token string, statements ...string)
 			pick, first = n, result
 		case errors.As(err, &refused) && len(refused.Groups) > 0:
 			groups, last = refused.Groups, err
+		case errors.Is(err, errTimedOut):
+			return nil, nil, err // the node may still be at it: another would only wait as long
 		case errors.Is(err, errUnreachable), authFailed(err),
 			errors.As(err, &refused) && refused.Code == codes.Unavailable:
 			last = err

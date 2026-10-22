@@ -105,8 +105,8 @@ export class Api {
   policyView = (view: string, filters: Record<string, string> = {}, offset = 0, limit = 500) =>
     this.request<ViewPage>('GET', `policy/views/${part(view)}?${query({ ...filters, offset: String(offset), limit: String(limit) })}`)
   policySources = () => this.request<{ sources: string[] }>('GET', 'policy/sources')
-  policyCall = (fn: string, args: Record<string, string>) =>
-    this.request<ViewPage>('GET', `policy/functions/${part(fn)}?${query(args)}`)
+  policyCall = (fn: string, args: Record<string, string>, limit = 5000) =>
+    this.request<ViewPage>('GET', `policy/functions/${part(fn)}?${query({ ...args, limit: String(limit) })}`)
 }
 
 /** the config the sign-in needs, unauthenticated */

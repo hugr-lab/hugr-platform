@@ -46,7 +46,13 @@ person's own token, through `onNode` from spec 006 (it tries the next node on a 
   - a read function's arguments are names the console read first from the node (a role in `roles`, a catalog in
     `catalogs`, a source in the `attached` listing), written as quoted literals.
 - **A large catalog pages in the server.** A view is read once per request, and a page of rows is answered. The node
-  bounds a listing by `acl_metadata_max_rows`, and its refusal is shown as it says.
+  bounds no `platform` view (`acl_metadata_max_rows` is its metadata surfaces'), so the statement carries a constant
+  `LIMIT 100001`: past 100,000 rows the answer says it read the first ones.
+- **A name compares as the node compares it:** a catalog or a source with duckdb-acl's ASCII fold, a role exactly. The
+  node's spelling is written, never the browser's. A role or a catalog a grant names is listed with the created ones:
+  a grant may name a role the policy never created (an IdP's role granted directly).
+- **The slow reads** (`check_catalog`, `exposures` and the sources' listing) wait 45 s, the rest 15 s. A read that
+  timed out is not sent to another node: the first may still be at it.
 
 ### The SQL page (stage 1): DuckDB in the browser, the node through quack
 
@@ -129,7 +135,10 @@ a time on one node and stops at the first refusal, and re-reads the object first
 2. **The SQL page:** both modes, NATIVE for `passthrough` only, 1000 rows / 4 MiB.
 3. **View-as** is not in stage 1: maybe stage 2, maybe the DBeaver client's alone.
 4. **The SQL page runs in the browser:** duckdb-wasm through the quack door (acl is not in wasm), which also tries the
-   embedding. The sign-in is the console's token for now, tresor's when its flows reach the browser.
+   embedding. Stage 1's sign-in is the console's own token in a quack secret ("natively", the owner). tresor in the
+   browser is a general scenario, relayed to tresor (2026-10-22): a user of any client (the DBeaver client, the CLI,
+   duckdb-wasm embedded in any site that signs its users in by OIDC) reaches their tresor secrets; in an embedding,
+   with no second sign-in, by an exchange of the site's token. What tresor lacks today is listed under Follow-ups.
 
 5. **duckdb-wasm on v2.0.0** (in its main since 2026-10-21, not yet on npm): built in our CI from a pinned commit of
    their main and served by the console, until their npm package is published (proposed, the owner started the work
@@ -149,5 +158,12 @@ a time on one node and stops at the first refusal, and re-reads the object first
 ## Follow-ups
 
 - Stage 2: the editors, the data grid, maybe view-as.
-- tresor's flows in the browser, for the SQL page's sign-in.
+- tresor in the browser (relayed to tresor 2026-10-22, verified in its code):
+  - its wasm build still links OpenSSL and sockets (`tresor_sources.cmake`), and wasm is out of its distribution;
+  - `FLOW 'token'` cannot renew or swap the token in an attached session;
+  - its helper `attachTresor` (its spec 020) signs the user in again with its own client;
+  - tresor-server's discovery names its in-cluster `public_url`, which a browser behind the console's mount cannot
+    reach.
+
+  Ours, when it comes: the mount of `/.well-known/duckdb-secrets` and the CSP.
 - A DDL / export tab, when duckdb-acl 120.4 lands (the DBeaver client waits for it too).

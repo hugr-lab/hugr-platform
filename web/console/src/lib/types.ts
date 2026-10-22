@@ -51,6 +51,8 @@ export interface ViewPage {
   columns: string[]
   rows: Record<string, unknown>[]
   total: number
+  /** the view held more than the console reads: total counts what it read */
+  truncated?: boolean
 }
 
 export interface NodeInfo {
