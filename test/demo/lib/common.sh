@@ -80,13 +80,12 @@ diagnose() {
 		k -n hugr logs deploy/hugr-platform --tail 100
 		k -n hugr logs -l app.kubernetes.io/component=init --tail 40 --prefix
 		local ns
-		for ns in hugr-tresor hugr-kista; do
+		for ns in "$TRESOR_NS" "$KISTA_NS"; do
 			echo "== $ns"
-			k -n "$ns" logs -l app.kubernetes.io/instance=hugr --tail 40 --prefix
+			k -n "$ns" logs -l app.kubernetes.io/name --tail 40 --prefix
 		done
-		echo "== hugr-openbao"
-		k -n hugr-openbao logs -l app.kubernetes.io/name=openbao --tail 40 --prefix
-		k -n hugr-openbao logs -l app.kubernetes.io/component=init --tail 40 --prefix
+		echo "== openbao"
+		k -n openbao logs -l app=openbao --tail 40 --prefix
 		local pod
 		for pod in $(k -n hugr get pods -l platform.hugr.io/group -o jsonpath='{.items[*].metadata.name}'); do
 			echo "== $pod"
