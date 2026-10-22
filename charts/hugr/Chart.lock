@@ -7,6 +7,6 @@ dependencies:
   version: 0.7.3
 - name: kista
   repository: oci://ghcr.io/hugr-lab/charts
-  version: 0.1.2
-digest: sha256:3a9cedd115cd3386d99fdf5223461846b618ac7c4b8aff2b1df847e8325b44f2
-generated: "2026-10-21T17:09:27.119512+02:00"
+  version: 0.1.4
+digest: sha256:da3ae72b63cbfad8fafd0b73c2440f12ee92f68c63a0efc2804ab2c1dc7b6134
+generated: "2026-10-22T07:18:59.127648+02:00"
