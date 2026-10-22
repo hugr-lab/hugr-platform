@@ -1,19 +1,27 @@
 # spec 007: DuckDB in the console's SQL page - duckdb-wasm on DuckDB v2.0.0, built from a pinned commit of its main
-# (web/console/duckdb-wasm.pin) until its npm package is published. The bindings can LOAD extensions, checking their
-# signature (quack from the DuckDB repository); the npm tarball is a release asset the console's package-lock names
-# by its integrity. A PR builds it; main publishes it once per pin.
+# (web/console/duckdb-wasm.pin) until its npm package is published, its bindings able to LOAD extensions. With it, in
+# the package's dist/extensions/, quack for wasm_eh built at web/console/quack.pin with one change
+# (web/console/quack-wasm.patch: no heartbeat thread without pthreads, duckdb/duckdb-quack#328) - the page loads it
+# unsigned from the console's own origin. The npm tarball is a release asset the console's package-lock names by its
+# integrity. A PR builds it; main publishes it once per pin.
 name: duckdb-wasm
 on:
   push:
     branches: [main]
-    paths: [web/console/duckdb-wasm.pin, .github/workflows/duckdb-wasm.yml]
+    paths: [web/console/duckdb-wasm.pin, web/console/quack.pin, web/console/quack-wasm.patch,
+      .github/workflows/duckdb-wasm.yml]
   pull_request:
-    paths: [web/console/duckdb-wasm.pin, .github/workflows/duckdb-wasm.yml]
+    paths: [web/console/duckdb-wasm.pin, web/console/quack.pin, web/console/quack-wasm.patch,
+      .github/workflows/duckdb-wasm.yml]
   workflow_dispatch:
 permissions:
   contents: read
 env:
   EMSCRIPTEN_VERSION: '6.0.9' # duckdb-wasm's own, at the pin
+  # the extensions': DuckDB builds them with extension-ci-tools' emscripten and vcpkg for v2.0 (a wasm_eh side module
+  # loads into a main module of another emscripten; a threads one does not, duckdb/duckdb-quack#328)
+  EXTENSIONS_EMSCRIPTEN_VERSION: '3.1.71'
+  VCPKG_COMMIT: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
 concurrency:
   group: duckdb-wasm-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -22,6 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       ref: ${{ steps.pin.outputs.ref }}
+      quack: ${{ steps.pin.outputs.quack }}
       tag: ${{ steps.pin.outputs.tag }}
     steps:
     - uses: actions/checkout@v4
@@ -29,8 +38,12 @@ jobs:
       run: |
         ref="$(tr -d ' \n' < web/console/duckdb-wasm.pin)"
         [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the pin is a commit of duckdb/duckdb-wasm"; exit 1; }
+        quack="$(tr -d ' \n' < web/console/quack.pin)"
+        [[ "$quack" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the quack pin is a commit of duckdb/duckdb-quack"; exit 1; }
         echo "ref=$ref" >>"$GITHUB_OUTPUT"
-        echo "tag=duckdb-wasm-${ref:0:12}" >>"$GITHUB_OUTPUT"
+        echo "quack=$quack" >>"$GITHUB_OUTPUT"
+        # one release per pair of pins and the patch
+        echo "tag=duckdb-wasm-${ref:0:12}-quack-${quack:0:7}-$(sha256sum web/console/quack-wasm.patch | cut -c1-8)" >>"$GITHUB_OUTPUT"
 
   bindings:
     needs: pin
@@ -72,8 +85,53 @@ jobs:
         if-no-files-found: error
         retention-days: 3
 
+  quack:
+    needs: pin
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_TARGET_TRIPLET: wasm32-emscripten
+      VCPKG_HOST_TRIPLET: x64-linux
+      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      DUCKDB_PLATFORM: wasm_eh
+      OVERRIDE_GIT_DESCRIBE: v2.0.0
+      GEN: ninja
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: platform
+    - uses: actions/checkout@v4
+      with:
+        repository: duckdb/duckdb-quack
+        ref: ${{ needs.pin.outputs.quack }}
+        path: quack
+        submodules: true
+    - name: DuckDB v2.0.0 under quack, and the patch
+      working-directory: quack
+      run: |
+        git -C duckdb fetch --depth 1 origin tag v2.0.0
+        git -C duckdb checkout --detach v2.0.0
+        git apply ../platform/web/console/quack-wasm.patch
+    - run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+    - uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: ${{ env.EXTENSIONS_EMSCRIPTEN_VERSION }}
+    - name: vcpkg at DuckDB v2.0's commit
+      run: |
+        git clone https://github.com/microsoft/vcpkg.git vcpkg
+        git -C vcpkg checkout "$VCPKG_COMMIT"
+        ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+    - name: Build quack for wasm_eh
+      working-directory: quack
+      run: make wasm_eh
+    - uses: actions/upload-artifact@v4
+      with:
+        name: quack
+        path: quack/build/wasm_eh/extension/quack/quack.duckdb_extension.wasm
+        if-no-files-found: error
+        retention-days: 3
+
   package:
-    needs: [pin, bindings]
+    needs: [pin, bindings, quack]
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
@@ -88,8 +146,13 @@ jobs:
         pattern: bindings-*
         path: packages/duckdb-wasm/src/bindings/
         merge-multiple: true
+    - uses: actions/download-artifact@v4
+      with:
+        name: quack
+        path: packages/duckdb-wasm/dist/extensions/
     - run: yarn install --frozen-lockfile
     - run: yarn workspace @duckdb/duckdb-wasm build:release
+    - run: test -s packages/duckdb-wasm/dist/extensions/quack.duckdb_extension.wasm
     - name: Pack
       env:
         TAG: ${{ needs.pin.outputs.tag }}
@@ -129,4 +192,4 @@ jobs:
         fi
         gh release create "$TAG" out/* -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
           --title "duckdb-wasm at $REF (DuckDB v2.0.0)" \
-          --notes "duckdb-wasm built from duckdb/duckdb-wasm@$REF on DuckDB v2.0.0, its bindings able to LOAD signed extensions - the console's SQL page (spec 007) until duckdb-wasm publishes its own."
+          --notes "duckdb-wasm built from duckdb/duckdb-wasm@$REF on DuckDB v2.0.0, its bindings able to LOAD extensions, with quack for wasm_eh built with web/console/quack-wasm.patch (duckdb/duckdb-quack#328) - the console's SQL page (spec 007) until duckdb-wasm publishes its own and quack connects without threads."
