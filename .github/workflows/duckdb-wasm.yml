@@ -94,7 +94,7 @@ jobs:
       VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       DUCKDB_PLATFORM: wasm_eh
       OVERRIDE_GIT_DESCRIBE: v2.0.0
-      GEN: ninja
+      # no GEN: the wasm targets of extension-ci-tools build with emmake make
     steps:
     - uses: actions/checkout@v4
       with:
