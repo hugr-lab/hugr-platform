@@ -175,6 +175,12 @@ test('a statement through the platform\'s quack door, from DuckDB in the page (s
   await admin.getByRole('button', { name: 'Run' }).click()
   const answer = admin.getByRole('region', { name: 'The answer' })
   await expect(answer.getByRole('cell', { name: '42', exact: true })).toBeVisible({ timeout: 90_000 })
+  // values as DuckDB writes them: a DECIMAL's scale, a date, a list, a 64-bit integer whole; a column named toJSON
+  await admin.getByLabel('Statement').fill("SELECT 1.5 AS d, DATE '2020-01-01' AS day, range(3) AS l, hash('a') AS h, 1 AS toJSON")
+  await admin.getByRole('button', { name: 'Run' }).click()
+  for (const v of ['1.5', '2020-01-01', '[0, 1, 2]', '12561829011207016135'])
+    await expect(answer.getByRole('cell', { name: v, exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(answer.getByRole('columnheader', { name: 'toJSON', exact: true })).toBeVisible()
   // the break-glass door: plain SQL on the node's physical databases
   await admin.getByText('ACL NATIVE', { exact: true }).click()
   await admin.getByLabel('Statement').fill('SELECT count(*) AS n FROM phys.main.t')

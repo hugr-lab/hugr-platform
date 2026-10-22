@@ -41,7 +41,8 @@ export default defineConfig({
   },
   server: {
     // npm run dev against an operator's console (CONSOLE_URL, default https://localhost:8444)
-    proxy: { '/api': { target: process.env.CONSOLE_URL ?? 'https://localhost:8444', secure: false } },
+    proxy: Object.fromEntries(['/api', '/quack', '/.well-known/quack-auth'].map((path) =>
+      [path, { target: process.env.CONSOLE_URL ?? 'https://localhost:8444', secure: false }])),
   },
   test: { environment: 'jsdom', include: ['src/**/*.test.{ts,tsx}'] }, // e2e/ is Playwright's
 })

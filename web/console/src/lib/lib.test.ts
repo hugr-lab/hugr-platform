@@ -201,14 +201,14 @@ describe('the SQL page (spec 007)', () => {
     expect(literal("o'hara")).toBe("'o''hara'")
   })
   it('cuts an answer at its rows or its bytes, whole rows only, and says so', () => {
-    const many = Array.from({ length: ROWS_MAX + 1 }, (_, i) => [i])
+    const many = Array.from({ length: ROWS_MAX + 1 }, (_, i) => [String(i)])
     const rows = bounded(['n'], many)
     expect(rows.rows.length).toBe(ROWS_MAX)
     expect(rows.cut).toBe(`the first ${ROWS_MAX} rows`)
     const wide = Array.from({ length: 10 }, () => ['x'.repeat(BYTES_MAX / 4)])
     const bytes = bounded(['t'], wide)
-    expect(bytes.rows.length).toBe(3)
+    expect(bytes.rows.length).toBe(4) // four quarters fit exactly; the fifth is past the bound
     expect(bytes.cut).toMatch(/MiB/)
-    expect(bounded(['n'], [[1], [2]]).cut).toBeUndefined()
+    expect(bounded(['n'], [['1'], [null]]).cut).toBeUndefined()
   })
 })

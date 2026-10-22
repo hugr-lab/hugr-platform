@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Boundary } from './components/Boundary'
 import { Shell } from './components/Shell'
 import { Api, ApiError } from './lib/api'
 import type { Session } from './lib/auth'
@@ -64,6 +65,7 @@ export function App({ config, session }: { config: Config; session: Session }) {
     <AppContext.Provider value={{ config, session, api, rights }}>
       <BrowserRouter>
         <Shell>
+          <PageBoundary>
           <Routes>
             {rights.fleet && <Route path="/" element={<Fleet />} />}
             {rights.fleet && <Route path="/groups/:name" element={<Group />} />}
@@ -91,6 +93,7 @@ export function App({ config, session }: { config: Config; session: Session }) {
             {config.mounts.kista && <Route path="/extensions/*" element={<Mounted which="kista" basePath="/extensions" />} />}
             <Route path="*" element={rights.fleet ? <Navigate to="/" replace /> : readsPolicy(rights) ? <Navigate to="/policy" replace /> : <NothingHere />} />
           </Routes>
+          </PageBoundary>
         </Shell>
       </BrowserRouter>
     </AppContext.Provider>
@@ -104,4 +107,10 @@ function NothingHere() {
       <p className="text-ink-muted">Your rights on this platform open none of the console's pages. They come from the policy; ask its administrator.</p>
     </div>
   )
+}
+
+/** a page that fails to draw says why; the console around it stays, and another page is drawn anew */
+function PageBoundary({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation()
+  return <Boundary at={pathname}>{children}</Boundary>
 }

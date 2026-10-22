@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
+
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 )
 
@@ -33,6 +35,11 @@ type Mount struct {
 	Paths []string
 	// Roots verify the service's certificate (the platform's CA bundle; nil: the system's).
 	Roots func(ctx context.Context) (*x509.CertPool, error)
+	// Unbounded: the service answers when its work is done (the quack door: a statement's first batch takes as long as
+	// the statement), so no deadline for its answer's headers.
+	Unbounded bool
+	// Log takes a failed forward (the service down, its certificate refused); the zero Logger drops it.
+	Log logr.Logger
 
 	mu        sync.Mutex
 	transport *http.Transport
@@ -61,7 +68,7 @@ func (m *Mount) client(ctx context.Context) (*http.Transport, error) {
 	m.transport = &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 60 * time.Second,
+		ResponseHeaderTimeout: m.responseTimeout(),
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConnsPerHost:   16,
 		ForceAttemptHTTP2:     true,
@@ -155,7 +162,8 @@ func (m *Mount) Handler() http.Handler {
 				res.Header.Del("Clear-Site-Data")
 				return nil
 			},
-			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+				m.Log.Info("a mounted service not reached", "prefix", m.Prefix, "error", err.Error())
 				problem(w, http.StatusBadGateway, "service_unreachable", "the service does not answer")
 			},
 		}
@@ -172,6 +180,13 @@ func (m *Mount) allowed(path string) bool {
 		}
 	}
 	return false
+}
+
+func (m *Mount) responseTimeout() time.Duration {
+	if m.Unbounded {
+		return 0
+	}
+	return 60 * time.Second
 }
 
 // TresorMount and KistaMount with the platform's paths.

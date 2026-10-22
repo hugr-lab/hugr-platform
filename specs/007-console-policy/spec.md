@@ -87,12 +87,22 @@ The node behind the door enforces the policy, as it does for any quack client.
     management grammar the person's bundles allow.
   - "NATIVE": offered only with `passthrough`. The page writes `ACL NATIVE ` in front of the statement, the break-glass
     door, where nothing is refused (the owner, 2026-10-15). The page says so above the box.
-- **The answer is capped** at 1000 rows and 4 MiB: the page stops reading the stream there, cancels the rest and says
+- **The answer is DuckDB's text**: every value cast to VARCHAR by the page's DuckDB, so a DECIMAL keeps its scale, a
+  date reads as a date, a list or a 64-bit integer as they are.
+- **The answer is capped** at 1000 rows and 4 MiB of UTF-8: the page reads it batch by batch, stops there, and says
   how much it cut.
-- **The text is the person's.** The node judges it as any client's. The console's proxy sees only quack's frames,
-  logs a request's size and the person's subject, never a statement.
-- **What it needs:** a group with its quack door open (`doors.quack`), since the front seats a quack client only on
-  such a node.
+- **The text is the person's.** The node judges it as any client's; it is a bound parameter of the page's statement,
+  never run in the page's DuckDB. The console logs no quack request - the door's audit records the sessions and the
+  statements - only a forward that failed.
+- **The door has no deadline in the console** (a PREPARE answers when its statement's first batch is ready); the
+  quack client bounds its own wait. A run outliving the person's token past its grace is refused at its next request.
+- **What it needs:**
+  - a group with its quack door open (`doors.quack`), since the front seats a quack client only on such a node;
+  - a front certificate that names `hugr-front.<namespace>.svc`, the name the console dials. The chart's internal CA
+    issues it with that name. An organisation's certificate needs the name added, or every `/quack` fails, and the
+    operator's log says why.
+- **What it opens:** `/quack` puts the front's quack door (ClusterIP by default) within reach of anyone signed in to
+  the console, with their own token and rights - as reaching the front directly would.
 
 The same embedding is what the second stage's grids read from.
 

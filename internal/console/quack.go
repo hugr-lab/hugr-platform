@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
@@ -39,10 +40,12 @@ func FrontQuackUpstream(platform func(context.Context) (*v1alpha1.HugrPlatform, 
 	}
 }
 
-// QuackMount forwards the door's paths to the front (or, for a stand, to a node's own door).
+// QuackMount forwards the door's paths to the front (or, for a stand, to a node's own door). A quack request is answered
+// when its work is done - a PREPARE when the statement's first batch is - so neither its answer nor its write has a
+// deadline here; the client bounds its own wait.
 func QuackMount(upstream func(context.Context) (*url.URL, error),
 	roots func(context.Context) (*x509.CertPool, error)) *Mount {
-	return &Mount{Prefix: "", Upstream: upstream, Paths: quackPaths, Roots: roots}
+	return &Mount{Prefix: "", Upstream: upstream, Paths: quackPaths, Roots: roots, Unbounded: true}
 }
 
 // quackDoor lets the door's requests through for a person signed in to the console, the console's token taken off
@@ -53,5 +56,7 @@ func (s *Server) quackDoor(w http.ResponseWriter, r *http.Request, _ string, _ *
 		return
 	}
 	r.Header.Del("Authorization")
+	// the console's server writes within 60 s: not a quack answer, which waits for its statement
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 	s.Quack.Handler().ServeHTTP(w, r)
 }

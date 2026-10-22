@@ -2,7 +2,6 @@
 // person - or, with passthrough, under ACL NATIVE, the break-glass door where nothing is refused.
 import { useState } from 'react'
 import { Header, Problem, Segmented } from '../components/ui'
-import { Rows } from '../components/ViewTable'
 import { useApp } from '../lib/context'
 import { ROWS_MAX, run, type Answer } from '../lib/duckdb'
 
@@ -57,9 +56,26 @@ export function Sql() {
       {error !== undefined && <Problem error={error} />}
       {answer && (
         <section aria-label="The answer" className="flex flex-col gap-3">
-          <Rows page={{ columns: answer.columns, total: answer.rows.length,
-            rows: answer.rows.map((r) => Object.fromEntries(answer.columns.map((c, i) => [c, r[i]]))) }} />
-          {answer.cut && <p role="status" className="text-sm text-ink-muted">Cut: {answer.cut}.</p>}
+          <div className="overflow-x-auto rounded-md border border-line">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr>{answer.columns.map((c, i) => <th key={i} className="th normal-case">{c}</th>)}</tr>
+              </thead>
+              <tbody>
+                {answer.rows.map((row, r) => (
+                  <tr key={r}>
+                    {row.map((v, i) => (
+                      <td key={i} className={`td mono max-w-[480px] whitespace-pre-wrap break-words align-top ${v === null ? 'text-ink-muted' : ''}`}>
+                        {v ?? 'NULL'}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {answer.rows.length === 0 && <tr><td className="td text-ink-muted" colSpan={answer.columns.length || 1}>No rows.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-sm text-ink-muted">{answer.rows.length} {answer.rows.length === 1 ? 'row' : 'rows'}{answer.cut ? `; cut: ${answer.cut}` : ''}.</p>
         </section>
       )}
     </>

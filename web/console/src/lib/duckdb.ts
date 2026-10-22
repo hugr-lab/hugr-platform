@@ -10,7 +10,8 @@ export const BYTES_MAX = 4 << 20
 
 export interface Answer {
   columns: string[]
-  rows: unknown[][]
+  /** each value as DuckDB writes it as text (NULL: null) */
+  rows: (string | null)[][]
   /** why the answer is not whole: more rows, or more bytes, than the page reads */
   cut?: string
 }
@@ -28,13 +29,16 @@ async function open(): Promise<AsyncDuckDBConnection> {
   const quack = (await import('@duckdb/duckdb-wasm/dist/extensions/quack.duckdb_extension.wasm?url')).default
   const db: AsyncDuckDB = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(script))
   await db.instantiate(wasm)
-  await db.open({ path: ':memory:', query: { castBigIntToDouble: true }, allowUnsignedExtensions: true })
+  await db.open({ path: ':memory:', allowUnsignedExtensions: true })
   const conn = await db.connect()
-  // nothing fetched from elsewhere: the page reaches its own origin only
+  // no extension from elsewhere: DuckDB-wasm would fetch a known one it autoloads, and only the CSP would stop it
   await conn.query('SET autoinstall_known_extensions = false')
+  await conn.query('SET autoload_known_extensions = false')
   for (const extension of [httpfs, quack]) {
     await conn.query(`LOAD ${literal(new URL(extension, window.location.href).href)}`)
   }
+  // nothing changes the page's DuckDB after this: no LOAD, no setting (the person's text never runs here anyway)
+  await conn.query('SET lock_configuration = true')
   return conn
 }
 
@@ -50,27 +54,37 @@ export const literal = (s: string) => `'${s.replaceAll("'", "''")}'`
 /** the statement the door runs: the person's text, behind ACL NATIVE in the break-glass mode */
 export const statementOf = (sql: string, native: boolean) => (native ? `ACL NATIVE ${sql}` : sql)
 
-/** rows of the answer up to the page's bounds: whole rows only, the cut said */
-export function bounded(columns: string[], rows: unknown[][]): Answer {
-  const out: Answer = { columns, rows: [] }
-  let bytes = 0
-  for (const row of rows) {
-    if (out.rows.length === ROWS_MAX) {
-      out.cut = `the first ${ROWS_MAX} rows`
-      break
-    }
-    bytes += JSON.stringify(row, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)).length
-    if (bytes > BYTES_MAX) {
-      out.cut = `the first ${out.rows.length} rows, ${BYTES_MAX >> 20} MiB`
-      break
-    }
-    out.rows.push(row)
+/** the text's size in bytes, as UTF-8 */
+const encoder = new TextEncoder()
+const size = (v: string | null) => (v === null ? 4 : encoder.encode(v).length)
+
+/** takes the row into the answer while it is within the page's bounds; false once cut, the cut said */
+function admit(out: Answer, row: (string | null)[], used: { bytes: number }): boolean {
+  if (out.rows.length === ROWS_MAX) {
+    out.cut = `the first ${ROWS_MAX} rows`
+    return false
   }
+  used.bytes += row.reduce((n, v) => n + size(v), 0)
+  if (used.bytes > BYTES_MAX) {
+    out.cut = `the first ${out.rows.length} rows, ${BYTES_MAX >> 20} MiB`
+    return false
+  }
+  out.rows.push(row)
+  return true
+}
+
+/** rows of the answer up to the page's bounds: whole rows only, the cut said */
+export function bounded(columns: string[], rows: Iterable<(string | null)[]>): Answer {
+  const out: Answer = { columns, rows: [] }
+  const used = { bytes: 0 }
+  for (const row of rows) if (!admit(out, row, used)) break
   return out
 }
 
 /** runs the statement through the platform's door, as the person: the token goes into the page's quack secret for the
- * door and as the console's header (the console forwards only a signed-in person's requests) */
+ * door and as the console's header (the console forwards only a signed-in person's requests). DuckDB writes every
+ * value as text (a DECIMAL's scale, a date, a list, a 64-bit integer as they are); the answer is read batch by batch and
+ * the read stops at the page's bounds. */
 export async function run(sql: string, token: string, native: boolean): Promise<Answer> {
   opened ??= open().catch((e) => {
     opened = undefined
@@ -81,12 +95,28 @@ export async function run(sql: string, token: string, native: boolean): Promise<
   await conn.query(`CREATE OR REPLACE SECRET hugr_door (TYPE quack, SCOPE ${literal(uri)}, TOKEN ${literal(token)}, ` +
     `EXTRA_HTTP_HEADERS MAP {'Authorization': ${literal('Bearer ' + token)}})`)
   // TLS as the page's own: quack goes without it to a local address by default, and the console's origin is https
-  const statement = await conn.prepare(`FROM quack_query(?, ?, disable_ssl := ?) LIMIT ${ROWS_MAX + 1}`)
+  const statement = await conn.prepare('SELECT COLUMNS(*)::VARCHAR FROM ' +
+    `(FROM quack_query(?, ?, disable_ssl := ?) LIMIT ${ROWS_MAX + 1})`)
   try {
-    const table = await statement.query(uri, statementOf(sql, native), window.location.protocol !== 'https:')
-    const columns = table.schema.fields.map((f) => f.name)
-    const rows = table.toArray().map((r) => columns.map((c) => (r as Record<string, unknown>)[c]))
-    return bounded(columns, rows)
+    const reader = await statement.send(uri, statementOf(sql, native), window.location.protocol !== 'https:')
+    let columns: string[] = []
+    const rows = async function* () {
+      for await (const batch of reader) {
+        columns = batch.schema.fields.map((f) => f.name)
+        for (let r = 0; r < batch.numRows; r++) {
+          // by index: a column named toJSON or constructor is a column, never the row's method
+          yield columns.map((_c, i) => {
+            const v = batch.getChildAt(i)?.get(r)
+            return v === null || v === undefined ? null : String(v)
+          })
+        }
+      }
+    }
+    const out: Answer = { columns: [], rows: [] }
+    const used = { bytes: 0 }
+    for await (const row of rows()) if (!admit(out, row, used)) break
+    out.columns = columns.length ? columns : reader.schema.fields.map((f) => f.name)
+    return out
   } finally {
     await statement.close()
   }
