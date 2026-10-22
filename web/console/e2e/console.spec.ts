@@ -199,3 +199,22 @@ test('a statement through the platform\'s quack door, from DuckDB in the page, i
   await expect(ops.getByText(/tresor serves you no secret for quack:127\.0\.0\.1:\d+/)).toBeVisible({ timeout: 90_000 })
   await expect(ops.getByRole('region', { name: 'The answer' })).toHaveCount(0)
 })
+
+test('a group\'s bootstrap: the document its nodes are handed (spec 010)', async ({ browser }) => {
+  const admin = await signIn(browser, 'admin', env('E2E_ADMIN_PW'))
+  await admin.getByRole('link', { name: 'etl', exact: true }).first().click()
+  const section = admin.getByRole('region', { name: 'Bootstrap' })
+  await expect(section.getByRole('heading', { name: 'Bootstrap' })).toBeVisible({ timeout: 30_000 })
+  // the stand's platform: the console's tresor, the group's identity, the repository - and the operator serves it
+  const tresor = section.getByLabel('Secrets service')
+  await expect(tresor.getByText(/^127\.0\.0\.1:\d+$/)).toBeVisible()
+  await expect(tresor.getByText('e2e-etl', { exact: true })).toBeVisible()
+  await expect(section.getByLabel('Extension repository').getByText('https://kista.invalid/corp/prod')).toBeVisible()
+  // served: no refusal anywhere on the page; the stand names no first policy; its node is a standalone one
+  await expect(admin.getByRole('alert')).toHaveCount(0)
+  await expect(section.getByLabel('First policy')).toHaveCount(0)
+  await expect(section.getByText('A standalone node keeps no cluster profile', { exact: false })).toBeVisible()
+  await section.getByText('The document as a node receives it').click()
+  await expect(section.getByText(/"node_label": "<pod>"/)).toBeVisible()
+  await shot(admin, 'bootstrap')
+})

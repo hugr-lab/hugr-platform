@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
@@ -132,6 +133,7 @@ type harness struct {
 	nodes  *fakeNodes
 	writer *fakeWriter
 	http   http.Handler
+	kube   client.Client // the platform and its groups, as a test changes them
 }
 
 func newHarness(t *testing.T, info *Result, nodes ...fleet.Node) *harness {
@@ -177,7 +179,7 @@ func newHarness(t *testing.T, info *Result, nodes ...fleet.Node) *harness {
 		Reader:   reader, Groups: w, Fleet: f, Nodes: fn, Log: logr.Discard(),
 		Now: func() time.Time { return testNow },
 	}
-	return &harness{server: s, nodes: fn, writer: w, http: s.Handler()}
+	return &harness{server: s, nodes: fn, writer: w, http: s.Handler(), kube: reader}
 }
 
 func (h *harness) do(t *testing.T, method, path, token, body string) (int, map[string]any, string) {
@@ -233,6 +235,7 @@ func TestRightsGateEveryRoute(t *testing.T) {
 		needs              *Result // the least answer that allows it
 	}{
 		{"GET", "groups", "", observeInfo},
+		{"GET", "groups/etl/bootstrap", "", observeInfo},
 		{"GET", "nodes/hugr-node-etl-a", "", observeInfo},
 		{"GET", "nodes/hugr-node-etl-a/sessions", "", observeInfo},
 		{"POST", "nodes/hugr-node-etl-a/sessions/0A1B2C3D4E5F/end", "", operateInfo},

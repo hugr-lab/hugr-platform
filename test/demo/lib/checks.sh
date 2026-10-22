@@ -416,6 +416,13 @@ check_console() {
 	json_true "$out" "'role:demo_seeder' in r['roles']" || fail "tresor's whoami of the seeder names no demo_seeder"
 	ok "tresor's console mounted (its module, its API answered the seeder through the mount); kista's module served through its mount"
 
+	# what a node starts with (spec 010): the console's document for group a is the one its nodes were served - the
+	# operator serves it (they run), naming the platform's tresor, the group's own identity and the first policy
+	out="$(console_api admin GET groups/a/bootstrap)" || fail "group a's bootstrap document"
+	json_true "$out" "r['served'] and r['document']['node_group'] == 'a' and r['document']['node_label'] == '<pod>' and r['document']['tresor']['host'] == a[0] and r['document']['tresor']['identity']['client_id'] == a[1] and sorted(g['name'] for g in r['document']['first_policy']['resource_groups']) == ['a', 'b']" \
+		"$TRESOR_HOST" "$(group_client_id a)" || fail "group a's bootstrap document: $out"
+	ok "group a's bootstrap in the console: the document its nodes are served - the platform's tresor, the group's identity, the first policy's groups a and b"
+
 	# the doors through tresor (spec 009): tresor's discovery answered under the console's own /tresor, and the doors'
 	# secret hugr-init wrote gives the admin a token tresor mints for the nodes - which the node behind the console takes
 	# as the admin's, through the policy's client for tresor

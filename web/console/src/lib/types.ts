@@ -210,6 +210,30 @@ export interface MemoryPage {
   error?: string
 }
 
+/** what a node of a group is handed at its entry (spec 010): the operator's document, as the node receives it */
+export interface BootstrapDocument {
+  version: number
+  node_group: string
+  node_label: string
+  tresor: { host: string; identity: { issuer: string; client_id: string; scope?: string } }
+  repository: { name: string; prefix: string }
+  catalog: { secret: string; schema: string; migrate?: boolean }
+  heartbeat: { interval_seconds: number }
+  first_policy?: {
+    issuer: { name: string; url: string; audiences: string[]; roles_claim: string }
+    clients: { name: string; client_id: string }[]
+    administrators: string
+    resource_groups: { name: string; default?: boolean }[]
+  }
+}
+
+export interface BootstrapPage {
+  document: BootstrapDocument
+  /** false: the operator refuses it now, and a node of the group does not start; refused says why */
+  served: boolean
+  refused?: string
+}
+
 export interface InventoryPage {
   extensions: Part
   drift: Part

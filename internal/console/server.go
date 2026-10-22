@@ -134,6 +134,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE "+APIPrefix+"groups/{group}", s.person(groupsRight, s.deleteGroup))
 	policyRight := func(r Rights) bool { return r.Policy }
 	mux.Handle("GET "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.groupPolicy))
+	// spec 010: what a node of the group starts with - names only, the fleet's
+	mux.Handle("GET "+APIPrefix+"groups/{group}/bootstrap", s.person(func(r Rights) bool { return r.Fleet }, s.groupBootstrap))
 	mux.Handle("POST "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.addGroupToPolicy))
 	mux.Handle("DELETE "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.removeGroupFromPolicy))
 	// spec 007: the policy's pages - each view and function checked against what the person reads, in the handler

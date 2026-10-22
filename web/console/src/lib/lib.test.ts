@@ -4,6 +4,7 @@ import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import { caps, cell, readsPolicy } from './policy'
+import { behind, documentParts, documentTitle } from './bootstrap'
 import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, changes, doorSecret, doorURI, enter, literal, personOf, statementOf, tresorService, type Conn } from './duckdb'
 import type { Fleet, Group } from './types'
 
@@ -282,5 +283,44 @@ describe('the door through tresor (spec 009)', () => {
       expect(() => doorSecret('quack:c.example:443', storages)).toThrow(
         /tresor serves you no secret for quack:c\.example:443: .*door\.scopes.*door\.grants/)
     }
+  })
+})
+
+describe('a group\'s bootstrap document (spec 010)', () => {
+  const d = {
+    version: 2, node_group: 'etl', node_label: '<pod>',
+    tresor: { host: 'tresor.hugr-tresor.svc:443', identity: { issuer: 'https://idp/realms/hugr', client_id: 'hugr-node-etl' } },
+    repository: { name: 'hugr', prefix: 'https://kista.example/hugr/platform' },
+    catalog: { secret: 'hugr_policy_catalog', schema: 'acl' },
+    heartbeat: { interval_seconds: 15 },
+  }
+  it('reads in the order the node uses it, nothing invented', () => {
+    const parts = documentParts(d)
+    expect(parts.map((p) => p.title)).toEqual(['Secrets service', 'Extension repository', 'Policy catalog', 'Heartbeat'])
+    expect(parts[0].rows).toEqual([['tresor', 'tresor.hugr-tresor.svc:443'], ['Identity provider', 'https://idp/realms/hugr'],
+      ['Client id', 'hugr-node-etl']])
+    expect(parts[2].rows.some(([label]) => label === 'Migration')).toBe(false)
+    expect(parts[3].rows).toEqual([['Every', '15 s'], ['Resource group', 'etl']])
+  })
+  it('says a pending migration and the first policy, the default group marked', () => {
+    const parts = documentParts({ ...d, catalog: { ...d.catalog, migrate: true },
+      tresor: { ...d.tresor, identity: { ...d.tresor.identity, scope: 'api://tresor/.default' } },
+      first_policy: { issuer: { name: 'idp', url: 'https://idp/realms/hugr', audiences: ['hugr'], roles_claim: 'roles' },
+        clients: [{ name: 'console', client_id: 'hugr-console' }], administrators: 'platform_admin',
+        resource_groups: [{ name: 'etl', default: true }, { name: 'general' }] } })
+    expect(parts[0].rows).toContainEqual(['Scope', 'api://tresor/.default'])
+    expect(parts[2].rows).toContainEqual(['Migration', "pending: this group is the rollout's canary"])
+    const policy = parts.find((p) => p.title === 'First policy')!
+    expect(policy.rows).toContainEqual(['Resource groups', 'etl (default), general'])
+    expect(policy.rows).toContainEqual(['Clients', 'console (hugr-console)'])
+  })
+  it('titles a refused document as one no node receives', () => {
+    expect(documentTitle({ document: d, served: true })).toBe('The document as a node receives it')
+    expect(documentTitle({ document: d, served: false, refused: 'x' })).toMatch(/refused now/)
+  })
+  it('names the nodes behind the profile written, not the ones that never reported', () => {
+    const n = (label: string, applied: number, leaseAge: number | null) => ({ label, applied, leaseAge }) as never
+    expect(behind([n('a', 4, 1), n('b', 3, 2), n('c', 0, null)], 4)).toEqual(['b (version 3)'])
+    expect(behind([n('a', 4, 1)], 4)).toEqual([])
   })
 })
