@@ -73,6 +73,9 @@ func Run(ctx context.Context, c *Config, tresor SecretsService, newDatabase func
 		}
 	}
 	log.Info("the catalog's login is granted", "secret", name, "principals", len(c.Tresor.Grants))
+	if err := door(ctx, c, tresor, log); err != nil {
+		return err
+	}
 	if admin != nil {
 		if err := admin.Delete(ctx); err != nil {
 			return fmt.Errorf("hugr-init: the database administrator's Secret was not deleted: %w", err)
@@ -80,6 +83,50 @@ func Run(ctx context.Context, c *Config, tresor SecretsService, newDatabase func
 		log.Info("the database administrator's Secret is deleted", "secret", c.Catalog.Admin.SecretName)
 	}
 	return nil
+}
+
+// door writes the doors' secret once (an existing one, the administrator's or an earlier run's, is left as it is) and
+// grants its use at every run, as the catalog's.
+func door(ctx context.Context, c *Config, tresor SecretsService, log *slog.Logger) error {
+	name := c.Door.Secret
+	exists, err := tresor.Exists(ctx, name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		log.Info("the doors' secret is in tresor already: left as it is", "secret", name)
+	} else {
+		err := tresor.Create(ctx, name, doorSecret(c))
+		if err != nil && !errors.Is(err, ErrExists) {
+			return fmt.Errorf("hugr-init: tresor: %w", err)
+		}
+		log.Info("the doors' secret is in tresor", "secret", name, "doors", len(c.Door.Scopes))
+	}
+	for _, principal := range c.Door.Grants {
+		if err := tresor.Grant(ctx, name, grantID(principal), principal); err != nil {
+			return fmt.Errorf("hugr-init: tresor: %w", err)
+		}
+	}
+	log.Info("the doors' secret is granted", "secret", name, "principals", len(c.Door.Grants))
+	return nil
+}
+
+// doorSecret is a quack secret of no value of its own: tresor mints its token for the reader, for the nodes'
+// audience, at each read (tresor-server's generated parameters) - as the door's token, and as the bearer the
+// console's /quack admits a signed-in person by (spec 007). One exchange makes both.
+func doorSecret(c *Config) Secret {
+	return Secret{
+		Type:     "quack",
+		Provider: "config",
+		Scope:    append([]string{}, c.Door.Scopes...),
+		Params: map[string]any{
+			"token": "mint+exchange://" + c.Door.Audience,
+			"extra_http_headers": map[string]any{"type": "MAP(VARCHAR, VARCHAR)",
+				"value": map[string]string{"Authorization": "Bearer ${exchange://" + c.Door.Audience + "}"}},
+		},
+		RedactKeys: []string{"token", "extra_http_headers"},
+		Comment:    "the platform's quack doors: a token minted for the reader, made by hugr-init (spec 009)",
+	}
 }
 
 // catalogSecret is the login as the nodes read it: a postgres secret, the password redacted. Its keys are libpq's own

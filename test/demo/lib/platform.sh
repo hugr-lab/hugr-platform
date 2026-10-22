@@ -66,7 +66,9 @@ hugr-platform:
       # data (the source, the analysts, the catalog demo) is the seed's, after
       firstPolicy:
         issuer: {name: idp, rolesClaim: "$HUGR_ROLES_CLAIM", audiences: ["$HUGR_AUDIENCE"]}
-        administrators: platform_admin
+        administrators: platform_admin$([ -z "$TRESOR_EXCHANGE_CLIENT" ] || printf '\n        %s\n        %s' \
+	"# the doors' token tresor mints for a person (spec 009): its azp is tresor's exchange client" \
+	"clients: [{name: tresor, clientID: \"$TRESOR_EXCHANGE_CLIENT\"}]")
       sizes:
         small:
           resources: {requests: {cpu: "$NODE_CPU", memory: 1Gi}, limits: {memory: 2Gi}}
@@ -77,6 +79,11 @@ hugr-platform:
   hugrInit:
     tresor:
       grants: ["$NODES_PRINCIPAL", "role:demo_seeder"]
+    # the doors' secret (spec 009): the console as the checks reach it (its Service's name) and as the stand serves it
+    # to a person's browser; the platform's administrators use it
+    door:
+      scopes: ["quack:hugr-platform-console.hugr.svc:443", "quack:127.0.0.1:$STAND_CONSOLE_PORT"]
+      grants: [role:platform_admin]
   # the run's CA lives 30 days: the doors' certificates are a day's
   groupCertificateDuration: 24h
   groups:

@@ -235,9 +235,10 @@ type ConsoleAudiences struct {
 	// Nodes is the audience of the policy's client for the console: its API and every node-side action.
 	// +kubebuilder:validation:MinLength=1
 	Nodes string `json:"nodes"`
-	// Tresor is tresor-server's, for its mounted console.
-	// +optional
-	Tresor string `json:"tresor,omitempty"`
+	// Tresor is tresor-server's: its mounted console, and the SQL page's way to the doors (spec 009) - a platform
+	// always has tresor.
+	// +kubebuilder:validation:MinLength=1
+	Tresor string `json:"tresor"`
 	// Kista is kista's, for its mounted console.
 	// +optional
 	Kista string `json:"kista,omitempty"`

@@ -91,10 +91,14 @@ spec:
                         minLength: 1
                         type: string
                       tresor:
-                        description: Tresor is tresor-server's, for its mounted console.
+                        description: |-
+                          Tresor is tresor-server's: its mounted console, and the SQL page's way to the doors (spec 009) - a platform
+                          always has tresor.
+                        minLength: 1
                         type: string
                     required:
                     - nodes
+                    - tresor
                     type: object
                   clientID:
                     description: ClientID is the console's public client at the IdP.

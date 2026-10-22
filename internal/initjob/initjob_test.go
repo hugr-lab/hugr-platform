@@ -22,44 +22,57 @@ func testConfig() *Config {
 		Catalog: CatalogConfig{Secret: "hugr_policy_catalog", Engine: "postgres", Host: "pg.db.svc", Port: 5432,
 			Database: "hugr", Login: "hugr_catalog", SSLMode: "disable",
 			Admin: AdminConfig{SecretName: "hugr-init-db-admin", Dir: "/a", Database: "postgres"}},
+		Door: DoorConfig{Secret: "hugr_door", Audience: "api://hugr",
+			Scopes: []string{"quack:console.example.org:443", "quack:hugr.example.org:9494"},
+			Grants: []string{"role:platform_admin"}},
 	}
 }
 
 // fakeTresor records what the Job asks
 type fakeTresor struct {
-	exists    bool
-	createErr error
-	grantErr  error
-	created   *Secret
-	grants    map[string]string // id -> principal
-	calls     []string
+	exists     bool // the catalog's secret
+	doorExists bool // the doors' secret
+	createErr  error
+	grantErr   error
+	created    map[string]*Secret
+	grants     map[string]map[string]string // secret -> id -> principal
+	calls      []string
 }
 
 func (f *fakeTresor) Discover(context.Context) error {
 	f.calls = append(f.calls, "discover")
 	return nil
 }
-func (f *fakeTresor) Exists(context.Context, string) (bool, error) {
+func (f *fakeTresor) Exists(_ context.Context, name string) (bool, error) {
 	f.calls = append(f.calls, "exists")
+	if name == "hugr_door" {
+		return f.doorExists, nil
+	}
 	return f.exists, nil
 }
-func (f *fakeTresor) Create(_ context.Context, _ string, s Secret) error {
+func (f *fakeTresor) Create(_ context.Context, name string, s Secret) error {
 	f.calls = append(f.calls, "create")
 	if f.createErr != nil {
 		return f.createErr
 	}
-	f.created = &s
+	if f.created == nil {
+		f.created = map[string]*Secret{}
+	}
+	f.created[name] = &s
 	return nil
 }
-func (f *fakeTresor) Grant(_ context.Context, _, id, principal string) error {
+func (f *fakeTresor) Grant(_ context.Context, name, id, principal string) error {
 	f.calls = append(f.calls, "grant")
 	if f.grantErr != nil {
 		return f.grantErr
 	}
 	if f.grants == nil {
-		f.grants = map[string]string{}
+		f.grants = map[string]map[string]string{}
 	}
-	f.grants[id] = principal
+	if f.grants[name] == nil {
+		f.grants[name] = map[string]string{}
+	}
+	f.grants[name][id] = principal
 	return nil
 }
 
@@ -95,25 +108,38 @@ func TestRunFresh(t *testing.T) {
 	if err != nil || len(raw) != 32 {
 		t.Errorf("the login's password is not 32 random bytes, base64url")
 	}
-	s := tr.created
+	s := tr.created["hugr_policy_catalog"]
 	if s == nil || s.Type != "postgres" || s.Params["password"] != db.password || s.Params["user"] != "hugr_catalog" ||
 		s.Params["host"] != "pg.db.svc" || s.Params["port"] != "5432" || s.Params["dbname"] != "hugr" ||
 		s.Params["sslmode"] != "disable" || s.Params["sslrootcert"] != nil || len(s.RedactKeys) != 1 ||
 		s.RedactKeys[0] != "password" {
 		t.Errorf("the secret written: %+v", s)
 	}
-	if len(tr.grants) != 2 {
+	if len(tr.grants["hugr_policy_catalog"]) != 2 {
 		t.Errorf("the grants: %v", tr.grants)
 	}
-	for id, p := range tr.grants {
+	for id, p := range tr.grants["hugr_policy_catalog"] {
 		if id != grantID(p) || !strings.HasPrefix(id, "hugr-init-") {
 			t.Errorf("grant %q for %q is not the Job's id", id, p)
 		}
 	}
+	// the doors' secret (spec 009): a token minted for the reader, for the nodes, sent only to the doors named
+	d := tr.created["hugr_door"]
+	headers, _ := d.Params["extra_http_headers"].(map[string]any)
+	value, _ := headers["value"].(map[string]string)
+	if d == nil || d.Type != "quack" || d.Provider != "config" || d.Params["token"] != "mint+exchange://api://hugr" ||
+		headers["type"] != "MAP(VARCHAR, VARCHAR)" || len(value) != 1 ||
+		value["Authorization"] != "Bearer ${exchange://api://hugr}" ||
+		strings.Join(d.Scope, ",") != "quack:console.example.org:443,quack:hugr.example.org:9494" || len(d.Params) != 2 {
+		t.Errorf("the doors' secret: %+v", d)
+	}
+	if g := tr.grants["hugr_door"]; len(g) != 1 || g[grantID("role:platform_admin")] != "role:platform_admin" {
+		t.Errorf("the doors' grants: %v", g)
+	}
 	if !admin.deleted {
 		t.Error("the administrator's Secret was kept")
 	}
-	if strings.Join(tr.calls, ",") != "discover,exists,create,grant,grant" {
+	if strings.Join(tr.calls, ",") != "discover,exists,create,grant,grant,exists,create,grant" {
 		t.Errorf("the order: %v", tr.calls)
 	}
 	// a verified connection: the node's CA bundle is the secret's root
@@ -123,20 +149,29 @@ func TestRunFresh(t *testing.T) {
 	}
 }
 
-// TestRunAgain: a run after the secret exists touches neither the database nor the secret, and grants again
+// TestRunAgain: a run after the secrets exist touches neither the database nor a secret, and grants again
 func TestRunAgain(t *testing.T) {
-	tr, admin := &fakeTresor{exists: true}, &fakeAdmin{}
+	tr, admin := &fakeTresor{exists: true, doorExists: true}, &fakeAdmin{}
 	made := false
 	err := Run(context.Background(), testConfig(), tr, func() (Database, error) { made = true; return &fakeDatabase{}, nil },
 		admin, quiet())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if made || tr.created != nil {
-		t.Error("a run after the secret exists made the login again")
+	if made || len(tr.created) != 0 {
+		t.Error("a run after the secrets exist made one again")
 	}
-	if len(tr.grants) != 2 || !admin.deleted {
+	if len(tr.grants["hugr_policy_catalog"]) != 2 || len(tr.grants["hugr_door"]) != 1 || !admin.deleted {
 		t.Errorf("a run again: grants %v, admin deleted %v", tr.grants, admin.deleted)
+	}
+	// the doors' secret an administrator wrote (or changed) is theirs: a run with the catalog's made writes only that
+	tr = &fakeTresor{doorExists: true}
+	if err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil },
+		&fakeAdmin{}, quiet()); err != nil {
+		t.Fatal(err)
+	}
+	if tr.created["hugr_door"] != nil || tr.created["hugr_policy_catalog"] == nil || len(tr.grants["hugr_door"]) != 1 {
+		t.Errorf("an existing doors' secret: created %v, grants %v", tr.created, tr.grants)
 	}
 }
 
@@ -161,7 +196,7 @@ func TestRunFailures(t *testing.T) {
 		if admin.deleted {
 			t.Errorf("%s: the administrator's Secret was deleted", name)
 		}
-		if tc.db.err != nil && tc.tr.created != nil {
+		if tc.db.err != nil && len(tc.tr.created) != 0 {
 			t.Errorf("%s: a secret was written for a login the database refused", name)
 		}
 	}
@@ -195,6 +230,16 @@ func TestConfigValidate(t *testing.T) {
 		"tresor's userinfo":       func(c *Config) { c.Tresor.URL = "https://u:p@tresor" },
 		"no token file":           func(c *Config) { c.Tresor.TokenFile = "" },
 		"no grant":                func(c *Config) { c.Tresor.Grants = nil },
+		"no door":                 func(c *Config) { c.Door.Scopes = nil },
+		"a door with a path":      func(c *Config) { c.Door.Scopes = []string{"quack:c.example:443/x"} },
+		"a door with no port":     func(c *Config) { c.Door.Scopes = []string{"quack:c.example"} },
+		"a door of another type":  func(c *Config) { c.Door.Scopes = []string{"https://c.example:443"} },
+		"nobody at the doors":     func(c *Config) { c.Door.Grants = nil },
+		"a door grant to a user":  func(c *Config) { c.Door.Grants = []string{"user:x"} },
+		"no audience":             func(c *Config) { c.Door.Audience = "" },
+		"an audience with braces": func(c *Config) { c.Door.Audience = "x}${claim://sub" },
+		"an audience with query":  func(c *Config) { c.Door.Audience = "api://hugr?scope=x" },
+		"the door as the catalog": func(c *Config) { c.Door.Secret = c.Catalog.Secret },
 		"a grant to a subject":    func(c *Config) { c.Tresor.Grants = []string{"subject:x|y"} },
 		"another engine":          func(c *Config) { c.Catalog.Engine = "mssql" },
 		"a host with a space":     func(c *Config) { c.Catalog.Host = "pg db" },

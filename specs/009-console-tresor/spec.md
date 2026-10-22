@@ -120,14 +120,19 @@ without tresor is not the platform: for it the open duckdb-acl is the simpler ch
   - left alone when it exists.
 - **vitest**: the page's statements (the hand-over, the ATTACH, `which_secret`), and the refusal when tresor serves
   no secret for the door.
-- **Browser e2e** (`test/console/e2e/run.sh`) gains tresor-server (its 0.7.5 image) with a Keycloak exchange client:
+- **Browser e2e** (`test/console/e2e/run.sh`) gains tresor-server v0.7.5 (built by `go install`, its state in memory)
+  with a Keycloak exchange client (the stand's own: a client secret made for the run, in the two processes' environment
+  only), the node's policy client for it, and `hugr_door` written as hugr-init writes it:
   - an admin's run uses tresor's secret, and its results match stage 1's (both modes);
   - a person with no `use` grant gets the page's refusal naming what is missing, and nothing runs;
   - a renewed console token is handed over at the next run.
-- **Demo** (spec 004):
-  - hugr-init writes `hugr_door` with the console's address, and the policy's tresor client is in `firstPolicy`;
-  - a statement goes through the console's door with tresor's secret for an admin: a DuckDB with tresor and quack
-    hands tresor the admin's token and attaches the console's `/tresor`;
+- **Demo** (spec 004, Keycloak):
+  - the realm's exchange client `duckdb-secrets` (tresor's projected token, no secret) and the target `hugr`;
+  - hugr-init writes `hugr_door` for the console as the checks and the stand reach it; `firstPolicy` has the client
+    `tresor`;
+  - check 4c: tresor's discovery under the console's `/tresor`; the admin reads `hugr_door` there (the checker's
+    `-door`) - a token tresor minted, not the admin's own - and the console's `me` with that token answers the
+    admin's bundles: the node took it through the policy's client for tresor;
   - the browser part is the e2e's.
 
 ## Alternatives considered
@@ -142,6 +147,9 @@ without tresor is not the platform: for it the open duckdb-acl is the simpler ch
 - **One broad scope (`quack:`)**: a client's every quack server would receive a token for the nodes.
 
 ## Follow-ups
+
+- The AKS demo (Entra): tresor's On-Behalf-Of for the nodes' API (its application delegated the API, admin consent),
+  with the next live AKS run. Until then the demo checks only tresor's discovery there.
 
 - A third mode of the page, statements in the page's own DuckDB (tresor's `whoami`, a person's secrets), only if
   asked.

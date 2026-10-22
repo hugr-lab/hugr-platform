@@ -20,6 +20,8 @@ ACL_EXT="$ACL/build/release/extension/acl/acl.duckdb_extension"
 KC_PORT="${E2E_KC_PORT:-18691}"
 NODE_PORT="${E2E_NODE_PORT:-41102}"
 QUACK_PORT="${E2E_QUACK_PORT:-41103}" # the node's quack door, the console's /quack forwards to it (spec 007)
+TRESOR_PORT="${E2E_TRESOR_PORT:-18692}" # tresor-server, mounted under the console's /tresor (spec 009)
+TRESOR_SERVER_VERSION=v0.7.5 # the umbrella chart's
 CONSOLE_PORT="${E2E_CONSOLE_PORT:-18644}"
 KC="https://127.0.0.1:$KC_PORT"
 REALM="$KC/realms/hugr"
@@ -39,7 +41,7 @@ fail() {
 	for f in "$WORK"/*.log; do [ -f "$f" ] && { echo "--- $(basename "$f")" >&2; tail -25 "$f" >&2; }; done
 	exit 1
 }
-for port in $KC_PORT $NODE_PORT $QUACK_PORT $CONSOLE_PORT; do
+for port in $KC_PORT $NODE_PORT $QUACK_PORT $TRESOR_PORT $CONSOLE_PORT; do
 	! (echo >"/dev/tcp/127.0.0.1/$port") 2>/dev/null || fail "port $port is taken"
 done
 
@@ -56,6 +58,7 @@ cert() { # <name> <subjectAltName>
 cert kc "IP:127.0.0.1"
 cert console "IP:127.0.0.1"
 cert node "DNS:hugr-node-etl.hugr.svc,IP:127.0.0.1"
+cert tresor "IP:127.0.0.1"
 # Keycloak's own, readable by its container's user (uid 1000): a directory of its own, the run's (mode 0700) holding
 # the rest
 mkdir -m 755 "$WORK/kc"
@@ -67,11 +70,16 @@ KC_ADMIN_PW="$(openssl rand -hex 16)"
 OPS_PW="$(openssl rand -hex 16)"
 ANALYST_PW="$(openssl rand -hex 16)"
 ADMIN_PW="$(openssl rand -hex 16)"
+# tresor's exchange client's secret (spec 009): Keycloak's and tresor-server's environment only
+EXCHANGE_SECRET="$(openssl rand -hex 24)"
 
 echo "e2e: Keycloak"
-CONSOLE="$CONSOLE" OPS_PW="$OPS_PW" ANALYST_PW="$ANALYST_PW" ADMIN_PW="$ADMIN_PW" python3 - "$WORK/realm.json" <<'PY'
+CONSOLE="$CONSOLE" OPS_PW="$OPS_PW" ANALYST_PW="$ANALYST_PW" ADMIN_PW="$ADMIN_PW" EXCHANGE_SECRET="$EXCHANGE_SECRET" \
+	python3 - "$WORK/realm.json" <<'PY'
 import json, os, sys
 console = os.environ["CONSOLE"]
+aud = lambda audience: {"name": "aud-" + audience, "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+                        "config": {"included.custom.audience": audience, "access.token.claim": "true", "id.token.claim": "false"}}
 user = lambda name, pw, role: {"username": name, "enabled": True, "email": f"{name}@example.test", "emailVerified": True,
     "firstName": name.capitalize(), "lastName": "E2e", "credentials": [{"type": "password", "value": pw, "temporary": False}],
     "realmRoles": [role, "offline_access"]}  # the console asks offline_access for its refresh token
@@ -82,14 +90,22 @@ realm = {
         "clientId": "hugr-console", "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
         "redirectUris": [f"{console}/*"], "webOrigins": [console],
         "attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": f"{console}/*"},
-        "protocolMappers": [{"name": "aud", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
-            "config": {"included.custom.audience": "hugr-nodes", "access.token.claim": "true", "id.token.claim": "false"}}],
+        # the nodes' and tresor's (spec 009: the SQL page hands tresor this token)
+        "protocolMappers": [aud("hugr-nodes"), aud("duckdb-secrets")],
     }, {
-        # the run's own client: the analyst's token for a session of its own on the node, by the password grant
+        # the run's own client: the analyst's token for a session of its own on the node, by the password grant; the
+        # admin's for tresor, to write the doors' secret
         "clientId": "e2e-probe", "publicClient": True, "standardFlowEnabled": False, "directAccessGrantsEnabled": True,
-        "protocolMappers": [{"name": "aud", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
-            "config": {"included.custom.audience": "hugr-nodes", "access.token.claim": "true", "id.token.claim": "false"}}],
-    }],
+        "protocolMappers": [aud("hugr-nodes"), aud("duckdb-secrets")],
+    }, {
+        # tresor-server's exchange client (spec 009): named as tresor's audience - Keycloak exchanges only for a client
+        # the subject token is meant for - and allowed the nodes' audience, the client hugr-nodes
+        "clientId": "duckdb-secrets", "secret": os.environ["EXCHANGE_SECRET"], "publicClient": False,
+        "standardFlowEnabled": False, "serviceAccountsEnabled": False,
+        "attributes": {"standard.token.exchange.enabled": "true"},
+        "protocolMappers": [{"name": "aud-nodes", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+            "config": {"included.client.audience": "hugr-nodes", "access.token.claim": "true"}}],
+    }, {"clientId": "hugr-nodes", "publicClient": False, "standardFlowEnabled": False}],
     "users": [user("ops", os.environ["OPS_PW"], "platform_ops"), user("analyst", os.environ["ANALYST_PW"], "analyst"),
               # the stand's third person: passthrough, so every page (scale, restart, logs) - Playwright signs in the two
               user("admin", os.environ["ADMIN_PW"], "platform_admin")],
@@ -133,6 +149,9 @@ ACL ADMIN MAP CLAIM 'platform_admin' FROM CLIENT '$REALM' TO ROLE admin;
 ACL ADMIN GRANT ADMIN passthrough TO ROLE admin;
 ACL ADMIN GRANT FUNCTION CATEGORY meta TO ROLE admin;
 ACL ADMIN GRANT FUNCTION CATEGORY environment TO ROLE admin;
+ACL ADMIN CREATE CLIENT tresor ISSUER '$REALM' AUDIENCES ('hugr-nodes') AZP ('duckdb-secrets') ROLES FROM ('realm_access.roles');
+ACL ADMIN MAP CLAIM 'platform_admin' FROM CLIENT tresor TO ROLE admin;
+ACL ADMIN MAP CLAIM 'platform_ops' FROM CLIENT tresor TO ROLE ops;
 SET GLOBAL acl_allow_anonymous_admin = false;
 SET GLOBAL acl_node_label = 'hugr-node-etl-a';
 SELECT acl_flight_serve('grpc+tls://127.0.0.1:$NODE_PORT', '$WORK/node.crt', '$WORK/node.key');
@@ -146,12 +165,58 @@ cat "$WORK/node.sql" >&3
 for _ in $(seq 100); do (echo >"/dev/tcp/127.0.0.1/$NODE_PORT") 2>/dev/null && break; sleep 0.1; done
 (echo >"/dev/tcp/127.0.0.1/$NODE_PORT") 2>/dev/null || fail "the node does not serve"
 
+echo "e2e: tresor-server $TRESOR_SERVER_VERSION"
+(cd "$ROOT" && GOWORK=off GOBIN="$WORK/bin" go install "github.com/hugr-lab/tresor-server/cmd/tresor-server@$TRESOR_SERVER_VERSION") ||
+	fail "tresor-server does not build"
+cat >"$WORK/tresor.yaml" <<YAML
+listen: 127.0.0.1:$TRESOR_PORT
+public_url: https://127.0.0.1:$TRESOR_PORT
+tls: {cert: $WORK/tresor.crt, key: $WORK/tresor.key}
+state: {kind: memory}
+issuers:
+  - issuer: $REALM
+    audience: duckdb-secrets
+    roles_claim: realm_access.roles
+    ca_file: $WORK/ca.crt
+    exchange: {client_id: duckdb-secrets, client_auth: secret, client_secret_env: E2E_EXCHANGE_SECRET}
+policy:
+  admins: [role:platform_admin]
+YAML
+E2E_EXCHANGE_SECRET="$EXCHANGE_SECRET" SSL_CERT_FILE="$WORK/ca.crt" "$WORK/bin/tresor-server" -config "$WORK/tresor.yaml" \
+	>"$WORK/tresor.log" 2>&1 &
+PIDS+=($!)
+TRESOR="https://127.0.0.1:$TRESOR_PORT"
+for _ in $(seq 50); do curl -sf --cacert "$WORK/ca.crt" "$TRESOR/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
+curl -sf --cacert "$WORK/ca.crt" "$TRESOR/.well-known/duckdb-secrets" >/dev/null || fail "tresor-server does not serve"
+# the doors' secret as hugr-init writes it (spec 009), by the admin (tresor's administrator): this console's door, a
+# token minted for the reader for the nodes; its use granted to the platform's administrators only
+(umask 077 && printf '%s' "$ADMIN_PW" >"$WORK/admin.pw")
+curl -sf --cacert "$WORK/ca.crt" "$REALM/protocol/openid-connect/token" -d grant_type=password -d client_id=e2e-probe \
+	-d username=admin --data-urlencode "password@$WORK/admin.pw" |
+	python3 -c 'import json, sys; print("Authorization: Bearer " + json.load(sys.stdin)["access_token"])' \
+	>"$WORK/admin.auth" || fail "the admin's token"
+python3 - "$CONSOLE_PORT" >"$WORK/door.json" <<'PY'
+import json, sys
+nodes = "hugr-nodes"
+print(json.dumps({"type": "quack", "provider": "config", "scope": [f"quack:127.0.0.1:{sys.argv[1]}"],
+                  "params": {"token": "mint+exchange://" + nodes,
+                             "extra_http_headers": {"type": "MAP(VARCHAR, VARCHAR)",
+                                                    "value": {"Authorization": "Bearer ${exchange://" + nodes + "}"}}},
+                  "redact_keys": ["token", "extra_http_headers"]}))
+PY
+curl -sf --cacert "$WORK/ca.crt" -X PUT -H @"$WORK/admin.auth" -H 'Content-Type: application/json' \
+	--data-binary @"$WORK/door.json" "$TRESOR/v1/secrets/hugr_door" >/dev/null || fail "the doors' secret"
+curl -sf --cacert "$WORK/ca.crt" -X PUT -H @"$WORK/admin.auth" -H 'Content-Type: application/json' \
+	-d '{"principal": "role:platform_admin", "verbs": ["use"]}' "$TRESOR/v1/secrets/hugr_door/grants/e2e-admins" >/dev/null ||
+	fail "the doors' grant"
+rm -f "$WORK/admin.auth"
+
 echo "e2e: the console"
 (cd "$WEB" && npm run build >/dev/null) || fail "the web build"
 (cd "$ROOT" && GOWORK=off go build -o "$WORK/serve" ./test/console/serve) || fail "the console does not build"
 "$WORK/serve" -listen "127.0.0.1:$CONSOLE_PORT" -cert "$WORK/console.crt" -key "$WORK/console.key" -ca "$WORK/ca.crt" \
-	-node "etl=127.0.0.1:$NODE_PORT" -quack "https://127.0.0.1:$QUACK_PORT" -issuer "$REALM" -client-id hugr-console \
-	-audience hugr-nodes -dist "$WEB/dist" \
+	-node "etl=127.0.0.1:$NODE_PORT" -quack "https://127.0.0.1:$QUACK_PORT" -tresor "127.0.0.1:$TRESOR_PORT" \
+	-issuer "$REALM" -client-id hugr-console -audience hugr-nodes -tresor-audience duckdb-secrets -dist "$WEB/dist" \
 	>"$WORK/console.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 50); do curl -sf --cacert "$WORK/ca.crt" "$CONSOLE/api/v1/console/config" >/dev/null && break; sleep 0.2; done
@@ -169,8 +234,8 @@ curl -sf --cacert "$WORK/ca.crt" "$REALM/protocol/openid-connect/token" -d grant
 # leaked: a bearer token (a JWT) or a password of this run in the console's or the node's log
 leaked() {
 	local log
-	for log in "$WORK/console.log" "$WORK/node.log"; do
-		if grep -qF -e "$OPS_PW" -e "$ANALYST_PW" -e "$ADMIN_PW" -e "$KC_ADMIN_PW" "$log" ||
+	for log in "$WORK/console.log" "$WORK/node.log" "$WORK/tresor.log"; do
+		if grep -qF -e "$OPS_PW" -e "$ANALYST_PW" -e "$ADMIN_PW" -e "$KC_ADMIN_PW" -e "$EXCHANGE_SECRET" "$log" ||
 			grep -qE 'eyJ[A-Za-z0-9_-]{8,}\.eyJ' "$log"; then
 			echo "$(basename "$log")"
 		fi
@@ -188,7 +253,7 @@ if [ -n "${E2E_SERVE:-}" ]; then
 	# until stopped, or until the node or the console ends (said, not waited on forever)
 	while true; do
 		for p in "${PIDS[@]}"; do
-			kill -0 "$p" 2>/dev/null || fail "the stand's $( [ "$p" = "${PIDS[0]}" ] && echo node || echo console) ended"
+			kill -0 "$p" 2>/dev/null || fail "a part of the stand (the node, tresor-server or the console) ended"
 		done
 		sleep 2
 	done

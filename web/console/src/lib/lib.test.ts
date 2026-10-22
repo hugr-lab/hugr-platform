@@ -4,7 +4,7 @@ import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import { caps, cell, readsPolicy } from './policy'
-import { BYTES_MAX, ROWS_MAX, bounded, doorURI, literal, statementOf } from './duckdb'
+import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, doorSecret, doorURI, literal, statementOf, tresorService } from './duckdb'
 import type { Fleet, Group } from './types'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -210,5 +210,20 @@ describe('the SQL page (spec 007)', () => {
     expect(bytes.rows.length).toBe(4) // four quarters fit exactly; the fifth is past the bound
     expect(bytes.cut).toMatch(/MiB/)
     expect(bounded(['n'], [['1'], [null]]).cut).toBeUndefined()
+  })
+})
+
+describe('the door through tresor (spec 009)', () => {
+  it("names tresor as the console serves it: its own origin's /tresor", () => {
+    expect(tresorService({ host: 'console.example.org' })).toBe('tresor:console.example.org/tresor')
+    expect(tresorService({ host: '127.0.0.1:18644' })).toBe('tresor:127.0.0.1:18644/tresor')
+  })
+  it("runs with tresor's secret only, and says what is missing without one", () => {
+    expect(doorSecret('quack:c.example:443', [TRESOR])).toBe(TRESOR)
+    expect(doorSecret('quack:c.example:443', ['HUGR_TRESOR'])).toBe(TRESOR)
+    for (const storages of [[], ['memory'], ['local_file']]) {
+      expect(() => doorSecret('quack:c.example:443', storages)).toThrow(
+        /tresor serves you no secret for quack:c\.example:443: .*door\.scopes.*door\.grants/)
+    }
   })
 })

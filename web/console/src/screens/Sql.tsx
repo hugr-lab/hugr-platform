@@ -1,5 +1,6 @@
 // The SQL page (spec 007 stage 1): a statement run through the platform's quack door by DuckDB in this page, as the
-// person - or, with passthrough, under ACL NATIVE, the break-glass door where nothing is refused.
+// person - or, with passthrough, under ACL NATIVE, the break-glass door where nothing is refused. The door's secret is
+// tresor's (spec 009): the page gives tresor the person's token for tresor, nothing else.
 import { useState } from 'react'
 import { Header, Problem, Segmented } from '../components/ui'
 import { useApp } from '../lib/context'
@@ -20,7 +21,7 @@ export function Sql() {
     setBusy(true)
     setError(undefined)
     try {
-      const token = await session.getToken(config.audiences.nodes)
+      const token = await session.getToken(config.audiences.tresor)
       setAnswer(await run(sql, token, native && mode === 'native'))
     } catch (e) {
       setError(e)

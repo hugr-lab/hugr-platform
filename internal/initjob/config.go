@@ -1,5 +1,6 @@
 // Package initjob is the platform's install Job, hugr-init (spec 005): it makes the policy catalog's database and its
-// login, writes the login into tresor as hugr_policy_catalog, and grants it to the groups' identities. It holds no
+// login, writes the login into tresor as hugr_policy_catalog, and grants it to the groups' identities; and the doors'
+// secret people reach the nodes with, hugr_door (spec 009), granted to them. It holds no
 // credential beyond its run: the database administrator's comes once in a Secret it deletes after use, the login's
 // password is made here and goes to tresor only, and tresor takes the Job's projected ServiceAccount token.
 package initjob
@@ -17,6 +18,21 @@ import (
 type Config struct {
 	Tresor  TresorConfig  `json:"tresor"`
 	Catalog CatalogConfig `json:"catalog"`
+	Door    DoorConfig    `json:"door"`
+}
+
+// DoorConfig is the doors' secret (spec 009): a quack secret whose token tresor mints for whoever reads it, for the
+// nodes' audience - the people's way through the console's and the front's quack doors, a credential nobody holds.
+type DoorConfig struct {
+	// Secret is its name: hugr_door by default.
+	Secret string `json:"secret"`
+	// Audience is the nodes' (console.audiences.nodes): what the reader's token is exchanged for.
+	Audience string `json:"audience"`
+	// Scopes are the doors people reach, quack:<host>:<port> each: the console's and the front's public addresses,
+	// which the platform does not know.
+	Scopes []string `json:"scopes"`
+	// Grants are who may use it: the people's roles or groups in tresor (role:… or group:…).
+	Grants []string `json:"grants"`
 }
 
 // SecretRef is one key of a Secret.
@@ -75,6 +91,11 @@ var (
 	dnsLabel  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	dnsName   = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 	secretKey = regexp.MustCompile(`^[A-Za-z0-9._-]{1,253}$`)
+	// a door as quack's secrets scope it: host and port, nothing else
+	doorScope = regexp.MustCompile(`^quack:[A-Za-z0-9.-]{1,253}:[0-9]{1,5}$`)
+	// an audience goes into a generator (mint+exchange://<audience>, ${exchange://<audience>}): no query, no brace,
+	// no quote, no space
+	audience = regexp.MustCompile(`^[^\s?#{}'"$]{1,255}$`)
 )
 
 // Load reads and checks the configuration.
@@ -96,6 +117,9 @@ func Load(path string) (*Config, error) {
 	if c.Catalog.SSLMode == "" {
 		c.Catalog.SSLMode = "verify-full"
 	}
+	if c.Door.Secret == "" {
+		c.Door.Secret = "hugr_door"
+	}
 	return &c, c.Validate()
 }
 
@@ -115,6 +139,29 @@ func (c *Config) Validate() error {
 	for _, p := range c.Tresor.Grants {
 		if !principal.MatchString(p) {
 			add("tresor.grants: %q is not a role:… or group:… principal", p)
+		}
+	}
+	if c.Door.Secret == "" || len(c.Door.Secret) > 200 || strings.TrimSpace(c.Door.Secret) != c.Door.Secret ||
+		c.Door.Secret == c.Catalog.Secret {
+		add("door.secret is a name of at most 200 characters, not the catalog's")
+	}
+	if !audience.MatchString(c.Door.Audience) {
+		add("door.audience is the nodes' audience (no space, ?, #, braces or quotes)")
+	}
+	if len(c.Door.Scopes) == 0 {
+		add("door.scopes names no door: nobody could reach the nodes through tresor (spec 009)")
+	}
+	for _, scope := range c.Door.Scopes {
+		if !doorScope.MatchString(scope) {
+			add("door.scopes: %q is not quack:<host>:<port>", scope)
+		}
+	}
+	if len(c.Door.Grants) == 0 {
+		add("door.grants names no principal: nobody could use the doors' secret")
+	}
+	for _, p := range c.Door.Grants {
+		if !principal.MatchString(p) {
+			add("door.grants: %q is not a role:… or group:… principal", p)
 		}
 	}
 	if c.Catalog.Secret == "" || len(c.Catalog.Secret) > 200 || strings.TrimSpace(c.Catalog.Secret) != c.Catalog.Secret {

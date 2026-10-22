@@ -40,5 +40,8 @@ hugrInit:
   tresor:
     url: https://tresor.tresor.svc
     grants: [role:hugr_node]
+  door:
+    scopes: ["quack:console.hugr.example:443", "quack:hugr.example:9494"]
+    grants: [role:hugr-admins]
   catalog:
     host: hugr-catalog.postgres.database.azure.com

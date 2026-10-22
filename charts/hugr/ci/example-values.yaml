@@ -40,6 +40,9 @@ hugr-platform:
   hugrInit:
     tresor:
       grants: [role:hugr_node]
+    door:
+      scopes: ["quack:console.hugr.example:443", "quack:hugr.example:9494"]
+      grants: [role:hugr-admins]
   groups:
     - name: etl
       spec: {replicas: 2, size: large, identity: {clientID: 00000000-0000-0000-0000-000000000001}}
