@@ -8,6 +8,8 @@ import type { Config, Rights } from './lib/types'
 import { Broken, NoNode, Refused, SignIn } from './screens/Entry'
 import { Fleet } from './screens/Fleet'
 import { Group } from './screens/Group'
+import { Catalog, Catalogs, FunctionCategories, Identity, Keyed, Part, PolicyHome, ResourceGroups, Role, Roles, Sources } from './screens/Policy'
+import { readsPolicy } from './lib/policy'
 import { Cluster } from './screens/Cluster'
 import { Mounted } from './screens/Mounted'
 import { Events } from './screens/node/Events'
@@ -70,9 +72,22 @@ export function App({ config, session }: { config: Config; session: Session }) {
             {rights.fleet && <Route path="/nodes/:label/inventory" element={<Inventory />} />}
             {rights.fleet && <Route path="/nodes/:label/logs" element={<Logs />} />}
             {rights.events && <Route path="/nodes/:label/events" element={<Events />} />}
+            {readsPolicy(rights) && (
+              <>
+                <Route path="/policy" element={<PolicyHome />} />
+                <Route path="/policy/catalogs" element={<Part path="catalogs"><Catalogs /></Part>} />
+                <Route path="/policy/catalogs/:name" element={<Part path="catalogs"><Keyed page={Catalog} /></Part>} />
+                <Route path="/policy/roles" element={<Part path="roles"><Roles /></Part>} />
+                <Route path="/policy/roles/:name" element={<Part path="roles"><Keyed page={Role} /></Part>} />
+                <Route path="/policy/identity" element={<Part path="identity"><Identity /></Part>} />
+                <Route path="/policy/functions" element={<Part path="functions"><FunctionCategories /></Part>} />
+                <Route path="/policy/resource-groups" element={<Part path="resource-groups"><ResourceGroups /></Part>} />
+                <Route path="/policy/sources" element={<Part path="sources"><Sources /></Part>} />
+              </>
+            )}
             {config.mounts.tresor && <Route path="/secrets/*" element={<Mounted which="tresor" basePath="/secrets" />} />}
             {config.mounts.kista && <Route path="/extensions/*" element={<Mounted which="kista" basePath="/extensions" />} />}
-            <Route path="*" element={rights.fleet ? <Navigate to="/" replace /> : <NothingHere />} />
+            <Route path="*" element={rights.fleet ? <Navigate to="/" replace /> : readsPolicy(rights) ? <Navigate to="/policy" replace /> : <NothingHere />} />
           </Routes>
         </Shell>
       </BrowserRouter>

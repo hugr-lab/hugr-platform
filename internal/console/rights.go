@@ -47,6 +47,10 @@ type Rights struct {
 	Deployment string `json:"deployment"`
 	// Bundles as the node named them, for the person to read.
 	Bundles []string `json:"bundles"`
+	// Views and Functions are the platform views and functions the person reads and calls (console_info's my_views,
+	// my_functions): what the policy's pages offer (spec 007).
+	Views     []string `json:"views"`
+	Functions []string `json:"functions"`
 }
 
 // RightsOf the person `info` was answered for. A view or a function the answer does not name is not the person's;
@@ -71,6 +75,8 @@ func RightsOf(info Info) Rights {
 		Effective:      view("cluster_effective"),
 		Deployment:     info.Deployment,
 		Bundles:        append([]string{}, info.Bundles...), // a list in JSON, never null
+		Views:          append([]string{}, info.MyViews...),
+		Functions:      append([]string{}, info.MyFunctions...),
 	}
 }
 

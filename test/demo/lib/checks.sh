@@ -337,6 +337,16 @@ check_console() {
 	json_true "$out" "len(r['lineage']) == $(($(pods a | wc -l) + $(pods b | wc -l))) and not r['profile'].get('error')" ||
 		fail "the cluster's page: $out"
 	ok "the admin's console: the fleet (a and b, every node admitting), $a's load report, pod, memory, extensions, log and audit ring, the cluster's profile and every node's lineage"
+	# spec 007: the policy, read through the console - a catalog's grants, a role's effective rights there
+	out="$(console_api admin GET "policy/views/grants?catalog=demo")" || fail "the catalog demo's grants"
+	json_true "$out" "sorted(g['role'] for g in r['rows']) == ['analyst_a', 'analyst_b', 'platform_admin']" ||
+		fail "the catalog demo's grants: $out"
+	out="$(console_api admin GET "policy/functions/effective_rights?role=analyst_a&catalog=demo")" ||
+		fail "analyst_a's effective rights in demo"
+	json_true "$out" "any('orders' in json.dumps(row) for row in r['rows'])" || fail "analyst_a's effective rights: $out"
+	if console_api analyst-a GET "policy/views/grants" >/dev/null 2>"$WORK/console.err"; then fail "analyst_a read the grants"; fi
+	grep -q 'answered 403' "$WORK/console.err" || fail "analyst_a's grants: $(cat "$WORK/console.err")"
+	ok "the policy through the console: the catalog demo's grants, analyst_a's effective rights there; analyst_a reads none of it (403)"
 
 	# a person's session on a node: its tracing, then its end - analyst_a's own, held as a driver holds one
 	as analyst-a "$a" "SELECT count(*) FROM orders" -hold >/dev/null || fail "analyst_a's own session on $a"

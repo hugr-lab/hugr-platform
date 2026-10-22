@@ -63,6 +63,10 @@ func (e *NodeError) Error() string { return e.Message }
 // Unreachable is a node that did not answer: no connection, or no answer before the deadline.
 var errUnreachable = errors.New("the node did not answer")
 
+// errTimedOut: the node took longer than the call's deadline - it may still be at it, so the call is not sent to
+// another node (an unreachable one, still).
+var errTimedOut = fmt.Errorf("%w in time", errUnreachable)
+
 // Caller runs a statement on a node with a person's token.
 type Caller interface {
 	Query(ctx context.Context, node fleet.Node, token, statement string) (*Result, error)
@@ -108,6 +112,19 @@ func (p *Pool) timeout() time.Duration {
 	return 15 * time.Second
 }
 
+// callTimeout carries a statement's own deadline in its context: a read the node takes long over (a catalog's check
+// against its sources, what exposes a source) waits longer than a page's quick read.
+type callTimeout struct{}
+
+// withCallTimeout gives the statements called with ctx this deadline instead of the pool's.
+func withCallTimeout(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, callTimeout{}, d)
+}
+
+// maxMessage is the largest Arrow batch the console reads from a node: one DuckDB chunk of long texts (a view's SQL,
+// a row filter) passes gRPC's default of 4 MiB.
+const maxMessage = 64 << 20
+
 // Query runs one statement on the node and reads its whole result.
 func (p *Pool) Query(ctx context.Context, node fleet.Node, token, statement string) (*Result, error) {
 	if node.FlightPort == 0 || node.Address == "" {
@@ -117,7 +134,11 @@ func (p *Pool) Query(ctx context.Context, node fleet.Node, token, statement stri
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, p.timeout())
+	timeout := p.timeout()
+	if d, ok := ctx.Value(callTimeout{}).(time.Duration); ok && d > 0 {
+		timeout = d
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var header, trailer metadata.MD
 	var remote peer.Peer
@@ -245,7 +266,8 @@ func (p *Pool) client(ctx context.Context, node fleet.Node) (*flightsql.Client, 
 	}
 	creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots,
 		ServerName: node.Service + "." + p.Namespace + ".svc"})
-	client, err := flightsql.NewClient(address, nil, nil, grpc.WithTransportCredentials(creds))
+	client, err := flightsql.NewClient(address, nil, nil, grpc.WithTransportCredentials(creds),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMessage)))
 	if err != nil {
 		return nil, fmt.Errorf("the node %s: %w", node.Label, err)
 	}
@@ -267,14 +289,16 @@ func withGroups(err error, trailer metadata.MD) error {
 // nodeError is what the person learns of a failed call: an unreachable node, or the node's own message.
 func nodeError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
-		return errUnreachable
+		return errTimedOut
 	}
 	s, ok := status.FromError(err)
 	if !ok {
 		return errUnreachable
 	}
 	switch s.Code() {
-	case codes.DeadlineExceeded, codes.Canceled:
+	case codes.DeadlineExceeded:
+		return errTimedOut
+	case codes.Canceled:
 		return errUnreachable
 	case codes.Unavailable:
 		// the transport's own failure, not a node that answered "draining" (duckdb-acl spec 066)

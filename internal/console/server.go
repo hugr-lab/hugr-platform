@@ -133,6 +133,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.groupPolicy))
 	mux.Handle("POST "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.addGroupToPolicy))
 	mux.Handle("DELETE "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.removeGroupFromPolicy))
+	// spec 007: the policy's pages - each view and function checked against what the person reads, in the handler
+	mux.Handle("GET "+APIPrefix+"policy/views/{view}", s.person(nil, s.policyView))
+	mux.Handle("GET "+APIPrefix+"policy/sources", s.person(nil, s.policySources))
+	mux.Handle("GET "+APIPrefix+"policy/functions/{function}", s.person(nil, s.policyCall))
 	mux.Handle("GET "+APIPrefix+"nodes/{label}", s.person(func(r Rights) bool { return r.Fleet }, s.node))
 	mux.Handle("GET "+APIPrefix+"nodes/{label}/sessions",
 		s.person(func(r Rights) bool { return r.Sessions }, s.sessions))
@@ -514,6 +518,10 @@ func personMessage(err error) string {
 // nodeProblem answers a failed node call: the node's message, never more.
 func nodeProblem(w http.ResponseWriter, err error) {
 	var refused *NodeError
+	if errors.Is(err, errTimedOut) {
+		problem(w, http.StatusGatewayTimeout, "node_timeout", "the node did not answer in time")
+		return
+	}
 	if !errors.As(err, &refused) {
 		problem(w, http.StatusServiceUnavailable, "node_unreachable", "the node does not answer")
 		return

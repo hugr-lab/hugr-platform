@@ -15,7 +15,7 @@ afterEach(() => {
 const config = { platform: 'corp', audiences: { nodes: 'hugr-nodes' }, mounts: {}, links: [], scopes: [] } as unknown as Config
 const none: Rights = { fleet: true, sessions: true, endSession: false, drain: false, resume: false, tracing: false,
   scale: false, policy: false, infrastructure: false, events: false, drift: false, profile: false, effective: false,
-  deployment: 'cluster', bundles: ['observe'] }
+  deployment: 'cluster', bundles: ['observe'], views: [], functions: [] }
 
 const fleet: FleetAnswer = {
   plan: { maxNodes: 12, sizes: ['small'] },

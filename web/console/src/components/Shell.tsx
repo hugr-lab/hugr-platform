@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { KeyRound, Layers, LogOut, Moon, Package, SlidersHorizontal, Sun } from 'lucide-react'
+import { KeyRound, Layers, LogOut, Moon, Package, ScrollText, SlidersHorizontal, Sun } from 'lucide-react'
+import { readsPolicy } from '../lib/policy'
 import { NavLink } from 'react-router-dom'
 import logo from '../assets/hugr-logo-on-dark.svg'
 import { useApp, useTheme } from '../lib/context'
@@ -43,6 +44,14 @@ export function Shell({ children }: { children: ReactNode }) {
               <NavLink to="/cluster" className={({ isActive }) => `${nav} ${isActive ? 'bg-navy-line text-white' : ''}`}>
                 <SlidersHorizontal size={20} aria-hidden="true" />
                 Cluster
+              </NavLink>
+            </li>
+          )}
+          {readsPolicy(rights) && (
+            <li>
+              <NavLink to="/policy" className={({ isActive }) => `${nav} ${isActive ? 'bg-navy-line text-white' : ''}`}>
+                <ScrollText size={20} aria-hidden="true" />
+                Policy
               </NavLink>
             </li>
           )}

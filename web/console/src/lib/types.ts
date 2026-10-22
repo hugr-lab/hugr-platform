@@ -41,6 +41,18 @@ export interface Rights {
   /** "cluster" (hugr-node's) or "standalone", as the node said */
   deployment: string
   bundles: string[]
+  /** the platform views and functions the person reads and calls (console_info's my_views, my_functions): spec 007 */
+  views: string[]
+  functions: string[]
+}
+
+/** a page of a policy view's rows, or a read function's answer (spec 007) */
+export interface ViewPage {
+  columns: string[]
+  rows: Record<string, unknown>[]
+  total: number
+  /** the view held more than the console reads: total counts what it read */
+  truncated?: boolean
 }
 
 export interface NodeInfo {
