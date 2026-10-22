@@ -4,7 +4,7 @@ import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import { caps, cell, readsPolicy } from './policy'
-import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, doorSecret, doorURI, literal, statementOf, tresorService } from './duckdb'
+import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, doorSecret, doorURI, enter, literal, personOf, reset, statementOf, tresorService, type Conn } from './duckdb'
 import type { Fleet, Group } from './types'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -213,7 +213,58 @@ describe('the SQL page (spec 007)', () => {
   })
 })
 
+/** a connection that records what the page asks of DuckDB: which_secret answers the storages given */
+function fakeConn(storages: string[]) {
+  const asked: { sql: string; params: unknown[] }[] = []
+  const conn = {
+    prepare: async (sql: string) => ({
+      query: async (...params: unknown[]) => {
+        asked.push({ sql, params })
+        return { toArray: () => (sql.includes('which_secret') ? storages.map((storage) => ({ storage })) : []) }
+      },
+      close: async () => undefined,
+    }),
+    query: async (sql: string) => {
+      asked.push({ sql, params: [] })
+      return undefined
+    },
+  }
+  return { conn: conn as unknown as Conn, asked }
+}
+
+const at = { host: 'console.example.org', hostname: 'console.example.org', port: '', protocol: 'https:' }
+const jwt = (claims: object) => `e30.${btoa(JSON.stringify(claims)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}.sig`
+
 describe('the door through tresor (spec 009)', () => {
+  it('hands tresor the token as a parameter with the issuer named, attaches once, and finds the door there', async () => {
+    reset()
+    const { conn, asked } = fakeConn([TRESOR])
+    const issuer = 'https://idp.example/realms/hugr'
+    await enter(conn, 'the-token', issuer, at)
+    await enter(conn, 'a-renewed-token', issuer, at)
+    expect(asked.map((a) => a.sql)).toEqual([
+      'FROM tresor_web_token(?, ?, issuer := ?)',
+      "ATTACH IF NOT EXISTS 'tresor:console.example.org/tresor' AS hugr_tresor (ISSUER 'https://idp.example/realms/hugr')",
+      "SELECT storage FROM which_secret(?, 'quack')",
+      'FROM tresor_web_token(?, ?, issuer := ?)',
+      "SELECT storage FROM which_secret(?, 'quack')",
+    ])
+    expect(asked[0].params).toEqual(['tresor:console.example.org/tresor', 'the-token', issuer])
+    expect(asked[3].params).toEqual(['tresor:console.example.org/tresor', 'a-renewed-token', issuer])
+    expect(asked[2].params).toEqual(['quack:console.example.org:443'])
+    expect(asked.some((a) => a.sql.includes('the-token'))).toBe(false)
+  })
+  it('refuses without tresor\'s secret for the door, whatever else DuckDB holds', async () => {
+    reset()
+    const { conn } = fakeConn(['memory'])
+    await expect(enter(conn, 't', 'https://idp.example', at)).rejects.toThrow(/tresor serves you no secret/)
+  })
+  it('tells one person from another by the token, unverified, and an opaque token from everyone', () => {
+    expect(personOf(jwt({ iss: 'https://idp', sub: 'alice' }))).toBe('https://idp|alice')
+    expect(personOf(jwt({ iss: 'https://idp', sub: 'bob' }))).not.toBe(personOf(jwt({ iss: 'https://idp', sub: 'alice' })))
+    expect(personOf('opaque')).toBe('')
+    expect(personOf(jwt({ sub: 'no-issuer' }))).toBe('')
+  })
   it("names tresor as the console serves it: its own origin's /tresor", () => {
     expect(tresorService({ host: 'console.example.org' })).toBe('tresor:console.example.org/tresor')
     expect(tresorService({ host: '127.0.0.1:18644' })).toBe('tresor:127.0.0.1:18644/tresor')

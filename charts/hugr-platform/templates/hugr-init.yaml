@@ -16,6 +16,9 @@ cluster's issuer, client:system:serviceaccount:<namespace>:hugr-init among its a
 {{- fail "hugrInit.door.grants names who may use the doors' secret in tresor (role:... or group:...)" }}
 {{- end }}
 {{- $doorAudience := default (((.Values.platform.spec.console).audiences).nodes) $init.door.audience }}
+{{- if hasPrefix "api://" $doorAudience }}
+{{- fail "hugrInit.door.audience: Entra's On-Behalf-Of mints for the nodes' API by its client id (a GUID), not its api:// URI (spec 009)" }}
+{{- end }}
 {{- $hook := dict "helm.sh/hook" "post-install,post-upgrade" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" }}
 apiVersion: v1
 kind: ServiceAccount
@@ -96,6 +99,7 @@ data:
       audience: {{ required "hugrInit.door.audience (or platform.spec.console.audiences.nodes) is the nodes' audience" $doorAudience | quote }}
       scopes: {{ $init.door.scopes | toJson }}
       grants: {{ $init.door.grants | toJson }}
+      allowLoopback: {{ $init.door.allowLoopback | default false }}
 ---
 apiVersion: batch/v1
 kind: Job

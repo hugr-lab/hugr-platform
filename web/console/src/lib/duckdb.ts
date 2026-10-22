@@ -17,9 +17,18 @@ export interface Answer {
   cut?: string
 }
 
-let opened: Promise<AsyncDuckDBConnection> | undefined
+interface Opened {
+  db: AsyncDuckDB
+  conn: AsyncDuckDBConnection
+}
 
-async function open(): Promise<AsyncDuckDBConnection> {
+let opened: Promise<Opened> | undefined
+/** whom the page's DuckDB holds tresor for: tresor keeps a door's minted token for its next lookup, whoever asks, so
+ * another person gets a DuckDB of their own */
+let holder: string | undefined
+let attached: Promise<unknown> | undefined
+
+async function open(): Promise<Opened> {
   const duckdb = await import('@duckdb/duckdb-wasm')
   const wasm = (await import('@duckdb/duckdb-wasm/dist/duckdb-base.wasm?url')).default
   const script = (await import('@duckdb/duckdb-wasm/dist/duckdb-browser-base.worker.js?url')).default
@@ -41,7 +50,30 @@ async function open(): Promise<AsyncDuckDBConnection> {
   }
   // nothing changes the page's DuckDB after this: no LOAD, no setting (the person's text never runs here anyway)
   await conn.query('SET lock_configuration = true')
-  return conn
+  return { db, conn }
+}
+
+/** the page's DuckDB ended: the next run opens one afresh */
+function close() {
+  const was = opened
+  opened = undefined
+  attached = undefined
+  holder = undefined
+  void was?.then(({ db }) => db.terminate()).catch(() => undefined)
+}
+
+/** for the tests: the page's DuckDB and its tresor forgotten */
+export const reset = close
+
+/** the token's iss|sub, read and never verified (the page only tells one person from another); '' when it names none */
+export function personOf(token: string): string {
+  try {
+    const part = (token.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/')
+    const claims = JSON.parse(atob(part.padEnd(Math.ceil(part.length / 4) * 4, '=')))
+    return typeof claims.iss === 'string' && typeof claims.sub === 'string' ? `${claims.iss}|${claims.sub}` : ''
+  } catch {
+    return ''
+  }
 }
 
 /** the platform's door as quack names it: the console's own host and port */
@@ -98,25 +130,27 @@ export function bounded(columns: string[], rows: Iterable<(string | null)[]>): A
   return out
 }
 
-let attached: Promise<unknown> | undefined
+/** what enter() asks of a connection: its prepared statements and its queries */
+export type Conn = Pick<AsyncDuckDBConnection, 'prepare' | 'query'>
 
-/** hands tresor the person's token (renewed by the console's session: tresor takes the newest at its next call), attaches
- * it once, and finds the door's secret there. The token is a parameter, never in a statement's text (tresor spec 043). */
-async function enter(conn: AsyncDuckDBConnection, token: string, uri: string): Promise<void> {
-  const service = tresorService(window.location)
-  // tresor goes without TLS only to a local address, as the console's dev server is
-  const insecure = window.location.protocol !== 'https:'
-  const hand = await conn.prepare('FROM tresor_web_token(?, ?, insecure_http := ?)')
+/** hands tresor the person's token (each run: tresor takes the newest at its next call), attaches it once, and finds the
+ * door's secret there. The token is a parameter, never in a statement's text (tresor spec 043); the issuer is named,
+ * as tresor-server lists every issuer it trusts - the cluster's too. */
+export async function enter(conn: Conn, token: string, issuer: string, location: { host: string; hostname: string;
+  port: string; protocol: string }): Promise<void> {
+  const service = tresorService(location)
+  const uri = doorURI(location)
+  const hand = await conn.prepare('FROM tresor_web_token(?, ?, issuer := ?)')
   try {
-    await hand.query(service, token, insecure)
+    await hand.query(service, token, issuer)
   } finally {
     await hand.close()
   }
-  attached ??= conn.query(`ATTACH IF NOT EXISTS ${literal(service)} AS ${TRESOR}` +
-    (insecure ? ' (INSECURE_HTTP true)' : '')).catch((e) => {
-    attached = undefined
-    throw e
-  })
+  attached ??= conn.query(`ATTACH IF NOT EXISTS ${literal(service)} AS ${TRESOR} (ISSUER ${literal(issuer)})`)
+    .catch((e) => {
+      attached = undefined
+      throw e
+    })
   await attached
   const which = await conn.prepare("SELECT storage FROM which_secret(?, 'quack')")
   try {
@@ -130,14 +164,17 @@ async function enter(conn: AsyncDuckDBConnection, token: string, uri: string): P
 /** runs the statement through the platform's door, as the person: the door's secret is tresor's, a token tresor mints
  * for the person (spec 009). DuckDB writes every value as text (a DECIMAL's scale, a date, a list, a 64-bit integer as
  * they are); the answer is read batch by batch and the read stops at the page's bounds. */
-export async function run(sql: string, tresorToken: string, native: boolean): Promise<Answer> {
+export async function run(sql: string, tresorToken: string, issuer: string, native: boolean): Promise<Answer> {
+  const who = personOf(tresorToken)
+  if (holder !== undefined && (who === '' || who !== holder)) close()
   opened ??= open().catch((e) => {
     opened = undefined
     throw e
   })
-  const conn = await opened
+  const { conn } = await opened
+  holder = who
   const uri = doorURI(window.location)
-  await enter(conn, tresorToken, uri)
+  await enter(conn, tresorToken, issuer, window.location)
   // TLS as the page's own: quack goes without it to a local address by default, and the console's origin is https
   const statement = await conn.prepare('SELECT COLUMNS(*)::VARCHAR FROM ' +
     `(FROM quack_query(?, ?, disable_ssl := ?) LIMIT ${ROWS_MAX + 1})`)

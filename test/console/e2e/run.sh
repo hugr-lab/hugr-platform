@@ -70,7 +70,8 @@ KC_ADMIN_PW="$(openssl rand -hex 16)"
 OPS_PW="$(openssl rand -hex 16)"
 ANALYST_PW="$(openssl rand -hex 16)"
 ADMIN_PW="$(openssl rand -hex 16)"
-# tresor's exchange client's secret (spec 009): Keycloak's and tresor-server's environment only
+# tresor's exchange client's secret (spec 009): in Keycloak's realm file (the run's directory) and tresor-server's
+# environment, never on a command line
 EXCHANGE_SECRET="$(openssl rand -hex 24)"
 
 echo "e2e: Keycloak"
@@ -179,6 +180,10 @@ issuers:
     roles_claim: realm_access.roles
     ca_file: $WORK/ca.crt
     exchange: {client_id: duckdb-secrets, client_auth: secret, client_secret_env: E2E_EXCHANGE_SECRET}
+  # a second issuer, as a platform's tresor trusts the cluster's too: the page must name its own
+  - issuer: $KC/realms/master
+    audience: duckdb-secrets
+    ca_file: $WORK/ca.crt
 policy:
   admins: [role:platform_admin]
 YAML

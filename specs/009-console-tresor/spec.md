@@ -48,14 +48,18 @@ without tresor is not the platform: for it the open duckdb-acl is the simpler ch
   `dist/extensions/tresor.duckdb_extension.wasm` and loaded unsigned from the console's origin, like quack and httpfs.
 - Before each run the page:
   1. hands tresor the person's token for that audience, renewed by the console's session as today:
-     `FROM tresor_web_token(?, ?)` with the service `<host>/tresor` and the token as parameters;
-  2. attaches it once: `ATTACH '<host>/tresor' AS tresor (TYPE tresor)`;
+     `FROM tresor_web_token(?, ?, issuer := ?)` with the service `tresor:<host>/tresor`, the token and the IdP's
+     issuer as parameters - tresor-server lists every issuer it trusts (the cluster's too), so the page names its own;
+  2. attaches it once: `ATTACH IF NOT EXISTS 'tresor:<host>/tresor' AS hugr_tresor (ISSUER '<issuer>')`;
   3. asks DuckDB which secret it would use for the door: `which_secret('quack:<host>:<port>', 'quack')`, and runs
      with tresor's.
 - **One way in.** The page's own secret with the console's token (stage 1) is gone. When tresor serves no secret for
   the door (its scope does not name this address, or the person has no `use` grant), the page runs nothing and says
   what is missing: "tresor serves no secret for quack:<host>:<port> - hugr_door's scope (door.scopes) and a use
   grant (door.grants)". A tresor failure (the service down, the token refused) is shown as tresor's error.
+- **Another person, another DuckDB.** tresor keeps a door's minted token for its next lookup, whoever asks. When the
+  token handed over names another `iss|sub` (read, never verified) - a popup's sign-in as someone else - the page ends
+  its DuckDB and opens a new one. The console's own tokens of their own audience (Entra) are dropped the same way.
 - `console.audiences.tresor` becomes required (the CRD): the page needs a token for tresor. Every chart, example and
   the demo set it already.
 
@@ -71,10 +75,19 @@ without tresor is not the platform: for it the open duckdb-acl is the simpler ch
     - `EXTRA_HTTP_HEADERS MAP {'Authorization': 'Bearer ${exchange://<console.audiences.nodes>}'}`.
       The console's `/quack` admits a signed-in person only (spec 007). One exchange covers both: tresor-server
       caches the minted token per caller and audience.
-  - grants: an install value (`door.grants`, `role:…` / `group:…`, the people who use the platform's doors).
+  - grants: an install value (`door.grants`, `role:…` / `group:…`, the people who use the platform's doors). Never the
+    nodes' (`tresor.grants`): under a delegation a node would mint a person's token. hugr-init refuses the overlap.
 - `door.scopes` and `door.grants` are required, as hugr-init's `grants` are: the umbrella chart refuses an install
-  without them.
-- An existing `hugr_door` is left as it is, as `hugr_policy_catalog` is (nothing is rewritten by itself).
+  without them. A scope is `quack:<host>:<port>`, the host in lower case (as a browser writes it), the port 1..65535;
+  a loopback host is refused unless `door.allowLoopback` (a demo's stand: a client goes to a loopback door without TLS
+  by default).
+- The audience defaults to `console.audiences.nodes`. On Entra that is an `api://` URI, and On-Behalf-Of mints by the
+  API's client id (a GUID): the chart refuses an `api://` audience, so an Entra install names `door.audience`.
+- An existing `hugr_door` is left as it is, as `hugr_policy_catalog` is (nothing is rewritten by itself), and granted
+  only while it is a `quack` secret within `door.scopes`: another type, no scope or a door not named fails the run,
+  granting nothing. The grants are written again at every run: a revoke goes in the values.
+- The database administrator's one-time Secret is deleted once the catalog is done, before this step: a failing
+  doors' write leaves no credential behind.
 
 ### The policy and the IdP
 
@@ -94,14 +107,16 @@ without tresor is not the platform: for it the open duckdb-acl is the simpler ch
 
 ## Security
 
-- **The page holds no door credential.** The page's token for tresor's audience goes to tresor alone, as a prepared
+- **The page writes no door credential.** The page's token for tresor's audience goes to tresor alone, as a prepared
   statement's parameter (tresor spec 043). The token for the nodes is minted by tresor-server for that same person
-  and kept in the worker's memory.
+  and kept in the worker's memory. On Keycloak the console's sign-in token carries the nodes' audience too (one token
+  for every audience): the page holds it as the console does, and writes it into no secret.
 - **A minted token is the caller's own.**
   - tresor-server exchanges the bearer of the read. Under a delegation grant it is the grant's user's.
   - It refuses to mint for its own audience, and refuses a minted token that names it.
-- **The secret is sent only to the doors in its scope**, never to any other quack server a client connects to. The
-  scope is exact (host and port).
+- **The secret is sent only to the doors in its scope.** DuckDB matches a scope as a prefix of the address it looks
+  up (`quack:<host>:<port>`): `quack:console.example.org:443` also covers ports 4430-4439 and 44300-44399 of that
+  host - the platform's own. Never another host's quack server.
 - **The node judges as always.**
   - The minted token counts only through the policy's client for tresor.
   - An administrator reaches `platform_admin` only through that client's own mapping (duckdb-acl spec 095).
@@ -121,13 +136,18 @@ without tresor is not the platform: for it the open duckdb-acl is the simpler ch
 - **vitest**: the page's statements (the hand-over, the ATTACH, `which_secret`), and the refusal when tresor serves
   no secret for the door.
 - **Browser e2e** (`test/console/e2e/run.sh`) gains tresor-server v0.7.5 (built by `go install`, its state in memory)
-  with a Keycloak exchange client (the stand's own: a client secret made for the run, in the two processes' environment
-  only), the node's policy client for it, and `hugr_door` written as hugr-init writes it:
+  with a Keycloak exchange client (the stand's own: a client secret made for the run, in Keycloak's realm file and
+  tresor-server's environment, never on a command line), a second issuer (as a platform's tresor trusts the
+  cluster's: the page must name its own), the node's policy client for it, and `hugr_door` written as hugr-init
+  writes it:
   - an admin's run uses tresor's secret, and its results match stage 1's (both modes);
-  - a person with no `use` grant gets the page's refusal naming what is missing, and nothing runs;
-  - a renewed console token is handed over at the next run.
+  - a person with no `use` grant gets the page's refusal naming what is missing, and nothing runs.
+- **vitest**: each run hands over the session's current token, named by its issuer; the ATTACH once; the door's
+  secret looked up; another person told apart.
 - **Demo** (spec 004, Keycloak):
-  - the realm's exchange client `duckdb-secrets` (tresor's projected token, no secret) and the target `hugr`;
+  - the realm's exchange client `duckdb-secrets` (tresor's projected token, no secret) and the target `hugr` - an
+    exchange's audience must be a client of the realm; tresor trusts the run's CA for the IdP's token endpoint by
+    `SSL_CERT_DIR` (its `ca_file` covers discovery and keys only);
   - hugr-init writes `hugr_door` for the console as the checks and the stand reach it; `firstPolicy` has the client
     `tresor`;
   - check 4c: tresor's discovery under the console's `/tresor`; the admin reads `hugr_door` there (the checker's
@@ -148,8 +168,9 @@ without tresor is not the platform: for it the open duckdb-acl is the simpler ch
 
 ## Follow-ups
 
-- The AKS demo (Entra): tresor's On-Behalf-Of for the nodes' API (its application delegated the API, admin consent),
-  with the next live AKS run. Until then the demo checks only tresor's discovery there.
+- **The AKS demo (Entra)**: tresor's On-Behalf-Of for the nodes' API (its application delegated the API, admin consent),
+  with the next live AKS run; the doors' audience is the API's client id there. Until then the demo checks only
+  tresor's discovery there.
 
 - A third mode of the page, statements in the page's own DuckDB (tresor's `whoami`, a person's secrets), only if
   asked.

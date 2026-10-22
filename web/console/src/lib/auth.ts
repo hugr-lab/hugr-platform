@@ -62,8 +62,12 @@ export class Session {
   }
 
   private set(u: User | null) {
+    // another person (a popup's sign-in as someone else) holds none of the last one's tokens of their own
+    if (!u || u.profile?.sub !== this.user?.profile?.sub) {
+      this.others.clear()
+      this.renewing.clear()
+    }
     this.user = u
-    if (!u) this.others.clear()
     this.notify()
   }
 
@@ -155,6 +159,7 @@ export class Session {
   /** a resource's own token by the refresh token (Entra: one token per resource) */
   private async exchange(audience: string, scope: string): Promise<string> {
     const refresh = this.user?.refresh_token
+    const who = this.user?.profile?.sub
     if (!refresh) throw new SessionEnded()
     const endpoint = await this.m.metadataService.getTokenEndpoint()
     if (!endpoint) throw new Error('the identity provider names no token endpoint')
@@ -164,6 +169,8 @@ export class Session {
     if (!res.ok) throw new SessionEnded()
     const answer = (await res.json()) as { access_token?: string; expires_in?: number }
     if (!answer.access_token) throw new SessionEnded()
+    // another person signed in meanwhile: the last one's token is theirs, never handed out now
+    if (this.user?.profile?.sub !== who) throw new SessionEnded()
     const held = { token: answer.access_token, expiresAt: Date.now() / 1000 + (answer.expires_in ?? 300) }
     this.others.set(audience, held)
     return held.token

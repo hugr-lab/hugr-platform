@@ -41,6 +41,7 @@ hugrInit:
     url: https://tresor.tresor.svc
     grants: [role:hugr_node]
   door:
+    audience: 00000000-0000-0000-0000-00000000a001 # Entra: the nodes' API's client id
     scopes: ["quack:console.hugr.example:443", "quack:hugr.example:9494"]
     grants: [role:hugr-admins]
   catalog:

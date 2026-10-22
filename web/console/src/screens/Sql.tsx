@@ -22,7 +22,7 @@ export function Sql() {
     setError(undefined)
     try {
       const token = await session.getToken(config.audiences.tresor)
-      setAnswer(await run(sql, token, native && mode === 'native'))
+      setAnswer(await run(sql, token, config.issuer, native && mode === 'native'))
     } catch (e) {
       setError(e)
       setAnswer(undefined)

@@ -83,6 +83,28 @@ func (t *Tresor) Exists(ctx context.Context, name string) (bool, error) {
 	return false, nil
 }
 
+// Descriptor is what tresor says of a secret without its material.
+type Descriptor struct {
+	Name  string   `json:"name"`
+	Type  string   `json:"type"`
+	Scope []string `json:"scope"`
+}
+
+// Describe is the secret's descriptor among those the caller (an administrator: all of them) may see; nil when there
+// is none. Never its material: reading that would mint the doors' token for the Job.
+func (t *Tresor) Describe(ctx context.Context, name string) (*Descriptor, error) {
+	var descriptors []Descriptor
+	if err := t.do(ctx, http.MethodGet, t.api+"/v1/secrets", nil, nil, true, &descriptors); err != nil {
+		return nil, fmt.Errorf("tresor's secrets: %w", err)
+	}
+	for _, d := range descriptors {
+		if d.Name == name {
+			return &d, nil
+		}
+	}
+	return nil, nil
+}
+
 // Secret is what a PUT carries.
 type Secret struct {
 	Type       string         `json:"type"`

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -31,8 +32,12 @@ type DoorConfig struct {
 	// Scopes are the doors people reach, quack:<host>:<port> each: the console's and the front's public addresses,
 	// which the platform does not know.
 	Scopes []string `json:"scopes"`
-	// Grants are who may use it: the people's roles or groups in tresor (role:… or group:…).
+	// Grants are who may use it: the people's roles or groups in tresor (role:… or group:…) - never the nodes', whose
+	// grants would let a node mint a person's token under a delegation.
 	Grants []string `json:"grants"`
+	// AllowLoopback lets a scope name a loopback address: a demo's stand on one machine, never an install's (a client
+	// reaches a loopback door without TLS by default).
+	AllowLoopback bool `json:"allowLoopback,omitempty"`
 }
 
 // SecretRef is one key of a Secret.
@@ -91,8 +96,9 @@ var (
 	dnsLabel  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	dnsName   = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 	secretKey = regexp.MustCompile(`^[A-Za-z0-9._-]{1,253}$`)
-	// a door as quack's secrets scope it: host and port, nothing else
-	doorScope = regexp.MustCompile(`^quack:[A-Za-z0-9.-]{1,253}:[0-9]{1,5}$`)
+	// a door as quack's secrets scope it: host (as a browser writes it, in lower case) and port, nothing else
+	doorScope = regexp.MustCompile(`^quack:([a-z0-9.-]{1,253}):([1-9][0-9]{0,4})$`)
+	loopback  = regexp.MustCompile(`^(localhost|127(\.[0-9]{1,3}){3})$`)
 	// an audience goes into a generator (mint+exchange://<audience>, ${exchange://<audience>}): no query, no brace,
 	// no quote, no space
 	audience = regexp.MustCompile(`^[^\s?#{}'"$]{1,255}$`)
@@ -152,8 +158,14 @@ func (c *Config) Validate() error {
 		add("door.scopes names no door: nobody could reach the nodes through tresor (spec 009)")
 	}
 	for _, scope := range c.Door.Scopes {
-		if !doorScope.MatchString(scope) {
-			add("door.scopes: %q is not quack:<host>:<port>", scope)
+		m := doorScope.FindStringSubmatch(scope)
+		switch {
+		case m == nil:
+			add("door.scopes: %q is not quack:<host>:<port> (a lower-case host)", scope)
+		case !validPort(m[2]):
+			add("door.scopes: %q names no port 1..65535", scope)
+		case loopback.MatchString(m[1]) && !c.Door.AllowLoopback:
+			add("door.scopes: %q is a loopback door - a demo's stand only (door.allowLoopback)", scope)
 		}
 	}
 	if len(c.Door.Grants) == 0 {
@@ -162,6 +174,11 @@ func (c *Config) Validate() error {
 	for _, p := range c.Door.Grants {
 		if !principal.MatchString(p) {
 			add("door.grants: %q is not a role:… or group:… principal", p)
+		}
+		for _, node := range c.Tresor.Grants {
+			if p == node {
+				add("door.grants: %q is the nodes' (tresor.grants): a node must not mint a person's token", p)
+			}
 		}
 	}
 	if c.Catalog.Secret == "" || len(c.Catalog.Secret) > 200 || strings.TrimSpace(c.Catalog.Secret) != c.Catalog.Secret {
@@ -197,4 +214,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("hugr-init: the configuration: %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// validPort is 1..65535.
+func validPort(text string) bool {
+	port, err := strconv.Atoi(text)
+	return err == nil && port >= 1 && port <= 65535
 }

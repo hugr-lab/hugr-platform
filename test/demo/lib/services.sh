@@ -51,7 +51,12 @@ tlsSecret: tresor-tls
 service: {port: 443}
 clusterIssuer: {enabled: $private}
 vaultToken: {enabled: true, audience: vault}
-$([ -z "$TRESOR_EXCHANGE_CLIENT" ] || echo "exchangeToken: {enabled: true, audience: \"$IDP_FEDERATION_AUDIENCE\"}")
+$([ -z "$TRESOR_EXCHANGE_CLIENT" ] || cat <<EXCHANGE
+exchangeToken: {enabled: true, audience: "$IDP_FEDERATION_AUDIENCE"}
+# the exchange posts to the IdP's token endpoint by the system's roots, never the issuer's ca_file: the run's CA beside them
+env: [{name: SSL_CERT_DIR, value: /var/run/tresor/cas}]
+EXCHANGE
+)
 resources: {requests: {cpu: 10m, memory: 32Mi}}
 extraVolumes:
   - {name: db, secret: {secretName: tresor-db}}
