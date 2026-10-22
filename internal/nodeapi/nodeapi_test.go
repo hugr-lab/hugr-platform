@@ -384,3 +384,60 @@ func TestForeignLeaseIsNotTaken(t *testing.T) {
 		t.Errorf("the foreign Lease was taken: holder %q", *lease.Spec.HolderIdentity)
 	}
 }
+
+// spec 008: the rollout's canary - a pod of the canary group made from the target image - is told to migrate the
+// catalog; no other pod is, and no pod once the canary phase is over
+func TestBootstrapCanaryMigrates(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	set := func(podImage, phase, group string, migrate bool) {
+		t.Helper()
+		var platform v1alpha1.HugrPlatform
+		if err := w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "hugr"}, &platform); err != nil {
+			t.Fatal(err)
+		}
+		platform.Spec.Node.Image = "img2"
+		platform.Status.Upgrade = &v1alpha1.UpgradeStatus{From: "img", To: "img2", Phase: phase, Group: group,
+			Migrate: migrate}
+		if err := w.client.Update(ctx, &platform); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-7f9c-x2k8p"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		pod.Spec.Containers = []corev1.Container{{Name: build.NodeName, Image: podImage}}
+		if err := w.client.Update(ctx, &pod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migrates := func() bool {
+		t.Helper()
+		rec := w.call(http.MethodGet, "/v1/bootstrap", etlToken, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+		var doc nodeproto.Document
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		return doc.Catalog.Migrate
+	}
+	set("img2", "Canary", "etl", true)
+	if !migrates() {
+		t.Error("the canary's new pod is not told to migrate")
+	}
+	cases := map[string]func(){
+		"an old pod of the canary group":  func() { set("img", "Canary", "etl", true) },
+		"a pod of another group":          func() { set("img2", "Canary", "bi", true) },
+		"after the canary":                func() { set("img2", "Groups", "etl", true) },
+		"a rollout that does not migrate": func() { set("img2", "Canary", "etl", false) },
+		"a blocked rollout's canary":      func() { set("img2", "Blocked", "etl", true) },
+	}
+	for name, setUp := range cases {
+		setUp()
+		if migrates() {
+			t.Errorf("%s is told to migrate", name)
+		}
+	}
+}

@@ -376,6 +376,25 @@ spec:
               node:
                 description: Node is what every node runs.
                 properties:
+                  catalogMinReader:
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  catalogSchema:
+                    description: |-
+                      CatalogSchema is the policy catalog's schema version the image's build reads and writes, and
+                      CatalogMinReader the oldest build that reads what it writes (duckdb-acl spec 094; the release names both). An
+                      upgrade to a newer schema has its canary migrate the catalog; 0: the catalog is not judged.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  duckdbVersion:
+                    description: |-
+                      DuckDBVersion is the DuckDB release the image runs (the release names it): an upgrade checks the repository's
+                      channel serves the catalog's extension for it before any node moves, and every new node must report it (spec
+                      008). Empty: neither is checked.
+                    pattern: ^[A-Za-z0-9._+-]{1,64}$
+                    type: string
                   image:
                     description: Image is the hugr-node image.
                     minLength: 1
@@ -1516,6 +1535,20 @@ spec:
                 required:
                 - host
                 type: object
+              upgrade:
+                description: Upgrade is the administrator's say over a rollout of
+                  a new node image (spec 008).
+                properties:
+                  allowCatalogDowntime:
+                    description: |-
+                      AllowCatalogDowntime lets the canary take a strict catalog step: one past the old nodes' window, after which
+                      they stop serving at their next check until they move too.
+                    type: boolean
+                  paused:
+                    description: Paused holds the rollout where it is; set back to
+                      false, a blocked rollout tries its step again.
+                    type: boolean
+                type: object
             required:
             - idp
             - node
@@ -1587,6 +1620,54 @@ spec:
                   - type
                   type: object
                 type: array
+              image:
+                description: Image is the node image every group runs when no rollout
+                  is under way (spec 008).
+                type: string
+              upgrade:
+                description: 'Upgrade is the latest rollout of a node image: where
+                  it stands, or how it ended.'
+                properties:
+                  from:
+                    description: From is the image the groups ran when the rollout
+                      began; To is the one it moves them to.
+                    type: string
+                  group:
+                    description: 'Group rolls now: the canary, then each group in
+                      turn.'
+                    type: string
+                  migrate:
+                    description: 'Migrate: the canary''s new nodes migrate the catalog
+                      (their document''s catalog.migrate).'
+                    type: boolean
+                  moved:
+                    description: Moved lists the groups that run To.
+                    items:
+                      type: string
+                    type: array
+                  phase:
+                    description: |-
+                      Phase: Preconditions, Canary, Groups, Complete, Blocked (stopped on a failure, until the administrator pauses
+                      and resumes it, or sets another image) or Paused (spec.upgrade.paused).
+                    type: string
+                  reason:
+                    description: Reason the rollout is Blocked or Paused.
+                    type: string
+                  resume:
+                    description: Resume is the phase a Blocked or Paused rollout goes
+                      back to.
+                    type: string
+                  startedAt:
+                    format: date-time
+                    type: string
+                  to:
+                    type: string
+                required:
+                - from
+                - phase
+                - startedAt
+                - to
+                type: object
             type: object
         type: object
     served: true

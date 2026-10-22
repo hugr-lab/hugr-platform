@@ -56,7 +56,7 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
 
 | part | moved by | how it rolls | what holds during the roll |
 | --- | --- | --- | --- |
-| CRDs | Helm | they move to `templates/` with `helm.sh/resource-policy: keep` (Q4), so an upgrade applies them | only additive changes inside a version; a breaking one is a new API version with conversion |
+| CRDs | Helm, by a pre-upgrade hook (Q4) | they stay in `crds/` for the first install; before an upgrade a Job of the new operator image applies the CRDs it carries, server-side | only additive changes inside a version; a CRD that drops a served or stored version is refused, so a breaking change is a new API version with conversion |
 | OpenBao (internal) | Helm | HA on PostgreSQL, 2 replicas; a pod's SIGTERM steps the active down (OpenBao: "a few hundred milliseconds to a second") | tresor serves from its cached data keys (5 min) and the KEK version's grace (1 h); kista signs only when it publishes or mirrors |
 | tresor-server | Helm | rolling, 2 replicas, PDB; migrations at start under a lock | an old replica keeps serving after a migration; the protocol is `duckdb-secrets/1` on both sides |
 | kista | Helm | `Recreate` on its blob volume: a short gap | nodes need kista only to start and for a profile item, so the operator rolls no node while kista is not ready |
@@ -138,6 +138,48 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
   `catalog-*`). A key the latest report leaves out is removed, so a value never outlives the build that wrote it, and
   a node's string is kept to 128 bytes. A group's status gains `builds` (live nodes per build and DuckDB release)
   and `catalog` (the newest stamp a live node read).
+- **The phased rollout** (this repository):
+  - **The state.** `status.image` is the image every group runs when no rollout is under way. `status.upgrade`
+    holds `from`, `to`, `phase` (Preconditions, Canary, Groups, Complete, Blocked, Paused), the `group` rolling, the
+    groups `moved`, `migrate`, `resume` (the phase a blocked or paused rollout returns to), `reason` and
+    `startedAt`.
+  - **Who decides.** `internal/upgrade` is pure: `Decide` takes the target, the last status and what each group runs,
+    and returns the next status. The `UpgradeReconciler` reads the world every 5 s and writes the two fields with a
+    merge patch.
+  - **Who applies.** The group reconciler builds each Deployment with `upgrade.ImageFor`: the target once the rollout
+    has reached the group, and what the group runs until then. Between a new image and the rollout's first decision,
+    nothing moves.
+  - **The canary's flag.** The node API sets `catalog.migrate` only for a pod of the canary group made from the
+    target image, while the phase is Canary and the rollout migrates.
+  - **The release's facts** come from the charts: `spec.node.duckdbVersion` (the umbrella takes `global.duckdbVersion`)
+    and `catalogSchema` / `catalogMinReader` (22 / 21 for hugr-node v0.2.0, the schema of its acl, 41ec046).
+  - **The demo's check 12**: the same build under another name rolls group by group - the canary a first, b waiting on
+    its image, then b - and the rollout ends Complete with the fleet serving. A catalog migration needs a second acl
+    build: it is the bootstrap e2e's in hugr-node (spec 017) until a second release exists.
+- **Decisions taken while building** (within the accepted design):
+  - **A blocked rollout stays blocked.** It continues after the administrator pauses and resumes it
+    (`spec.upgrade.paused` true, then false), or sets another image. A repository that does not answer is waited
+    for and never blocks; one that answers without an extension blocks.
+  - **The order and the canary.** The canary is the first group in the order (the first policy's default group,
+    else the group whose nodes report the default, then by name) that runs nodes. Groups of no node before it are
+    moved at once. A group is done when its Deployment rolled (every replica updated and available, no old one) and
+    every node of the new image has reported.
+  - **A wrong release fact blocks.** A new node that reports another DuckDB release, or another catalog build than
+    the release says, blocks the rollout: a mistyped value in the chart is caught at the canary.
+  - **A new target starts over.** A new image mid-rollout (the old one set back, or another release) starts a rollout
+    to it from `status.image`, and every group is rolled to it in order.
+- **The CRDs before an upgrade** (Q4 as replaced, the owner 2026-10-22). Helm never upgrades `crds/`, so on an
+  existing install the API server would drop the new fields until the CRDs are applied, and moving them to
+  `templates/` breaks the first install (the chart's own `HugrPlatform` would not map).
+  - The CRDs stay in `crds/` for the first install.
+  - Before an upgrade, a pre-upgrade hook Job of the new operator image, `hugr-init --phase crds`, server-side-applies
+    the CRDs that image carries (`internal/crds`, which `make manifests` copies and a test keeps equal to the chart's).
+    It takes the fields over from whoever wrote them (Helm's install, a `kubectl apply`).
+  - A CRD that would drop a version the cluster serves or stores is refused before anything is applied, so the
+    upgrade stops there.
+  - Its ServiceAccount, ClusterRole (get and patch of the two CRDs, by `resourceNames`) and binding are hooks too:
+    they exist only while the upgrade runs (`crdUpgrade.enabled`, on by default).
+  - The demo's check 11 (an upgrade of the release to itself) runs the hook.
 
 ## Security
 
@@ -175,8 +217,9 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
 - **Q1 - nodes**: one group at a time, a canary first. Within a group, pod by pod, each drained.
 - **Q2, Q3 - the catalog**: the canary migrates it on the operator's flag. A step inside the window goes with the
   upgrade; a strict step waits for `spec.upgrade.allowCatalogDowntime`.
-- **Q4 - CRDs**: in `templates/` with `helm.sh/resource-policy: keep`, so Helm upgrades them (proposed, not objected
-  to).
+- **Q4 - CRDs**: first `templates/` with `helm.sh/resource-policy: keep` (proposed, not objected to). Building it showed
+  that this breaks the first install: the chart's own `HugrPlatform` would not map. Replaced (the owner, 2026-10-22):
+  the CRDs stay in `crds/`, and a pre-upgrade hook applies the new release's CRDs from the operator's image.
 - **Q5 - kista**: "kista keeps the extensions' versions for each DuckDB version, so the task is to migrate kista itself,
   and to check the versions are there." The platform upgrades kista and checks; it adds nothing to a channel, and no
   product gap is asked of kista.

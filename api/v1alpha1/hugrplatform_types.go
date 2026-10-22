@@ -12,6 +12,9 @@ import (
 type HugrPlatformSpec struct {
 	// Node is what every node runs.
 	Node NodeSpec `json:"node"`
+	// Upgrade is the administrator's say over a rollout of a new node image (spec 008).
+	// +optional
+	Upgrade UpgradeSpec `json:"upgrade,omitempty"`
 	// IdP is the organisation's IdP: users, nodes, the operator, tresor and kista trust it.
 	IdP IdPSpec `json:"idp"`
 	// Tresor is the secrets service, a product of its own, reached directly.
@@ -57,6 +60,32 @@ type NodeSpec struct {
 	// ImagePullPolicy of the nodes' container.
 	// +optional
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+	// DuckDBVersion is the DuckDB release the image runs (the release names it): an upgrade checks the repository's
+	// channel serves the catalog's extension for it before any node moves, and every new node must report it (spec
+	// 008). Empty: neither is checked.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._+-]{1,64}$`
+	// +optional
+	DuckDBVersion string `json:"duckdbVersion,omitempty"`
+	// CatalogSchema is the policy catalog's schema version the image's build reads and writes, and
+	// CatalogMinReader the oldest build that reads what it writes (duckdb-acl spec 094; the release names both). An
+	// upgrade to a newer schema has its canary migrate the catalog; 0: the catalog is not judged.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	CatalogSchema int64 `json:"catalogSchema,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	CatalogMinReader int64 `json:"catalogMinReader,omitempty"`
+}
+
+// UpgradeSpec is the administrator's say over a rollout (spec 008).
+type UpgradeSpec struct {
+	// Paused holds the rollout where it is; set back to false, a blocked rollout tries its step again.
+	// +optional
+	Paused bool `json:"paused,omitempty"`
+	// AllowCatalogDowntime lets the canary take a strict catalog step: one past the old nodes' window, after which
+	// they stop serving at their next check until they move too.
+	// +optional
+	AllowCatalogDowntime bool `json:"allowCatalogDowntime,omitempty"`
 }
 
 // IdPSpec is the organisation's IdP.
@@ -324,6 +353,39 @@ type PlanSpec struct {
 type HugrPlatformStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// Image is the node image every group runs when no rollout is under way (spec 008).
+	// +optional
+	Image string `json:"image,omitempty"`
+	// Upgrade is the latest rollout of a node image: where it stands, or how it ended.
+	// +optional
+	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
+}
+
+// UpgradeStatus is a rollout of a node image across the groups (spec 008): the preconditions, a canary that migrates
+// the catalog when the image's build needs it, then the groups one at a time.
+type UpgradeStatus struct {
+	// From is the image the groups ran when the rollout began; To is the one it moves them to.
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Phase: Preconditions, Canary, Groups, Complete, Blocked (stopped on a failure, until the administrator pauses
+	// and resumes it, or sets another image) or Paused (spec.upgrade.paused).
+	Phase string `json:"phase"`
+	// Group rolls now: the canary, then each group in turn.
+	// +optional
+	Group string `json:"group,omitempty"`
+	// Moved lists the groups that run To.
+	// +optional
+	Moved []string `json:"moved,omitempty"`
+	// Migrate: the canary's new nodes migrate the catalog (their document's catalog.migrate).
+	// +optional
+	Migrate bool `json:"migrate,omitempty"`
+	// Resume is the phase a Blocked or Paused rollout goes back to.
+	// +optional
+	Resume string `json:"resume,omitempty"`
+	// Reason the rollout is Blocked or Paused.
+	// +optional
+	Reason    string      `json:"reason,omitempty"`
+	StartedAt metav1.Time `json:"startedAt"`
 }
 
 // HugrPlatform is one installation of the platform, one per namespace.

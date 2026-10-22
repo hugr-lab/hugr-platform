@@ -137,7 +137,7 @@ func newWorld(t *testing.T, objs ...client.Object) *world {
 	// real in envtest)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(objs, platform)...).
 		WithTypeConverters(managedfields.NewDeducedTypeConverter()).
-		WithStatusSubresource(&v1alpha1.HugrNodeGroup{}).Build()
+		WithStatusSubresource(&v1alpha1.HugrNodeGroup{}, &v1alpha1.HugrPlatform{}).Build()
 	w := &world{client: c, now: t0}
 	w.reconciler = &GroupReconciler{Client: c, Scheme: scheme, Settings: build.Settings{OrchestratorURL: "https://op"},
 		Now: func() time.Time { return w.now }}

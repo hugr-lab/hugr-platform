@@ -1,0 +1,304 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: hugrnodegroups.platform.hugr.io
+spec:
+  group: platform.hugr.io
+  names:
+    kind: HugrNodeGroup
+    listKind: HugrNodeGroupList
+    plural: hugrnodegroups
+    shortNames:
+    - hng
+    singular: hugrnodegroup
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.replicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .spec.size
+      name: Size
+      type: string
+    - jsonPath: .status.profile.target
+      name: Target
+      type: integer
+    - jsonPath: .status.profile.applied
+      name: Applied
+      type: integer
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: HugrNodeGroup is one pool of nodes.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: 'HugrNodeGroupSpec is one pool of nodes: how many, of which
+              size. People edit it with standard tooling.'
+            properties:
+              doors:
+                description: Doors the nodes open. Flight is always open.
+                properties:
+                  quack:
+                    description: Quack opens the quack door beside Flight.
+                    type: boolean
+                type: object
+              drainSeconds:
+                description: |-
+                  DrainSeconds a stopping node waits for its sessions (HUGR_DRAIN_DEADLINE); the pod's grace is 30 s more.
+                  Default 300.
+                format: int32
+                minimum: 0
+                type: integer
+              identity:
+                description: |-
+                  Identity is the group's workload identity in the IdP, federated from the group's ServiceAccount: the
+                  nodes' login to tresor.
+                properties:
+                  clientID:
+                    description: ClientID is the identity's client id in the IdP.
+                    type: string
+                type: object
+              platform:
+                description: Platform is the HugrPlatform of the namespace the group
+                  belongs to.
+                minLength: 1
+                type: string
+              replicas:
+                description: Replicas is the number of nodes.
+                format: int32
+                minimum: 0
+                type: integer
+              resourceGroup:
+                description: 'ResourceGroup is the policy''s resource group the nodes
+                  serve (acl_node_group). Default: the group''s name.'
+                type: string
+              restartedAt:
+                description: 'RestartedAt rolls the group when it changes: the console''s
+                  restart button, or a kubectl patch.'
+                type: string
+              size:
+                description: Size is one of the platform's sizes, allowed by its plan.
+                minLength: 1
+                type: string
+              tls:
+                description: |-
+                  TLS is the doors' certificate, one per group, for the name hugr-node-<group>.<namespace>.svc: a
+                  kubernetes.io/tls Secret, or one cert-manager's csi-driver issues into each pod (spec 005).
+                properties:
+                  csi:
+                    description: |-
+                      CSI has cert-manager's csi-driver issue each pod its own certificate: the key is made on the pod's node, held
+                      in memory and never written to a Secret (spec 005, the owner's decision 6).
+                    properties:
+                      duration:
+                        description: |-
+                          Duration of a certificate, a Go duration ("720h"). Default: the csi-driver's (720h); it renews at two
+                          thirds.
+                        pattern: ^([0-9]+(\.[0-9]+)?(h|m|s))+$
+                        type: string
+                      issuerRef:
+                        description: IssuerRef names a cert-manager issuer.
+                        properties:
+                          group:
+                            description: 'Group is the issuer''s API group: cert-manager.io,
+                              the default, or an external issuer''s.'
+                            type: string
+                          kind:
+                            description: Kind is Issuer (the namespace's, the default),
+                              ClusterIssuer, or an external issuer's kind.
+                            type: string
+                          name:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - issuerRef
+                    type: object
+                  secretRef:
+                    description: 'SecretRef is a kubernetes.io/tls Secret of the namespace,
+                      named hugr-node-…: its key is kept in etcd.'
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: tls names exactly one of secretRef and csi
+                  rule: has(self.secretRef) != has(self.csi)
+            required:
+            - identity
+            - platform
+            - replicas
+            - size
+            - tls
+            type: object
+          status:
+            description: HugrNodeGroupStatus is the group's state, aggregated from
+              its Deployment and its nodes' Leases.
+            properties:
+              builds:
+                description: 'Builds counts the live nodes per build they report (spec
+                  008): during an upgrade, two.'
+                items:
+                  description: BuildCount is how many of a group's live nodes report
+                    one build.
+                  properties:
+                    build:
+                      description: Build is the hugr_node build the nodes report.
+                      type: string
+                    duckdb:
+                      description: DuckDB is the DuckDB release they run.
+                      type: string
+                    nodes:
+                      description: Nodes reporting it.
+                      format: int32
+                      type: integer
+                  required:
+                  - build
+                  - nodes
+                  type: object
+                type: array
+              catalog:
+                description: 'Catalog is the policy catalog''s schema as the live
+                  nodes report it: the newest stamp any of them read.'
+                properties:
+                  minReader:
+                    format: int64
+                    type: integer
+                  schema:
+                    format: int64
+                    type: integer
+                required:
+                - minReader
+                - schema
+                type: object
+              conditions:
+                description: 'Conditions: Ready, Refused (past the plan), Draining
+                  (the resource group is gone).'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lost:
+                description: Lost lists the nodes whose Lease expired.
+                items:
+                  type: string
+                type: array
+              observedGeneration:
+                format: int64
+                type: integer
+              profile:
+                description: ProfileStatus is the group's convergence on the cluster
+                  profile.
+                properties:
+                  applied:
+                    description: Applied is how many live nodes have applied the target.
+                    format: int32
+                    type: integer
+                  needsRestart:
+                    description: NeedsRestart lists the nodes that report an item
+                      they can apply only at a restart or a drain.
+                    items:
+                      type: string
+                    type: array
+                  target:
+                    description: Target is the highest profile version a live node
+                      reports.
+                    format: int64
+                    type: integer
+                type: object
+              readyReplicas:
+                format: int32
+                type: integer
+              replicas:
+                format: int32
+                type: integer
+              resourceGroupKnown:
+                description: 'ResourceGroupKnown says whether the nodes find their
+                  resource group in the policy (nil: no node reported).'
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

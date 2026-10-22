@@ -18,6 +18,7 @@ import (
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
+	"github.com/hugr-lab/hugr-platform/internal/upgrade"
 	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
 )
 
@@ -80,6 +81,11 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	document := build.Document(node.Platform, node.Group, node.Pod.Name,
 		build.HeartbeatSeconds(node.Platform, node.Pod.Annotations))
+	// spec 008: the rollout's canary - a pod of the canary group made from the target image - migrates the catalog
+	if up := node.Platform.Status.Upgrade; up != nil && up.Migrate && up.Phase == upgrade.PhaseCanary &&
+		up.Group == node.Group.Name && up.To == node.Platform.Spec.Node.Image && build.NodeImage(&node.Pod.Spec) == up.To {
+		document.Catalog.Migrate = true
+	}
 	if node.Platform.Spec.FirstPolicy != nil {
 		// spec 005: the first policy names the namespace's groups, so a node of any of them may write it
 		var groups v1alpha1.HugrNodeGroupList

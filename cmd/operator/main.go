@@ -136,6 +136,10 @@ func main() {
 		logger.Error(err, "no front controller")
 		os.Exit(1)
 	}
+	if err := (&controller.UpgradeReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		logger.Error(err, "no upgrade controller")
+		os.Exit(1)
+	}
 	if webhooks {
 		if err := (&groupwebhook.GroupValidator{Reader: mgr.GetAPIReader()}).SetupWithManager(mgr); err != nil {
 			logger.Error(err, "no webhook")

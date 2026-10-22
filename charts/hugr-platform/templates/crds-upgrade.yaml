@@ -1,0 +1,85 @@
+{{/* spec 008: an upgrade brings its CRDs. Helm installs crds/ at the first install and never again, so before an
+upgrade a Job of the new release's operator image applies the CRDs that image carries, server-side: within a version
+the fields only grow, and a CRD that would drop a version the cluster serves or stores is refused (the upgrade then
+stops before anything else changes). Hooks, as hugr-init's are: the Job and the right it needs - get and patch of
+the platform's two CRDs, by name - exist only while the upgrade runs. */}}
+{{- if .Values.crdUpgrade.enabled }}
+{{- $hook := dict "helm.sh/hook" "pre-upgrade" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" }}
+{{- $name := printf "%s-hugr-crds" .Release.Namespace }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hugr-crds
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: crds
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
+rules:
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    resourceNames: [hugrplatforms.platform.hugr.io, hugrnodegroups.platform.hugr.io]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-20"
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}}
+subjects:
+  - {kind: ServiceAccount, name: hugr-crds, namespace: {{ .Release.Namespace }}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hugr-crds
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hugr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: crds
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-10"
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "hugr.labels" . | nindent 8 }}
+        app.kubernetes.io/component: crds
+    spec:
+      serviceAccountName: hugr-crds
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: hugr-crds
+          image: {{ include "hugr.operatorImage" . }}
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          command: [/hugr-init, --phase, crds]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            {{- toYaml .Values.crdUpgrade.resources | nindent 12 }}
+{{- end }}

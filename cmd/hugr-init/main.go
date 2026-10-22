@@ -3,6 +3,7 @@
 // --phase databases (a Job of the umbrella, before the services start) makes their (tresor's, kista's) databases first.
 // --phase openbao (the umbrella's internal key store) initialises OpenBao once and gives it the services' keys,
 // policies and roles on every run.
+// --phase crds (a pre-upgrade hook, spec 008) applies the release's CRDs, which Helm never upgrades from crds/.
 package main
 
 import (
@@ -15,16 +16,19 @@ import (
 	"syscall"
 	"time"
 
+	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/hugr-lab/hugr-platform/internal/crds"
 	"github.com/hugr-lab/hugr-platform/internal/initjob"
 )
 
 func main() {
 	config := flag.String("config", "/etc/hugr-init/config.yaml", "the Job's configuration")
 	phase := flag.String("phase", "catalog",
-		"catalog (the catalog's secret, its grants), databases (the services') or openbao (the internal key store)")
+		"catalog (the catalog's secret, its grants), databases (the services'), openbao (the internal key store) or "+
+			"crds (the release's CRDs, before an upgrade)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(*config, *phase, log); err != nil {
@@ -37,6 +41,9 @@ func main() {
 func run(path, phase string, log *slog.Logger) error {
 	if phase == "openbao" {
 		return runOpenBao(path, log)
+	}
+	if phase == "crds" {
+		return runCRDs(log)
 	}
 	c, err := initjob.Load(path)
 	if err != nil {
@@ -56,7 +63,7 @@ func run(path, phase string, log *slog.Logger) error {
 		return initjob.RunDatabases(ctx, c, newDatabase, initjob.KubeServiceSecrets{Client: client}, log)
 	case "catalog":
 	default:
-		return fmt.Errorf("hugr-init: --phase is catalog, databases or openbao, not %q", phase)
+		return fmt.Errorf("hugr-init: --phase is catalog, databases, openbao or crds, not %q", phase)
 	}
 	tresor, err := initjob.NewTresor(c.Tresor.URL, c.Tresor.TokenFile, c.Tresor.CAFile)
 	if err != nil {
@@ -108,4 +115,25 @@ func kubeClient() (kubernetes.Interface, error) {
 		return nil, err
 	}
 	return kubernetes.NewForConfig(kube)
+}
+
+// runCRDs: the release's CRDs, the ones this image carries, applied before an upgrade (spec 008)
+func runCRDs(log *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	manifests, err := crds.Manifests()
+	if err != nil {
+		return err
+	}
+	kube, err := rest.InClusterConfig()
+	if err != nil {
+		return err
+	}
+	client, err := apiextensionsclient.NewForConfig(kube)
+	if err != nil {
+		return err
+	}
+	return initjob.RunCRDs(ctx, manifests, initjob.KubeCRDs{Client: client.CustomResourceDefinitions()}, log)
 }

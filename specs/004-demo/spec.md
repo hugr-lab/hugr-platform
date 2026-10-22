@@ -259,6 +259,11 @@ they run once per `up` (`all` does both).
    API and a group's pod admitted; a node's door refuses a pod of no role and admits the front's.
 10. **The optional admission policy.** With `config/policy` applied, a pod created by hand to run as `hugr-node-a` is
     refused, and the groups keep rolling.
+11. **An upgrade of the release to itself** (spec 008's first step): every Job of the umbrella runs again and makes
+    nothing twice, and the platform serves.
+12. **A new node image rolls group by group** (spec 008). The same build is given another name, and the platform's
+    image is set to it. The default group a is the canary; b keeps its image while a rolls, then moves. The rollout
+    ends Complete with `status.image` the new name, and analyst_a still reads.
 
 Then the secrets scan (Security).
 

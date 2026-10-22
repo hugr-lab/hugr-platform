@@ -63,6 +63,16 @@ type Settings struct {
 	FrontImagePullPolicy corev1.PullPolicy
 }
 
+// NodeImage of a pod (or a pod template): its node container's ("" when it has none).
+func NodeImage(spec *corev1.PodSpec) string {
+	for _, c := range spec.Containers {
+		if c.Name == NodeName {
+			return c.Image
+		}
+	}
+	return ""
+}
+
 // Name is the name of every object of a group.
 func Name(group *v1alpha1.HugrNodeGroup) string {
 	return NodeName + "-" + group.Name

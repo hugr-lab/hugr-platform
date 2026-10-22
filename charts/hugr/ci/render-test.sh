@@ -76,4 +76,17 @@ for d in vaults:
 PY2
 echo "ok: the services' vault.crt is the internal OpenBao's CA"
 refuses "a database without a host" "global.database.host is required" --set global.database.host=
+# spec 008: the CRDs applied before an upgrade, by a hook whose right is the two CRDs only
+render >"$OUT"
+python3 - "$OUT" <<'PY3' || fail "the CRDs' pre-upgrade hook"
+import re, sys
+docs = sys.argv[1] and open(sys.argv[1]).read().split("\n---")
+job = [d for d in docs if "kind: Job" in d and "name: hugr-crds" in d]
+assert len(job) == 1 and "helm.sh/hook: pre-upgrade" in job[0] and "--phase, crds" in job[0], "the Job"
+role = [d for d in docs if "kind: ClusterRole\n" in d and "hugr-crds" in d]
+assert len(role) == 1, "the ClusterRole"
+assert "resourceNames: [hugrplatforms.platform.hugr.io, hugrnodegroups.platform.hugr.io]" in role[0], "its names"
+assert "verbs: [get, patch]" in role[0] and role[0].count("verbs:") == 1, "its verbs"
+PY3
+echo "ok: the CRDs are applied before an upgrade by a hook whose right is the two CRDs only"
 echo "PASS: the umbrella's renders"
