@@ -113,50 +113,47 @@ operator's own image, a Service with the Flight SQL (32010) and quack (9494) doo
 write it) and verifies the nodes by `caBundle`. It keeps no table of sessions: a connection stays on the node that
 seated it by the label the node wrote into its cookie or connection id.
 
-### The platform with its services: the chart `hugr`
+### The platform with its parts: the chart `hugr`
 
-`charts/hugr` (spec 005) installs the platform together with tresor-server, kista and its key store, each in a
-namespace of its own (`hugr-tresor`, `hugr-kista`, `hugr-openbao`; made by the release and kept when it goes, with
-their volumes). It pins their charts (tresor-server 0.7.3, kista 0.1.4) and wires them from one set of facts under
-`global`:
+`charts/hugr` (spec 005) installs the platform and wires it to its parts: tresor-server (the secrets service), kista
+(the extension repository) and the policy catalog's PostgreSQL server. These are products of their own, each installed
+by its own recipe and possibly shared by several platforms, so **the chart takes them by their address**:
 
-- **TLS**: each service gets a CA of its own, made once in its namespace; cert-manager issues its serving certificate
-  there. The CAs' public certificates go into the platform's bundle, so the nodes, the front and `hugr-init` trust
-  both services.
-- **The database**: one PostgreSQL 18 or later (`global.database`). A Job of the release (`hugr-init --phase
-  databases`) makes tresor's and kista's databases and logins before they start, each password in a Secret of that
-  service's namespace. Then `hugr-init` makes the catalog's, as above. The administrator's Secret (`hugr-init-db-admin`
-  in the release's namespace) is made once by the installer.
-- **The keys**: two Transit keys - kista signs its channel with `hugr-channel` (RSA), tresor wraps its data keys with
-  `hugr-tresor` - and a Kubernetes-auth role for each service's ServiceAccount (`hugr-kista` in `hugr-kista`, `tresor`
-  in `hugr-tresor`), bound to the audience `vault`. Where they live is `global.keys.mode`:
-  - `internal` (the default): OpenBao of the release in `hugr-openbao`. Two replicas in HA, its storage a fourth
-    database on the same PostgreSQL server, opened by a static key made once at install (`openbao-seal`; the cluster's
-    etcd is the root of trust). `hugr-init --phase openbao` initialises it once - the recovery key in
-    `openbao-recovery`, the root token revoked - and on every release logs in as its own role and makes the keys,
-    policies and roles. The break-glass is a loopback-only listener in the pod (`bao operator generate-root
-    -address=http://127.0.0.1:8210` with the recovery key).
-  - `external`: the organisation's HashiCorp Vault or OpenBao (`global.keys.vault.address`, its CA in `caCert`),
-    where the organisation made the keys and roles above.
-- **The IdP and the cluster's issuer**: `global.idp` (its private CA, if any, in `caCert`) and `global.clusterIssuer`,
-  whose URL `kubectl get --raw /.well-known/openid-configuration` gives.
-- **kista's bootstrap**: the tenant `hugr`, the signed channel `platform` for the node's DuckDB (`global.duckdbVersion`:
-  a release `vX.Y.Z`, or a commit's dev version) and its key.
-- **The node**: the chart pins `hugr-node:v0.2.0`, whose DuckDB is v2.0.0 (`global.duckdbVersion`'s default). The two
-  change together.
+- `global.tresor.host` - tresor-server's `host:port`. It must trust the cluster's ServiceAccount issuer for `hugr-init`
+  and list it among its administrators (`subject:<clusterIssuer.url>|system:serviceaccount:<namespace>:hugr-init`):
+  `hugr-init` writes the catalog's secret there;
+- `global.repository.prefix` - the https prefix of the channel serving the node's DuckDB (`global.duckdbVersion`);
+- `global.database.host` - a PostgreSQL 18 or later. `hugr-init` makes the catalog's database and login there with the
+  administrator's Secret (`hugr-init-db-admin` in the release's namespace, made once by the installer, deleted after
+  use) and writes the login into tresor.
+
+A private CA of any of them goes in its `caCert`, and into the platform's bundle.
+
+**One place for what the chart runs itself**: `install: {tresor, kista, catalogDatabase}`, all `false` by default. A
+part with neither an address nor its flag refuses the render. The chart's own parts are light, one replica each:
+- tresor on SQLite, its KEK in a Secret;
+- kista on SQLite, its channel key (RSA-2048) in a Secret. `global.etcdEncryptionAtRest` is the installer's statement,
+  which kista requires;
+- one PostgreSQL 18 pod for the catalog.
+
+`hugr-init --phase secrets` makes those secrets once, in each part's namespace. Each part also gets a CA of its own
+there. For anything wider (several replicas, a vault or a KMS, another database), install the product by its own recipe
+and give its address.
+
+The IdP and the cluster's issuer are `global.idp` (its private CA, if any, in `caCert`) and `global.clusterIssuer`,
+whose URL `kubectl get --raw /.well-known/openid-configuration` gives. The chart pins `hugr-node:v0.2.0`, whose DuckDB
+is v2.0.0 (`global.duckdbVersion`'s default); the two change together.
 
 ```sh
 helm dependency build charts/hugr
 kubectl -n hugr create secret generic hugr-init-db-admin --from-literal=username=… --from-file=password=…
-helm upgrade --install hugr charts/hugr -n hugr --create-namespace -f my-values.yaml \
-  --set-file global.database.caCert=db-ca.pem --wait
+helm upgrade --install hugr charts/hugr -n hugr --create-namespace -f my-values.yaml --wait
 ```
 
-`charts/hugr/ci/example-values.yaml` is a whole set of values. The values hold no credential. A node restarts until
-kista holds the extensions its catalog needs (postgres_scanner for a PostgreSQL catalog), mirrored from an upstream
-(`kista.config.bootstrap.upstreams`) or published into the channel (`kista admin release add`). The demo
-(`test/demo`) installs through this chart, its PostgreSQL standing in for the organisation's; `HUGR_DEMO_KEYS=external`
-puts its own OpenBao in the organisation vault's place.
+`charts/hugr/ci/example-values.yaml` is a whole set of values given every part, and `own-values.yaml` runs them
+itself. The values hold no credential. A node restarts until the channel holds the extensions its catalog needs
+(postgres_scanner for a PostgreSQL catalog). The demo (`test/demo`) installs tresor-server and kista by their own
+charts on its PostgreSQL and its OpenBao, and the platform through this chart with their addresses.
 
 Business Source License 1.1 (see `LICENSE`): production use is allowed, except offering it to third parties as a
 hosted or managed service. Each version changes to Apache-2.0 four years after its release.

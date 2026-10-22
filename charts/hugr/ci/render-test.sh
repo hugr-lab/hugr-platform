@@ -4,6 +4,7 @@
 set -euo pipefail
 CHART="$(cd "$(dirname "$0")/.." && pwd)"
 EXAMPLE="$CHART/ci/example-values.yaml"
+OWN="$CHART/ci/own-values.yaml"
 OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 
@@ -31,51 +32,57 @@ refuses() {
 	echo "ok: $what refused"
 }
 
-renders "tresor serves https on 443" 'port: 443, targetPort: http'
-renders "tresor's KEK on the Transit mount" '^      mount: transit$'
-renders "a release version is kista's release kind" '^ +- kind: release$'
-renders "a commit's version is kista's dev kind" '^ +- kind: dev$' --set global.duckdbVersion=f8f3f4dcd9
-renders "a private IdP's CA is tresor's for that issuer" 'ca_file: /var/run/tresor/cas/idp.crt' \
+# --- the default: every part given by its address ---------------------------------------------------------------------
+render >"$OUT" || fail "the external parts: the render failed"
+! grep -Eq '^kind: (Namespace|StatefulSet)$' "$OUT" && ! grep -q 'hugr-init-secrets' "$OUT" ||
+	fail "given every part, the umbrella runs one of its own"
+echo "ok: given every part, the umbrella runs none of its own"
+renders "the given tresor is the platform's" '^    host: tresor[.]example[.]net:443$'
+renders "the given channel is the platform's repository" '^    prefix: https://kista[.]example[.]net/hugr/platform$'
+renders "hugr-init writes into the given tresor" 'url: "https://tresor[.]example[.]net:443"'
+renders "hugr-init makes the catalog on the given server" 'host: "hugr-pg[.]example[.]net"'
+renders "the given parts' private CAs reach the platform's bundle" 'hugr-private-cas/repository[.]crt'
+refuses "a tresor neither given nor its own" "global.tresor.host is required" --set global.tresor.host=
+refuses "a channel neither given nor its own" "global.repository.prefix is required" --set global.repository.prefix=
+refuses "a database neither given nor its own" "global.database.host is required" --set global.database.host=
+refuses "a tresor given and its own" "install.tresor runs the umbrella's own" --set install.tresor=true
+refuses "a tresor host with a scheme" "host[:port], no scheme" --set global.tresor.host=https://tresor.example.net
+refuses "a channel over http" "the channel's https prefix" --set global.repository.prefix=http://kista.example.net/x
+# --- its own parts --------------------------------------------------------------------------------------------------
+own() { renders "$@" -f "$OWN"; }
+own "its own tresor serves https on 443" 'port: 443, targetPort: http'
+own "its own tresor keeps its state on SQLite" '^      kind: sqlite$'
+own "its own tresor's KEK is its Secret" 'key_file: /var/run/tresor/kek/key'
+own "a private IdP's CA is its own tresor's for that issuer" 'ca_file: /var/run/tresor/cas/idp.crt' \
 	--set-string global.idp.caCert=PEM
-renders "the IdP's groups claim reaches tresor" 'groups_claim: groups' --set global.idp.tresorGroupsClaim=groups
-renders "the private CAs reach the platform's bundle" 'hugr-private-cas/idp.crt'
-# the databases Job (not the platform's hugr-init) runs on every upgrade, after the catalog phase deleted the Secret
-render --show-only templates/databases.yaml >"$OUT" || fail "the databases Job: the render failed"
-grep -A1 -- '- name: db-admin' "$OUT" | grep -q 'optional: true' ||
-	fail "the databases Job mounts the administrator's Secret as required: an upgrade's run never starts"
-echo "ok: the databases Job runs without the administrator's Secret (an upgrade)"
-refuses "an admins list without hugr-init" "must keep hugr-init's entry" --set 'tresor.config.policy.admins={role:x}'
-refuses "a tresor namespace other than global's" "tresor.namespaceOverride must be global.namespaces.tresor" \
+own "the IdP's groups claim reaches its own tresor" 'groups_claim: groups' --set global.idp.tresorGroupsClaim=groups
+own "its own kista signs with the key in its Secret" '^        kind: kubesecret$'
+own "its own kista's channel names that key" 'key: keys:channel'
+own "a release version is its own kista's release kind" '^ +- kind: release$'
+own "a commit's version is its own kista's dev kind" '^ +- kind: dev$' --set global.duckdbVersion=f8f3f4dcd9
+own "its own database is a PostgreSQL 18 pod" 'image: "postgres:18"'
+own "its own database serves TLS" 'ssl_cert_file=/var/run/postgres/tls/tls.crt'
+own "hugr-init makes the catalog on its own database" 'host: "postgres[.]hugr-database[.]svc"'
+own "the secrets phase runs for its own parts" 'command: \[/hugr-init, --phase, secrets'
+refuses "its own kista without the installer's statement" "global.etcdEncryptionAtRest" -f "$OWN" \
+	--set global.etcdEncryptionAtRest=false
+refuses "an admins list without hugr-init" "must keep hugr-init's entry" -f "$OWN" \
+	--set 'tresor.config.policy.admins={role:x}'
+refuses "a tresor namespace other than global's" "tresor.namespaceOverride must be global.namespaces.tresor" -f "$OWN" \
 	--set tresor.namespaceOverride=elsewhere
-refuses "a vault audience other than global's" "tresor.vaultToken.audience must be global.keys.vault.audience" \
-	--set tresor.vaultToken.audience=other
-# tresor's chart refuses these first (a subchart renders before the umbrella's checks): either refusal holds
-refuses "a keys mode not built yet" "config.vault.address is required" --set global.keys.mode=secret
-refuses "an external vault without its address" "config.vault.address is required" --set global.keys.mode=external
-renders "an external vault is the services' address" '^ +address: https://vault[.]example[.]net:8200$' \
-	--set global.keys.mode=external --set global.keys.vault.address=https://vault.example.net:8200
-renders "the internal OpenBao is tresor's vault" '^ +address: https://openbao[.]hugr-openbao[.]svc:8200$'
-renders "the internal OpenBao's CA is the services' vault CA" '^ +ca_file: /etc/kista/secrets/cas/vault[.]crt$'
-renders "the internal OpenBao opens by a static key" 'current_key += "file:///openbao/seal/key"'
-renders "the internal OpenBao's standbys forward every request" '^ +disable_standby_reads = true$'
-renders "the internal OpenBao has a database of its own" 'secret: [{]namespace: hugr-openbao, name: openbao-db, key: password[}]'
-renders "the internal OpenBao's Job binds kista's role to its ServiceAccount" '^ +serviceAccount: "hugr-kista"$'
-# OpenBao's CA is a CA of the umbrella's own, the one in tresor's and kista's vault.crt: the same certificate
-render --show-only templates/services-ca.yaml >"$OUT" || fail "the CAs: the render failed"
-python3 - "$OUT" <<'PY2' || fail "the services' vault.crt is not OpenBao's CA"
-import base64, re, sys
-text = open(sys.argv[1]).read()
-docs = text.split("\n---")
-ca = [d for d in docs if "name: openbao-ca" in d][0]
-crt = base64.b64decode(re.search(r"tls.crt: (\S+)", ca).group(1)).decode().strip()
-vaults = [d for d in docs if "name: hugr-cas" in d and ("namespace: hugr-kista" in d or "namespace: hugr-tresor" in d)]
-assert len(vaults) == 2, len(vaults)
-for d in vaults:
-    v = re.search(r'vault.crt: "((?:[^"\\]|\\.)*)"', d).group(1).encode().decode("unicode_escape").strip()
-    assert v == crt, "a vault.crt differs from OpenBao's CA"
+# the secrets phase's right: each part's own Secret by name, and the database's administrator copy
+render -f "$OWN" >"$OUT" || fail "the own parts: the render failed"
+python3 - "$OUT" <<'PY2' || fail "the secrets phase's rights"
+import sys
+docs = open(sys.argv[1]).read().split("\n---")
+roles = {d.split("namespace: ")[1].split("\n")[0]: d for d in docs if "kind: Role\n" in d and "name: hugr-init-secrets" in d}
+assert set(roles) == {"hugr", "hugr-tresor", "hugr-kista", "hugr-database"}, sorted(roles)
+for ns, name in [("hugr-tresor", "tresor-kek"), ("hugr-kista", "kista-channel-key"), ("hugr-database", "postgres-superuser"),
+                 ("hugr", "hugr-init-db-admin")]:
+    assert f"resourceNames: [{name}]" in roles[ns], (ns, name)
+assert "verbs: [get, update]" in roles["hugr"], "the administrator's copy"
 PY2
-echo "ok: the services' vault.crt is the internal OpenBao's CA"
-refuses "a database without a host" "global.database.host is required" --set global.database.host=
+echo "ok: the secrets phase may read only its own Secrets by name in each part's namespace"
 # spec 008: the CRDs applied before an upgrade, by a hook whose right is the two CRDs only
 render >"$OUT"
 python3 - "$OUT" <<'PY3' || fail "the CRDs' pre-upgrade hook"

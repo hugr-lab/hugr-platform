@@ -6,7 +6,7 @@
 ## Summary
 
 A platform release is one version that pins every part: the operator (with the front and hugr-init), tresor-server,
-kista, the internal OpenBao, and the node image with its DuckDB. An upgrade is one explicit act: `helm upgrade` to the
+kista (when the umbrella runs its own), and the node image with its DuckDB. An upgrade is one explicit act: `helm upgrade` to the
 next release, or a catalog's update button doing the same. Helm moves the services. The operator then moves the nodes
 in a safe order:
 1. the repository holds the new DuckDB's extensions;
@@ -57,9 +57,8 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
 | part | moved by | how it rolls | what holds during the roll |
 | --- | --- | --- | --- |
 | CRDs | Helm, by a pre-upgrade hook (Q4) | they stay in `crds/` for the first install; before an upgrade a Job of the new operator image applies the CRDs it carries, server-side | only additive changes inside a version; a CRD that drops a served or stored version is refused, so a breaking change is a new API version with conversion |
-| OpenBao (internal) | Helm | HA on PostgreSQL, 2 replicas; a pod's SIGTERM steps the active down (OpenBao: "a few hundred milliseconds to a second") | tresor serves from its cached data keys (5 min) and the KEK version's grace (1 h); kista signs only when it publishes or mirrors |
-| tresor-server | Helm | rolling, 2 replicas, PDB; migrations at start under a lock | an old replica keeps serving after a migration; the protocol is `duckdb-secrets/1` on both sides |
-| kista | Helm | `Recreate` on its blob volume: a short gap | nodes need kista only to start and for a profile item, so the operator rolls no node while kista is not ready |
+| tresor-server | its own recipe (spec 005 step 3: given by its address); the umbrella's own (one replica, SQLite) by Helm | its own recipe's (a release of tresor-server's: rolling, 2 replicas, PDB, migrations at start under a lock) | an old replica keeps serving after a migration; the protocol is `duckdb-secrets/1` on both sides |
+| kista | its own recipe (given by its address); the umbrella's own (one replica, SQLite) by Helm | `Recreate` on its volume: a short gap | nodes need kista only to start and for a profile item, so the operator rolls no node while kista is not ready |
 | operator | Helm | rolling, 2 replicas, leader election | old and new replicas serve the node API side by side: the document stays v2, fields are only added |
 | front | the operator, after its own upgrade (the operator's image) | rolling, PDB; `GracefulStop` within 30 s | a stream longer than that is cut; the client resumes on another front, the session following it (duckdb-acl spec 135) |
 | kista's content | kista itself (Q5): it keeps an extension's builds for every DuckDB version its channel serves | the platform upgrades kista (its chart, its store) and checks the target DuckDB's builds are there before any node moves | old versions stay: old nodes keep installing theirs |
@@ -116,7 +115,7 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
 - **The node image back**: a rollout like any other. It is possible while the catalog is still inside the old build's
   window, and the operator refuses it otherwise, naming the catalog's stamp.
 - **The operator back**: `helm rollback`. The CRDs only grew, so the old operator reads them.
-- **The services back** (tresor, kista, OpenBao): not supported once their migrations ran, by their own rules. A
+- **The services back** (tresor, kista): not supported once their migrations ran, by their own rules. A
   restore from backup is the way, as each product documents. The platform says so and does not try.
 
 ### The pieces of this spec
@@ -223,7 +222,7 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
 - **Q5 - kista**: "kista keeps the extensions' versions for each DuckDB version, so the task is to migrate kista itself,
   and to check the versions are there." The platform upgrades kista and checks; it adds nothing to a channel, and no
   product gap is asked of kista.
-- **Q6 - the internal OpenBao** (umbrella step 2, spec 005): PostgreSQL storage, OpenBao's own recommendation -
+- **Q6 - the internal OpenBao** (umbrella step 2, spec 005; the umbrella dropped OpenBao on 2026-10-22, spec 005 step 3): PostgreSQL storage, OpenBao's own recommendation -
   stateless pods, HA on two replicas, a fourth database on the platform's server.
 
 ## Follow-ups

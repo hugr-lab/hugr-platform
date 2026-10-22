@@ -1,32 +1,53 @@
-# The hugr platform with its services (hugr-platform spec 005, the umbrella): the platform in the release's namespace;
-# tresor-server, kista and (with keys.mode internal) OpenBao each in a namespace of its own. An install's facts are
-# written once, under global; the services' values below read them (their charts render config through tpl). No
-# credential belongs in these values: the database administrator's comes once in a Secret hugr-init deletes, the
-# services' own logins are made at install.
-# Prerequisites in the cluster: cert-manager and its csi-driver, and a PostgreSQL 18 server (external, for now).
+# The hugr platform (hugr-platform spec 005, the umbrella). Its parts - tresor-server (the secrets service), kista (the
+# extension repository) and the policy catalog's PostgreSQL server - are external by default, named by their address:
+# products of their own, each installed by its own recipe, possibly shared by several platforms. A part with no address
+# is run by the umbrella only when install says so, as a light one: one replica, its state on a volume, its keys in a
+# Secret of its namespace. For anything wider, install the product by its own recipe and give its address here.
+# No credential belongs in these values: the database administrator's comes once in a Secret hugr-init deletes, and the
+# own parts' secrets are made once by hugr-init in their namespaces.
+# Prerequisites in the cluster: cert-manager and its csi-driver.
+
+# What the umbrella runs itself - one place for it (spec 005 step 3): each part not named here is given by its address
+# under global
+install:
+  tresor: false
+  kista: false
+  catalogDatabase: false
 
 global:
-  # the services' namespaces; the umbrella makes them, and keeps them (and their volumes) when the release goes
+  # the own parts' namespaces; the umbrella makes them, and keeps them (and their volumes) when the release goes
   namespaces:
-    tresor: hugr-tresor
-    kista: hugr-kista
-    openbao: hugr-openbao # keys.mode internal
+    tresor: hugr-tresor     # install.tresor
+    kista: hugr-kista       # install.kista
+    database: hugr-database # install.catalogDatabase
 
-  # The PostgreSQL server (18 or later) of the policy catalog, tresor's state and kista's store: each gets a database
-  # and a login of its own, made by hugr-init with the administrator's credential - a Secret of the release's
-  # namespace (username, password) the installer makes once, deleted after use
-  database:
-    host: "" # required
-    port: 5432
-    sslmode: verify-full # tresor refuses less off its own machine
-    adminSecret: hugr-init-db-admin
-    adminDatabase: postgres
-    # the server's CA when it is private, PEM (public: no credential): the platform's bundle and the services take it;
-    # empty: the system roots
+  # An external tresor-server: its host:port (the platform's spec.tresor.host; https). It must trust the cluster's
+  # ServiceAccount issuer for hugr-init and list hugr-init among its administrators (hugr-init writes the catalog's
+  # secret there): subject:<clusterIssuer.url>|system:serviceaccount:<this release's namespace>:hugr-init
+  tresor:
+    host: "" # or install.tresor
+    caCert: "" # its CA when private, PEM: the platform's bundle takes it
+
+  # An external kista: the https prefix of the platform's channel (<kista>/<tenant>/<channel>), serving the node's
+  # DuckDB (duckdbVersion)
+  repository:
+    prefix: "" # or install.kista
     caCert: ""
 
+  # The policy catalog's PostgreSQL server (18 or later): hugr-init makes the catalog's database and login there, with
+  # the administrator's credential - a Secret of the release's namespace (username, password) the installer makes once,
+  # deleted after use (with install.catalogDatabase hugr-init makes it)
+  database:
+    host: "" # or install.catalogDatabase
+    port: 5432
+    sslmode: verify-full
+    adminSecret: hugr-init-db-admin
+    adminDatabase: postgres
+    caCert: "" # the server's CA when private, PEM
+
   # The organisation's IdP: people's tokens (the console, tools) and the nodes' workload identity. The platform's own
-  # use of it (the console's client, the first policy's issuer) is hugr-platform.platform.spec's
+  # use of it (the console's client, the first policy's issuer) is hugr-platform.platform.spec's; the tresor* facts
+  # are its own tresor's (install.tresor)
   idp:
     issuer: "" # required, https
     # the IdP's CA when it is private (a Keycloak of the organisation's), PEM; empty: the system roots
@@ -41,39 +62,19 @@ global:
     tresorScope: ""
 
   # The cluster's ServiceAccount issuer (kubectl get --raw /.well-known/openid-configuration): hugr-init logs in to
-  # tresor with its projected token. private: the API server's own issuer (kind, a self-managed cluster) - tresor reads
-  # its discovery with its own token and the cluster's CA; false for a public one (AKS, EKS, GKE)
+  # tresor with its projected token. private: the API server's own issuer (kind, a self-managed cluster) - an own tresor
+  # reads its discovery with its own token and the cluster's CA; false for a public one (AKS, EKS, GKE)
   clusterIssuer:
     url: "" # required
     private: true
 
-  # The key store: kista's channel key and tresor's KEK.
-  #   internal: OpenBao in its own namespace (openbao below), its storage a database of the PostgreSQL server, opened
-  #     by a static key made once (the cluster's etcd is the root of trust); hugr-init gives it the keys, policies and
-  #     roles below on every release
-  #   external: the organisation's HashiCorp Vault or OpenBao, with the Transit keys and the Kubernetes-auth roles below
-  #     made by the organisation for kista's and tresor's ServiceAccounts
-  #   secret comes in a later step (spec 005)
-  keys:
-    mode: internal
-    vault:
-      address: "" # external: https://vault.example:8200
-      # external: the vault's CA when it is private, PEM; empty: the system roots
-      caCert: ""
-      transitMount: transit
-      # the Transit keys: kista signs its channel with one, tresor wraps its data keys with the other
-      kistaKey: hugr-channel
-      tresorKey: hugr-tresor
-      # the Kubernetes auth: its mount and the roles bound to kista's and tresor's ServiceAccounts; the audience of
-      # the tokens the services present to it
-      authMount: kubernetes
-      kistaRole: kista
-      tresorRole: tresor
-      audience: vault
+  # The installer's statement that the cluster encrypts Secrets at rest: an own kista keeps its channel key in a
+  # Secret, and refuses that without it (kista spec 0026)
+  etcdEncryptionAtRest: false
 
-  # The node's DuckDB version (the platform's hugr-node image's): kista's channel serves extensions for it - a release
-  # (v2.0.0) or the commit a node was built on (f8f3f4dcd9: a dev version, which no upstream mirrors). The release
-  # pins the node image and its DuckDB together (spec 008): change one, change the other
+  # The node's DuckDB version (the platform's hugr-node image's): the channel serves extensions for it - a release
+  # (v2.0.0) or the commit a node was built on (a dev version, which no upstream mirrors). The release pins the node
+  # image and its DuckDB together (spec 008): change one, change the other
   duckdbVersion: v2.0.0
 
 # --- the platform (hugr-platform's values, as its chart documents them) -------------------------------------------
@@ -89,77 +90,62 @@ hugr-platform:
         duckdbVersion: "{{ .Values.global.duckdbVersion }}"
       idp:
         issuer: "{{ .Values.global.idp.issuer }}"
+      # the given tresor, or the own one
       tresor:
-        host: "tresor.{{ .Values.global.namespaces.tresor }}.svc:443"
+        host: >-
+          {{ default (printf "tresor.%s.svc:443" .Values.global.namespaces.tresor) .Values.global.tresor.host }}
         scope: "{{ .Values.global.idp.tresorScope }}"
+      # the given channel, or the own kista's
       repository:
         name: hugr
-        prefix: "https://{{ .Release.Name }}-kista.{{ .Values.global.namespaces.kista }}.svc/hugr/platform"
+        prefix: >-
+          {{ default (printf "https://%s-kista.%s.svc/hugr/platform" .Release.Name .Values.global.namespaces.kista) .Values.global.repository.prefix }}
       catalog: {secret: hugr_policy_catalog}
       sizes: {}
       plan: {maxNodes: 0, sizes: []}
-  # tresor's and kista's CAs, the database's and the IdP's private ones (the umbrella's ConfigMaps), into the
+  # the own parts' CAs and the given parts' and the IdP's private ones (the umbrella's ConfigMaps), into the
   # platform's bundle
   caBundle:
     extra:
       - {name: hugr-services-ca, key: ca.crt}
+      - {name: hugr-private-cas, key: tresor.crt}
+      - {name: hugr-private-cas, key: repository.crt}
       - {name: hugr-private-cas, key: database.crt}
       - {name: hugr-private-cas, key: idp.crt}
   hugrInit:
     enabled: true
     tresor:
-      url: "https://tresor.{{ .Values.global.namespaces.tresor }}.svc"
+      url: >-
+        https://{{ default (printf "tresor.%s.svc" .Values.global.namespaces.tresor) .Values.global.tresor.host }}
       grants: [] # required: the groups' identities in tresor (role:… or group:…)
     catalog:
-      host: "{{ .Values.global.database.host }}"
+      host: >-
+        {{ default (printf "postgres.%s.svc" .Values.global.namespaces.database) .Values.global.database.host }}
       sslmode: "{{ .Values.global.database.sslmode }}"
       adminSecret: hugr-init-db-admin
   groups: []
 
-# --- the internal key store (keys.mode internal): OpenBao, in global.namespaces.openbao ------------------------------
-openbao:
-  image: {repository: ghcr.io/openbao/openbao, tag: "2.7.1", pullPolicy: IfNotPresent}
-  # HA on the PostgreSQL storage: one active, the others standby (a pod's SIGTERM hands the lock over)
-  replicas: 2
-  resources:
-    requests: {cpu: 50m, memory: 128Mi}
-    limits: {memory: 512Mi}
-
-# --- tresor-server (its values; config rendered through tpl) -------------------------------------------------------
+# --- its own tresor-server (install.tresor; its values, config rendered through tpl) --------------------------------
+# One replica, its state on SQLite on a volume, its KEK in a Secret hugr-init makes once (tresor-kek). For more,
+# install tresor-server by its own recipe and give global.tresor.host.
 tresor:
   # tresor-server 0.7.3: config rendered through tpl (its spec 028) - a literal {{ there is written {{ "{{" }}; the
   # certificate cert-manager renews read again in service (its spec 029)
   configTemplate: true
   namespaceOverride: hugr-tresor # = global.namespaces.tresor (checked)
   fullnameOverride: tresor
-  replicas: 2
   tlsSecret: tresor-tls
   service: {port: 443}
   clusterIssuer: {enabled: true} # = global.clusterIssuer.private (checked)
-  vaultToken: {enabled: true, audience: vault} # = global.keys.vault.audience (checked)
+  sqlite: {size: 1Gi}
+  localKEK: {secretName: tresor-kek, key: key}
   extraVolumes:
-    - {name: db, secret: {secretName: tresor-db}}
     - {name: cas, secret: {secretName: hugr-cas}}
   extraVolumeMounts:
-    - {name: db, mountPath: /var/run/tresor/db, readOnly: true}
     - {name: cas, mountPath: /var/run/tresor/cas, readOnly: true}
   config:
     public_url: "https://tresor.{{ .Values.global.namespaces.tresor }}.svc"
-    state:
-      kind: postgres
-      dsn: >-
-        host={{ .Values.global.database.host }} port={{ .Values.global.database.port }} dbname=tresor user=tresor
-        sslmode={{ .Values.global.database.sslmode }}{{ if .Values.global.database.caCert }}
-        sslrootcert=/var/run/tresor/cas/database.crt{{ end }}
-      auth: password
-      password_file: /var/run/tresor/db/password
-    keys: {kind: vault, mount: "{{ .Values.global.keys.vault.transitMount }}", key: "{{ .Values.global.keys.vault.tresorKey }}"}
-    vault:
-      address: >-
-        {{ if eq .Values.global.keys.mode "internal" }}https://openbao.{{ .Values.global.namespaces.openbao }}.svc:8200{{ else }}{{ .Values.global.keys.vault.address }}{{ end }}
-      ca_file: >-
-        {{ if or (eq .Values.global.keys.mode "internal") .Values.global.keys.vault.caCert }}/var/run/tresor/cas/vault.crt{{ end }}
-      auth: {method: kubernetes, mount: "{{ .Values.global.keys.vault.authMount }}", role: "{{ .Values.global.keys.vault.tresorRole }}"}
+    state: {kind: sqlite}
     issuers:
       - issuer: "{{ .Values.global.idp.issuer }}"
         audience: "{{ .Values.global.idp.tresorAudience }}"
@@ -182,7 +168,10 @@ tresor:
       # the nodes act for their sessions: an actor per group's identity, client:<its client id at the IdP>
       actors: []
 
-# --- kista (its values; config rendered through tpl) ---------------------------------------------------------------
+# --- its own kista (install.kista; its values, config rendered through tpl) -----------------------------------------
+# One replica, its store and blobs on SQLite on one volume, the channel's key in a Secret hugr-init makes once
+# (kista-channel-key: RSA-2048, kista's kubesecret source - global.etcdEncryptionAtRest is the installer's statement it
+# requires). For more, install kista by its own recipe and give global.repository.prefix.
 kista:
   # kista 0.1.4 (its spec 0025): each string of config holding {{ rendered by tpl, within the string; one rendering
   # empty is refused
@@ -190,52 +179,25 @@ kista:
   namespaceOverride: hugr-kista # = global.namespaces.kista (checked)
   mode: tls
   tlsSecret: kista-tls
-  replicas: 1
   service: {type: ClusterIP}
-  # the fs blob domain on one volume: one replica at a time (an object store for more, see kista's docs)
-  blobVolume: {enabled: true, accessMode: ReadWriteOnce, size: 50Gi}
+  blobVolume: {enabled: true, accessMode: ReadWriteOnce, size: 20Gi}
   secretVolumes:
-    - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
-    - {name: cas, secretName: hugr-cas, mountPath: /etc/kista/secrets/cas}
-  # the audience is global.keys.vault.audience (checked)
-  projectedTokens:
-    - {name: vault, mountPath: /var/run/secrets/kista/vault, audience: vault, expirationSeconds: 3600}
+    - {name: signing, secretName: kista-channel-key, mountPath: /etc/kista/signing}
   config:
     serve: {public_url: "https://{{ .Release.Name }}-kista.{{ .Values.namespaceOverride }}.svc"}
-    store:
-      kind: postgres
-      dsn: >-
-        host={{ required "global.database.host is required" .Values.global.database.host }} port={{ .Values.global.database.port }}
-        dbname=kista user=kista
-        sslmode={{ .Values.global.database.sslmode }}{{ if .Values.global.database.caCert }}
-        sslrootcert=/etc/kista/secrets/cas/database.crt{{ end }}
-      login: {kind: password, password_file: /etc/kista/secrets/db/password}
-    blob:
-      domains:
-        - {name: default, kind: fs, fs: {root: /var/lib/kista/blobs}}
+    store: {kind: sqlite}
     signers:
       sources:
         - name: keys
-          kind: vault
-          allow: ["{{ .Values.global.keys.vault.kistaKey }}"]
-          vault:
-            address: >-
-              {{ if eq .Values.global.keys.mode "internal" }}https://openbao.{{ .Values.global.namespaces.openbao }}.svc:8200{{ else }}{{ .Values.global.keys.vault.address }}{{ end }}
-            mount: "{{ .Values.global.keys.vault.transitMount }}"
-            # the internal OpenBao's CA or a private one, else the image's system roots (an empty string is refused)
-            ca_file: >-
-              {{ if or (eq .Values.global.keys.mode "internal") .Values.global.keys.vault.caCert }}/etc/kista/secrets/cas/vault.crt{{ else }}/etc/ssl/certs/ca-certificates.crt{{ end }}
-            software_keys: true
-            auth:
-              kind: kubernetes
-              mount: "{{ .Values.global.keys.vault.authMount }}"
-              role: "{{ .Values.global.keys.vault.kistaRole }}"
-              token_file: /var/run/secrets/kista/vault/token
+          kind: kubesecret
+          allow: [channel]
+          # the umbrella renders this only with global.etcdEncryptionAtRest (checked): the installer's statement
+          kubesecret: {dir: /etc/kista/signing, etcd_encryption_at_rest: true}
     # the first setup, once (kista spec 0020 4a, 0024): the tenant, the platform's channel for the node's DuckDB,
     # its key, and the upstreams it mirrors
     bootstrap:
       versions:
-        # a DuckDB release is a vX.Y.Z tag; a node built on a commit of DuckDB's (until v2.0.0) runs a dev version
+        # a DuckDB release is a vX.Y.Z tag; a node built on a commit of DuckDB's runs a dev version
         - version: "{{ .Values.global.duckdbVersion }}"
           kind: >-
             {{ if regexMatch "^v[0-9]+[.][0-9]+[.][0-9]+$" .Values.global.duckdbVersion }}release{{ else }}dev{{ end }}
@@ -244,5 +206,22 @@ kista:
         - name: platform
           kind: signed
           versions: ["{{ .Values.global.duckdbVersion }}"]
-          key: "keys:{{ .Values.global.keys.vault.kistaKey }}:v1"
+          key: "keys:channel"
       upstreams: []
+
+# --- its own catalog database (install.catalogDatabase) -------------------------------------------------------------
+# One PostgreSQL 18 pod in global.namespaces.database: a StatefulSet with a volume, TLS from a CA of its namespace,
+# its superuser's password made once by hugr-init (postgres-superuser). For more, run a server of your own (a managed
+# one, an operator's) and give global.database.host.
+catalogDatabase:
+  image: {repository: postgres, tag: "18", pullPolicy: IfNotPresent}
+  storage: {size: 10Gi, storageClass: ""}
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+# --- hugr-init's secrets phase: the own parts' secrets, made once -------------------------------------------------
+secrets:
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}

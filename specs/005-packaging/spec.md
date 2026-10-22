@@ -347,6 +347,52 @@ same version.
   4. `keys.mode: secret` - deferred (above).
   5. the release publishes the umbrella beside `hugr-platform`.
 
+  Steps 2 to 4 are replaced by **step 3, the umbrella's parts external by default** (below, the owner, 2026-10-22).
+
+- **Step 3: what the umbrella brings, and what it is given** (the owner, 2026-10-22). kista and tresor are products of
+  their own: an organisation may run them for other uses, or one for several platforms, and each has its own recipes.
+  So the platform takes them from outside, and runs its own only when told to. The same holds for the policy catalog's
+  database. A marketplace recipe (Azure's first) decides in one place, at install, what it installs and how.
+  - **Every part is external by default**, named by its address:
+    - `global.tresor.host` - the secrets service;
+    - `global.repository.prefix` - kista's channel;
+    - `global.database.host` - the catalog's PostgreSQL server, with its one-time administrator Secret.
+
+    A private CA of any of them goes into the platform's bundle (`caCert`).
+  - **Its own, by a flag**: `tresor.enabled`, `kista.enabled`, `catalogDatabase.enabled`, all `false` by default. A
+    part with neither an address nor its flag refuses the render, saying which to give.
+  - **The own parts are light, one replica each**; for anything wider, the organisation installs the product by its own
+    recipe:
+    - **tresor**: its state on SQLite on a volume; its KEK a Secret of its namespace (`localKEK`);
+    - **kista**: its store and blobs on SQLite and a volume; its channel key in a Secret (its `kubesecret` source,
+      kista spec 0026). `kista.etcdEncryptionAtRest` is the installer's statement, which kista requires;
+    - **the catalog's database**: one PostgreSQL 18 pod (a StatefulSet with a volume), TLS from a CA of its namespace.
+  - **The own parts' secrets** - tresor's KEK (32 bytes), kista's channel key (RSA-2048, which Helm cannot make) and
+    the database's superuser - are made once by a Job of the release, `hugr-init --phase secrets`. Each goes into a
+    Secret of its part's namespace, and an existing one is never replaced. Helm's release record holds none of them.
+  - **What leaves the umbrella**: OpenBao (step 2) and the services' databases with hugr-init's `databases` and
+    `openbao` phases. A vault is the products' recipes' business, as are their databases. The catalog's database is
+    the one the umbrella still makes: `hugr-init` creates it and its login on the given (or its own) server, and writes
+    the login into tresor, as before.
+  - **The demo** installs tresor-server and kista by their own charts, as separate releases on its PostgreSQL and its
+    OpenBao, and the umbrella with their addresses: the default path. The render tests hold the own parts.
+
+  **Step 3, built (2026-10-22).** The demo is green on minikube on the default path (checks 1-12).
+  - **The flags are one block, `install: {tresor, kista, catalogDatabase}`.** kista's chart has a strict values schema
+    (`additionalProperties: false`, no `enabled`), so a `kista.enabled` condition is refused. The block is also the
+    owner's "one place for what we install".
+  - **`hugr-init --phase secrets`** is a Job of the release per revision, under a ServiceAccount of its own:
+    - a Role in each own part's namespace (get by name, create);
+    - with its own database, get and update of the administrator's Secret by name in the release's namespace.
+
+    The database's superuser and the administrator's copy are one credential, the copy written first, so a run
+    stopped between the two makes both again. An existing Secret is never replaced, and a copy the catalog phase
+    deleted is not made again.
+  - **Its own kista's acknowledgment** is a literal `true` in its config, since a template renders strings only. The
+    umbrella refuses the render unless `global.etcdEncryptionAtRest` says it.
+  - **Removed:** OpenBao's templates, `hugr-init`'s `databases` and `openbao` phases with their code and tests, and
+    `global.keys`. The demo's own OpenBao is now the separate releases' vault, always.
+
   **Step 1, built (2026-10-21).** The chart, its render tests (`charts/hugr/ci/render-test.sh`, run by `make chart`)
   and the demo through it. Building it found these:
   - tresor's Service port is 80 unless the values say 443, even with a TLS Secret. The umbrella sets 443.

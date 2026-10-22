@@ -1,6 +1,10 @@
-# The example the umbrella is linted and rendered with: one platform, its services, an external PostgreSQL and the
-# internal OpenBao (keys.mode internal, the default)
+# The example the umbrella is linted and rendered with: one platform given its parts - an external tresor-server,
+# kista and PostgreSQL (the default, spec 005 step 3); own-values.yaml runs them itself
 global:
+  tresor:
+    host: tresor.example.net:443
+  repository:
+    prefix: https://kista.example.net/hugr/platform
   database:
     host: hugr-pg.example.net
   idp:
@@ -39,8 +43,3 @@ hugr-platform:
   groups:
     - name: etl
       spec: {replicas: 2, size: large, identity: {clientID: 00000000-0000-0000-0000-000000000001}}
-tresor:
-  config:
-    policy:
-      actors:
-        - {principal: "client:00000000-0000-0000-0000-000000000001", verbs: [use]}

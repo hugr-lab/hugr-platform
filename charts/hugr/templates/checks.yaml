@@ -1,20 +1,30 @@
-{{/* What the services' values must agree on with global (a subchart's values cannot be computed from the parent's,
-so they are written twice there - checked here), and the install's required facts. */}}
+{{/* What the install must say (spec 005 step 3): each part given by its address, or run by the umbrella by its flag -
+never both, never neither; and what an own part's values must agree on with global (a subchart's values cannot be
+computed from the parent's, so they are written twice there - checked here). */}}
 {{- $g := .Values.global }}
+{{- range $part := list (list "tresor" .Values.install.tresor $g.tresor.host "global.tresor.host")
+    (list "kista" .Values.install.kista $g.repository.prefix "global.repository.prefix")
+    (list "catalogDatabase" .Values.install.catalogDatabase $g.database.host "global.database.host") }}
+{{- $name := index $part 0 }}{{- $own := index $part 1 }}{{- $address := index $part 2 }}{{- $key := index $part 3 }}
+{{- if and $own $address }}
+{{- fail (printf "install.%s runs the umbrella's own and %s names another: give one of them" $name $key) }}
+{{- end }}
+{{- if and (not $own) (not $address) }}
+{{- fail (printf "%s is required (an external one, by its own recipe), or install.%s for the umbrella's own" $key $name) }}
+{{- end }}
+{{- end }}
+{{- if and $g.tresor.host (not (regexMatch "^[A-Za-z0-9.-]+(:[0-9]+)?$" $g.tresor.host)) }}
+{{- fail "global.tresor.host is tresor-server's host[:port], no scheme" }}
+{{- end }}
+{{- if and $g.repository.prefix (not (hasPrefix "https://" $g.repository.prefix)) }}
+{{- fail "global.repository.prefix is the channel's https prefix" }}
+{{- end }}
+{{- if .Values.install.tresor }}
 {{- if ne .Values.tresor.namespaceOverride $g.namespaces.tresor }}
 {{- fail "tresor.namespaceOverride must be global.namespaces.tresor" }}
 {{- end }}
-{{- if ne .Values.kista.namespaceOverride $g.namespaces.kista }}
-{{- fail "kista.namespaceOverride must be global.namespaces.kista" }}
-{{- end }}
 {{- if ne (toString .Values.tresor.clusterIssuer.enabled) (toString $g.clusterIssuer.private) }}
 {{- fail "tresor.clusterIssuer.enabled must be global.clusterIssuer.private" }}
-{{- end }}
-{{- if ne (index .Values.kista.projectedTokens 0).audience $g.keys.vault.audience }}
-{{- fail "kista.projectedTokens[0].audience must be global.keys.vault.audience" }}
-{{- end }}
-{{- if ne .Values.tresor.vaultToken.audience $g.keys.vault.audience }}
-{{- fail "tresor.vaultToken.audience must be global.keys.vault.audience" }}
 {{- end }}
 {{- $init := printf "subject:%s|system:serviceaccount:%s:hugr-init" $g.clusterIssuer.url .Release.Namespace }}
 {{- $admins := list }}
@@ -24,20 +34,19 @@ so they are written twice there - checked here), and the install's required fact
 {{- if not (has $init $admins) }}
 {{- fail (printf "tresor.config.policy.admins must keep hugr-init's entry %q: it writes the catalog's secret" $init) }}
 {{- end }}
-{{- $_ := required "global.database.host is required (a PostgreSQL 18 server)" $g.database.host }}
+{{- end }}
+{{- if .Values.install.kista }}
+{{- if ne .Values.kista.namespaceOverride $g.namespaces.kista }}
+{{- fail "kista.namespaceOverride must be global.namespaces.kista" }}
+{{- end }}
+{{- if not $g.etcdEncryptionAtRest }}
+{{- fail "install.kista keeps the channel's key in a Secret: global.etcdEncryptionAtRest is the installer's statement that the cluster encrypts Secrets at rest (kista spec 0026)" }}
+{{- end }}
+{{- end }}
 {{- if not (hasPrefix "https://" $g.idp.issuer) }}
 {{- fail "global.idp.issuer is the organisation IdP's https URL" }}
 {{- end }}
 {{- if not (hasPrefix "https://" $g.clusterIssuer.url) }}
 {{- fail "global.clusterIssuer.url is the cluster's ServiceAccount issuer (kubectl get --raw /.well-known/openid-configuration)" }}
 {{- end }}
-{{- if not (has $g.keys.mode (list "internal" "external")) }}
-{{- fail "global.keys.mode is internal or external (secret follows, spec 005)" }}
-{{- end }}
-{{- if and (eq $g.keys.mode "external") (not (hasPrefix "https://" $g.keys.vault.address)) }}
-{{- fail "global.keys.vault.address is the organisation vault's https URL (keys.mode external)" }}
-{{- end }}
-{{- if and (eq $g.keys.mode "internal") (not .Values.tresor.fullnameOverride) }}
-{{- fail "tresor.fullnameOverride names tresor's ServiceAccount, which the internal OpenBao binds its role to" }}
-{{- end }}
-{{- $_ := required "global.duckdbVersion is required: the node's DuckDB version, kista's channel serves it" $g.duckdbVersion }}
+{{- $_ := required "global.duckdbVersion is required: the node's DuckDB version, the channel serves it" $g.duckdbVersion }}

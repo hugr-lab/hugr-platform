@@ -17,18 +17,6 @@ import (
 type Config struct {
 	Tresor  TresorConfig  `json:"tresor"`
 	Catalog CatalogConfig `json:"catalog"`
-	// Services are the databases the umbrella's services (tresor, kista) keep their state in: made by the
-	// databases phase, before the services start (spec 005)
-	Services []ServiceDatabase `json:"services,omitempty"`
-}
-
-// ServiceDatabase is one service's database and login on the catalog's server, its password in a Secret of the
-// service's own namespace - the service cannot read its own login from tresor
-type ServiceDatabase struct {
-	Name     string    `json:"name"`
-	Database string    `json:"database"`
-	Login    string    `json:"login"`
-	Secret   SecretRef `json:"secret"`
 }
 
 // SecretRef is one key of a Secret.
@@ -157,20 +145,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Catalog.Admin.Dir == "" {
 		add("catalog.admin.dir is required: the administrator's Secret, mounted")
-	}
-	seen := map[string]bool{c.Catalog.Database: true}
-	for _, svc := range c.Services {
-		if !plainName.MatchString(svc.Database) || !plainName.MatchString(svc.Login) {
-			add("services: %q's database and login are plain names", svc.Name)
-		}
-		if seen[svc.Database] || svc.Login == c.Catalog.Login {
-			add("services: %q shares a database or a login with another", svc.Name)
-		}
-		seen[svc.Database] = true
-		if !dnsLabel.MatchString(svc.Secret.Namespace) || !dnsName.MatchString(svc.Secret.Name) ||
-			!secretKey.MatchString(svc.Secret.Key) {
-			add("services: %q's secret is a namespace, a name and a key", svc.Name)
-		}
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("hugr-init: the configuration: %s", strings.Join(problems, "; "))
