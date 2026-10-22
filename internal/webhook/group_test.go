@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 )
@@ -113,5 +115,58 @@ func TestWebhook(t *testing.T) {
 	}
 	if _, err := v.ValidateDelete(ctx, group("bi", "large", 3)); err != nil {
 		t.Errorf("a delete is refused: %v", err)
+	}
+}
+
+// a read the webhook cannot make answers a fixed message: the API server's own names the operator's ServiceAccount, and
+// a person reads the answer in the console (spec 006)
+func TestWebhookReadFailure(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1alpha1.AddToScheme(scheme)
+	forbidden := errors.New(`hugrplatforms.platform.hugr.io "hugr" is forbidden: User "system:serviceaccount:hugr:hugr-platform" cannot get resource`)
+	for _, fail := range []interceptor.Funcs{
+		{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return forbidden
+		}},
+		{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return forbidden
+		}},
+	} {
+		platform := &v1alpha1.HugrPlatform{ObjectMeta: metav1.ObjectMeta{Name: "hugr", Namespace: "hugr"},
+			Spec: v1alpha1.HugrPlatformSpec{Sizes: map[string]v1alpha1.SizeSpec{"large": {Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("32Gi")}},
+				Temp: v1alpha1.TempSpec{Size: resource.MustParse("100Gi")}}},
+				Plan: v1alpha1.PlanSpec{MaxNodes: 6, Sizes: []string{"large"}}}}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(platform).WithInterceptorFuncs(fail).Build()
+		_, err := (&GroupValidator{Reader: c}).ValidateCreate(context.Background(), group("bi", "large", 1))
+		if !errors.Is(err, errNotRead) || strings.Contains(err.Error(), "serviceaccount") {
+			t.Errorf("a failed read answers: %v", err)
+		}
+	}
+}
+
+// a resource group the first policy refuses would stop every node's bootstrap: refused where it is written, and a group
+// that names one already keeps it until the name changes (spec 006)
+func TestWebhookResourceGroup(t *testing.T) {
+	ctx := context.Background()
+	v := validator(t)
+	dotted := csi("reports", "720h")
+	dotted.Spec.ResourceGroup = "reports.eu"
+	if _, err := v.ValidateCreate(ctx, dotted); err == nil || !strings.Contains(err.Error(), "not a plain name") {
+		t.Errorf("a dotted resource group made: %v", err)
+	}
+	plain := csi("reports", "720h")
+	plain.Spec.ResourceGroup = "reports_eu"
+	if _, err := v.ValidateCreate(ctx, plain); err != nil {
+		t.Errorf("a plain resource group refused: %v", err)
+	}
+	if _, err := v.ValidateUpdate(ctx, plain, dotted); err == nil {
+		t.Error("a resource group changed to a dotted one")
+	}
+	kept := dotted.DeepCopy()
+	kept.Spec.Replicas = 0
+	if _, err := v.ValidateUpdate(ctx, dotted, kept); err != nil {
+		t.Errorf("a group keeping its resource group is refused a scale-down: %v", err)
 	}
 }

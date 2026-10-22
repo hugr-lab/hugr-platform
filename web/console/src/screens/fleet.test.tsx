@@ -26,8 +26,8 @@ const fleet: FleetAnswer = {
   newGroup: { available: true, subjectPrefix: 'system:serviceaccount:hugr:hugr-node-' },
 }
 
-function show(rights: Rights) {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(fleet), { status: 200 })))
+function show(rights: Rights, answer: FleetAnswer = fleet) {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(answer), { status: 200 })))
   const api = new Api({ getToken: async () => 't' }, 'hugr-nodes')
   render(
     <AppContext.Provider value={{ config, session: {} as Session, api, rights }}>
@@ -56,8 +56,8 @@ describe('the fleet page', () => {
     show({ ...none, scale: true, bundles: ['observe', 'operate', 'cluster'] })
     await waitFor(() => expect(screen.getByRole('button', { name: 'New group' })).toBeTruthy())
     cleanup()
-    fleet.newGroup = { available: false, subjectPrefix: '' }
-    show({ ...none, scale: true, bundles: ['observe', 'operate', 'cluster'] })
+    show({ ...none, scale: true, bundles: ['observe', 'operate', 'cluster'] },
+      { ...fleet, newGroup: { available: false, subjectPrefix: '' } })
     await waitFor(() => expect(screen.getByRole('link', { name: 'etl' })).toBeTruthy())
     expect(screen.queryByRole('button', { name: 'New group' })).toBeNull()
   })

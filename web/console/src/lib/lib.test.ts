@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Api, ApiError } from './api'
 import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
-import { changesOf, groupName } from '../screens/GroupActions'
+import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import type { Fleet, Group } from './types'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -66,9 +66,10 @@ describe('the API client', () => {
     const api = new Api({ getToken: async () => 't' }, 'a')
     await expect(api.createGroup({ name: 'r', size: 'small', replicas: 1, clientID: 'c', quack: false })).resolves.toBeUndefined()
     await expect(api.deleteGroup('r/../x')).resolves.toBeUndefined()
-    await expect(api.removeFromPolicy('r')).resolves.toBeUndefined()
+    await expect(api.removeFromPolicy('r', 'r')).resolves.toBeUndefined()
     expect(sent.map((s) => `${s.method} ${s.url}`)).toEqual(['POST /api/v1/console/groups',
       'DELETE /api/v1/console/groups/r%2F..%2Fx', 'DELETE /api/v1/console/groups/r/policy'])
+    expect(sent[2].body).toBe('{"resourceGroup":"r"}')
   })
 })
 
@@ -143,5 +144,19 @@ describe('a group from the console (spec 006)', () => {
   it('takes a name the webhook takes', () => {
     for (const ok of ['etl', 'a', 'reports-2', 'x'.repeat(36)]) expect(groupName.test(ok)).toBe(true)
     for (const bad of ['', 'ETL', '-etl', 'etl-', 'e_tl', 'x'.repeat(37), 'a.b']) expect(groupName.test(bad)).toBe(false)
+  })
+  it("says why a new group cannot be made yet, the plan's room among it", () => {
+    const f = { name: 'r', size: 'small', replicas: 1, clientID: 'c', drain: 300, resourceGroup: '' }
+    expect(newGroupProblem(f, 2)).toBeUndefined()
+    expect(newGroupProblem({ ...f, replicas: 3 }, 2)).toBe('Past the plan: 2 more nodes fit.')
+    expect(newGroupProblem({ ...f, clientID: ' ' }, 2)).toBe("Give the identity's client id.")
+    expect(newGroupProblem({ ...f, drain: 86401 }, 2)).toBe('The drain time is 0 to 86400 seconds.')
+    expect(newGroupProblem({ ...f, resourceGroup: 'a"b' }, 2)).toMatch(/resource group's name/)
+    expect(newGroupProblem({ ...f, resourceGroup: 'Reports_1' }, 2)).toBeUndefined()
+    expect(newGroupProblem({ ...f, resourceGroup: 'reports.eu' }, 2)).toMatch(/resource group's name/)
+    expect(drainOK(0) && drainOK(86400) && !drainOK(-1) && !drainOK(1.5)).toBe(true)
+    const fleet: Fleet = { plan: { maxNodes: 12, sizes: ['small'] }, newGroup: { available: true, subjectPrefix: '' },
+      groups: [group({ replicas: 3 }), group({ name: 'b', replicas: 1, scaling: { mode: 'auto', min: 1, max: 5 } })] }
+    expect(freeNodes(fleet)).toBe(4)
   })
 })

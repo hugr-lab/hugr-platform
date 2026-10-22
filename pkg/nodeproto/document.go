@@ -92,6 +92,10 @@ var dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 // plainName is what the node takes as a name in the first policy: it goes into a management statement as is
 var plainName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,63}$`)
 
+// ValidPlainName says whether a name is one the first policy carries as is - a group's resource group among them:
+// every node's bootstrap document lists every group's, so one name it refuses stops every node from starting.
+func ValidPlainName(name string) bool { return plainName.MatchString(name) }
+
 // ValidLabel says whether a name is a DNS label of at most max characters (RFC 1123): what a node's label must be
 // (duckdb-acl spec 134), and what a group's name must be so that its pods' names are labels too.
 func ValidLabel(name string, max int) bool {

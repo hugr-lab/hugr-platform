@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
@@ -91,7 +92,7 @@ func (w *fakeWriter) Create(_ context.Context, group *v1alpha1.HugrNodeGroup) er
 	return w.err
 }
 
-func (w *fakeWriter) Delete(_ context.Context, namespace, name string) error {
+func (w *fakeWriter) Delete(_ context.Context, namespace, name string, _ types.UID) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.deleted = append(w.deleted, namespace+"/"+name)

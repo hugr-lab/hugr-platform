@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -151,7 +152,7 @@ func (w *memoryWriter) Create(ctx context.Context, group *v1alpha1.HugrNodeGroup
 	return w.reader.Create(ctx, group)
 }
 
-func (w *memoryWriter) Delete(ctx context.Context, namespace, name string) error {
+func (w *memoryWriter) Delete(ctx context.Context, namespace, name string, _ types.UID) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.log.Info("group deleted", "group", name)

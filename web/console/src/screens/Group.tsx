@@ -66,7 +66,7 @@ export function Group() {
           <section aria-label="The group" className="panel flex flex-wrap gap-x-16 gap-y-4 px-8">
             <Stat label="Nodes ready" value={`${group.readyReplicas} of ${group.replicas}`} />
             <Stat label="Resource group" value={<Chip>{group.resourceGroup}</Chip>}
-              sub={group.resourceGroupKnown === false ? 'not in the policy' : group.resourceGroupKnown ? 'in the policy' : 'no node reported yet'} />
+              sub={group.resourceGroupKnown === false ? 'its nodes find it in no policy' : group.resourceGroupKnown ? 'its nodes find it in the policy' : 'no node reported yet'} />
             <Stat label="Profile" value={`version ${group.profile.target}`} sub={`${group.profile.applied} of ${group.replicas} applied`} />
             <Stat label="Sessions" value={group.nodes.reduce((n, x) => n + x.sessions, 0)} />
           </section>
@@ -172,7 +172,7 @@ export function Group() {
               To act for its sessions in tresor, the identity must be one of tresor's actors: its client id is listed in tresor's configuration (spec 006 asks tresor to name actors by role).
             </p>
           </section>
-          {rights.policy && <PolicySection group={group} onChanged={fleet.reload} />}
+          {rights.policy && <PolicySection group={group} read={fleet.at?.getTime()} onChanged={fleet.reload} />}
         </>
       )}
     </>

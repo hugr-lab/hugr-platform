@@ -35,12 +35,21 @@ Built: `internal/console/group_api.go` (create, one field per PATCH, delete), `p
 
 | method, path | does |
 | --- | --- |
-| `POST groups` `{name, size, replicas, identity: {clientID}, doors: {quack}, drainSeconds, resourceGroup}` | creates the `HugrNodeGroup` (SSA, the console's field owner, `platform.hugr.io/changed-by`) |
-| `PATCH groups/{g}` `{replicas}` / `{size}` / `{doors}` / `{drainSeconds}` / `{restart: true}` | changes it (today: `replicas` and `restart` only): a new size or doors roll the group pod by pod, each pod drained (the Deployment's own roll) |
-| `DELETE groups/{g}` | deletes the group: every pod drains at its SIGTERM up to `drainSeconds`, then goes. The policy's resource group stays |
+| `POST groups` `{name, size, replicas, clientID, quack, drainSeconds, resourceGroup}` | creates the `HugrNodeGroup` (a create as `hugr-console-create`, `platform.hugr.io/changed-by`) |
+| `PATCH groups/{g}` one of `{replicas}` / `{size}` / `{quack}` / `{drainSeconds}` / `{restart: true}` | changes one field; every field but the count rolls the group pod by pod, each pod drained (the Deployment's own roll) |
+| `DELETE groups/{g}` | deletes the group of the UID read: every pod drains at its SIGTERM up to `drainSeconds`, then goes. The policy's resource group stays |
+| `GET` / `POST {roles, default}` / `DELETE {resourceGroup}` `groups/{g}/policy` | the group's place in the policy (below) |
+
+Making and deleting a group read the person's rights again past the console's cache: the write is the operator's
+ServiceAccount's, judged by nothing else of the person's.
 
 - **The webhook judges** a console write as it judges a `kubectl` one: the plan, the sizes, the name. Its refusal is
-  shown with its reason.
+  shown with its reason; a read it could not make answers a fixed message (the API server's own names the operator's
+  ServiceAccount).
+- **A resource group's name is a plain name** (letters, digits, `_`, `-`, at most 63), as the console takes it and the
+  webhook refuses otherwise, on a create and when the name changes. Every node's bootstrap document lists every
+  group's resource group in the first policy, which takes plain names only, so one dotted name would stop every node of
+  the platform from starting. A group that names one already keeps it until the name changes.
 - **The certificate** is the chart's groups' own: the csi-driver from the internal issuer (`groups.yaml`), its issuer
   and duration handed to the console by the chart (`--console-group-issuer`, `--console-group-certificate-duration`).
   Nothing is asked; without an issuer the console makes no group.
@@ -65,14 +74,19 @@ These are the same management statements the DBeaver client sends. The node judg
 - **No name from the browser becomes SQL as typed.** The console reads the roles on the node first and binds only roles
   in that list. Every name is written as a double-quoted identifier.
 - **The resource group is created with no limits.** Its limits and the default flag of an existing group are set with
-  the policy (spec 007).
+  the policy (spec 007): `default` asked for a group the policy has already is refused, never dropped silently.
 - **The statements go to a serving node first.** The group's own nodes drain themselves, so they are asked last, and
   a placement refusal sends the call to one of the groups it names.
 - **A repeat finishes a cut call.** A known resource group is never created again; binding a role again replaces the
   binding.
 
 **Remove from the policy** (`DROP RESOURCE GROUP`) is a separate action, never part of a delete: the nodes of a group
-whose resource group is gone drain themselves.
+whose resource group is gone drain themselves. The request names the resource group the page showed (one changed since
+is refused), and the console refuses while another group of the platform serves it or while it is the policy's
+default group.
+
+The policy's writes go once, to the node that answered the read before them; only reads move to the next node after a
+failure (a write that timed out may have run).
 
 ### What tresor needs for a new group
 
@@ -122,6 +136,10 @@ A node logs in to tresor by its group's identity. Two things must be there for i
    the policy take `policy`, judged by the node.
 
 ## Follow-ups
+
+- duckdb-acl: `CREATE RESOURCE GROUP IF NOT EXISTS`. The console creates only after reading that the policy lacks the
+  group, but a plain `CREATE` replaces an existing one's limits, so a group someone made in that window loses its
+  limits.
 
 - Scaling bounds and autoscale (after the release).
 - The policy as the DBeaver client edits it, and SQL under `ACL NATIVE` (spec 007).

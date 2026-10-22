@@ -78,7 +78,9 @@ export class Api {
   groupPolicy = (group: string) => this.request<GroupPolicy>('GET', `groups/${part(group)}/policy`)
   addToPolicy = (group: string, roles: string[], isDefault: boolean) =>
     this.request<GroupPolicy>('POST', `groups/${part(group)}/policy`, isDefault ? { roles, default: true } : { roles })
-  removeFromPolicy = (group: string) => this.request<void>('DELETE', `groups/${part(group)}/policy`)
+  // the resource group the page shows: one that changed since (kubectl) is refused, never another dropped
+  removeFromPolicy = (group: string, resourceGroup: string) =>
+    this.request<void>('DELETE', `groups/${part(group)}/policy`, { resourceGroup })
   node = (label: string) => this.request<NodePage>('GET', `nodes/${part(label)}`)
   sessions = (label: string) => this.request<{ sessions: SessionRow[] }>('GET', `nodes/${part(label)}/sessions`)
   endSession = (label: string, id: string) =>

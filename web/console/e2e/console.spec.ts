@@ -123,12 +123,15 @@ test('an admin makes a group, places it in the policy by hand, then removes and 
   await add.getByLabel('analyst').check()
   await shot(admin, 'group-policy-add')
   await add.getByRole('button', { name: 'Add to the policy' }).click()
-  await expect(admin.getByText('in the policy', { exact: true })).toBeVisible() // written by the node, read back
-  await expect(admin.getByText('Roles:')).toBeVisible()
+  const policy = admin.getByRole('region', { name: 'Policy' })
+  await expect(policy.getByText('in the policy', { exact: true })).toBeVisible() // written by the node, read back
+  await expect(policy.getByText('Roles:')).toBeVisible()
   await shot(admin, 'group-in-policy')
 
   await admin.getByRole('button', { name: 'Remove from the policy' }).click()
-  await admin.getByRole('dialog').getByRole('button', { name: 'Remove' }).click()
+  const remove = admin.getByRole('dialog')
+  await remove.getByLabel("Type the resource group's name").fill('reports')
+  await remove.getByRole('button', { name: 'Remove' }).click()
   await expect(admin.getByText(/not in the policy: the group's nodes drain themselves/)).toBeVisible()
 
   await admin.getByRole('button', { name: 'Delete' }).click()

@@ -586,7 +586,6 @@ sys.exit(0 if "hugr-init" in managers else 1)' || fail "the CRDs were not applie
 	ok "revision $revision: the CRDs applied by the pre-upgrade hook (its right gone after), analyst_a still reads"
 }
 
-# check_rollout: a new node image - the same build under another name - rolls group by group (spec 008): the default
 # check_console_group: spec 006 - the console makes a group (its identity given beforehand: the IdP's client and
 # tresor's actor are the installation's), whose node drains itself until the policy has its resource group; the
 # console adds it by hand on a node under the admin's token, a principal of a role bound there is served, then the
@@ -624,7 +623,7 @@ check_console_group() {
 	grep -q 'code = Unavailable' <<<"$got" || fail "analyst_a on $g: $got"
 	ok "the console added $g to the policy (analyst_b, node_breakglass bound): the group resumed by itself, analyst_b reads on $pod, analyst_a is refused there"
 
-	console_api admin DELETE "groups/$g/policy" >/dev/null || fail "group $g removed from the policy"
+	console_api admin DELETE "groups/$g/policy" "{\"resourceGroup\": \"$g\"}" >/dev/null || fail "group $g removed from the policy"
 	eventually 120 "group $g's node drains itself again" draining_is "$g" True
 	console_api admin DELETE "groups/$g" >/dev/null || fail "group $g deleted"
 	eventually 120 "the node $pod drained and went" went_drained "$pod"
@@ -634,6 +633,7 @@ check_console_group() {
 	ok "removed from the policy, $g's node drained itself; deleted, it drained and went, and the fleet is a and b again"
 }
 
+# check_rollout: a new node image - the same build under another name - rolls group by group (spec 008): the default
 # group a is the canary, b waits on its image until a is done, then moves; the status ends Complete and the fleet
 # serves
 check_rollout() {

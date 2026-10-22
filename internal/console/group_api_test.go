@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/codes"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
@@ -31,6 +32,8 @@ func TestCreateGroup(t *testing.T) {
 		`{"name": "reports", "size": "small", "clientID": "x", "replicas": -1}`,
 		`{"name": "reports", "size": "small", "clientID": "x", "drainSeconds": 90000}`,
 		`{"name": "reports", "size": "small", "clientID": "x", "resourceGroup": "a\"b"}`,
+		// a name the first policy refuses would stop every node's bootstrap
+		`{"name": "reports", "size": "small", "clientID": "x", "resourceGroup": "reports.eu"}`,
 		`{"name": "reports", "size": "small", "clientID": "x", "tls": {"secretRef": {"name": "hugr-operator"}}}`} {
 		if code, _, _ := h.do(t, "POST", APIPrefix+"groups", opsToken, body); code != http.StatusBadRequest {
 			t.Errorf("%s: %d", body, code)
@@ -157,15 +160,35 @@ func TestGroupPolicy(t *testing.T) {
 			t.Errorf("not written once: %s", want)
 		}
 	}
+	// the default flag is the new resource group's only: an existing one's is the policy's to set
+	if code, out, _ := h.do(t, "POST", APIPrefix+"groups/general/policy", opsToken, `{"roles": [], "default": true}`); code != 409 ||
+		out["error"] != "in_policy" {
+		t.Errorf("default for a group in the policy: %d %v", code, out)
+	}
 	// a resource group the policy has already: the roles are bound, nothing is created
 	h.do(t, "POST", APIPrefix+"groups/general/policy", opsToken, `{"roles": ["platform_admin"]}`)
 	if h.nodes.statements(`CREATE RESOURCE GROUP "general"`) != 0 ||
 		h.nodes.statements(`GRANT RESOURCE GROUP "general" TO ROLE "platform_admin"`) != 1 {
 		t.Error("a known resource group is bound to, never created again")
 	}
-	if code, _, _ := h.do(t, "DELETE", APIPrefix+"groups/etl/policy", opsToken, ""); code != http.StatusNoContent ||
+	// removing: the name the page showed, never another; not the default group, not one another group serves
+	if code, _, _ := h.do(t, "DELETE", APIPrefix+"groups/etl/policy", opsToken, ""); code != http.StatusBadRequest {
+		t.Errorf("a removal naming nothing: %d", code)
+	}
+	if code, _, _ := h.do(t, "DELETE", APIPrefix+"groups/etl/policy", opsToken, `{"resourceGroup": "general"}`); code != 409 {
+		t.Errorf("a removal naming another resource group: %d", code)
+	}
+	policyAnswers(h, [][]any{{"general", true}, {"etl", false}})
+	if code, out, _ := h.do(t, "DELETE", APIPrefix+"groups/general/policy", opsToken, `{"resourceGroup": "general"}`); code != 409 ||
+		out["error"] != "default" {
+		t.Errorf("the default group: %d %v", code, out)
+	}
+	if code, _, _ := h.do(t, "DELETE", APIPrefix+"groups/etl/policy", opsToken, `{"resourceGroup": "etl"}`); code != http.StatusNoContent ||
 		h.nodes.statements(`DROP RESOURCE GROUP IF EXISTS "etl"`) != 1 {
 		t.Errorf("remove: %d", code)
+	}
+	if h.nodes.statements(`DROP RESOURCE GROUP IF EXISTS "general"`) != 0 {
+		t.Error("nothing refused is dropped")
 	}
 	// below the policy bundle: refused, nothing asked of a node but the rights
 	o := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
@@ -223,5 +246,71 @@ func TestQuoted(t *testing.T) {
 		if _, ok := quoted(in); ok {
 			t.Errorf("%q is not written", in)
 		}
+	}
+}
+
+func TestRemoveSharedResourceGroup(t *testing.T) {
+	// two groups of the platform serve one resource group: removing it for one would drain the other's nodes
+	h := newHarness(t, policyInfo, node("hugr-node-etl-a", "etl"))
+	shared := &v1alpha1.HugrNodeGroup{}
+	if err := h.server.Reader.Get(t.Context(), client.ObjectKey{Namespace: "hugr", Name: "general"}, shared); err != nil {
+		t.Fatal(err)
+	}
+	shared.Spec.ResourceGroup = "etl"
+	if err := h.server.Reader.(client.Client).Update(t.Context(), shared); err != nil {
+		t.Fatal(err)
+	}
+	policyAnswers(h, [][]any{{"etl", false}})
+	if code, out, _ := h.do(t, "DELETE", APIPrefix+"groups/etl/policy", opsToken, `{"resourceGroup": "etl"}`); code != 409 ||
+		out["error"] != "shared" || !strings.Contains(out["message"].(string), "general") {
+		t.Errorf("a shared resource group: %d %v", code, out)
+	}
+	if h.nodes.statements(`DROP RESOURCE GROUP IF EXISTS "etl"`) != 0 {
+		t.Error("a shared resource group is never dropped")
+	}
+}
+
+func TestWritesReadRightsAgain(t *testing.T) {
+	// the cluster right read a moment ago, then revoked: a group is neither made nor deleted on the cached rights
+	h := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
+	h.server.NewGroupTLS = newTLS
+	if code, _, _ := h.do(t, "GET", APIPrefix+"me", opsToken, ""); code != 200 {
+		t.Fatalf("me: %d", code)
+	}
+	inner := h.nodes.answer
+	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
+		if statement == stmtInfo {
+			return operateInfo, nil
+		}
+		return inner(n, statement)
+	}
+	body := `{"name": "reports", "size": "small", "replicas": 1, "clientID": "x"}`
+	if code, _, _ := h.do(t, "POST", APIPrefix+"groups", opsToken, body); code != http.StatusForbidden {
+		t.Errorf("a revoked right makes a group: %d", code)
+	}
+	if code, _, _ := h.do(t, "DELETE", APIPrefix+"groups/etl", opsToken, ""); code != http.StatusForbidden {
+		t.Errorf("a revoked right deletes a group: %d", code)
+	}
+	if len(h.writer.created) != 0 || len(h.writer.deleted) != 0 {
+		t.Errorf("nothing written: %v %v", h.writer.created, h.writer.deleted)
+	}
+}
+
+func TestPolicyWritesOnce(t *testing.T) {
+	// a write that times out on the node the read answered is not sent to another: it may have run
+	h := newHarness(t, policyInfo, node("hugr-node-etl-a", "etl"), node("hugr-node-general-a", "general"))
+	policyAnswers(h, nil)
+	inner := h.nodes.answer
+	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
+		if strings.HasPrefix(statement, "CREATE RESOURCE GROUP") {
+			return nil, errUnreachable
+		}
+		return inner(n, statement)
+	}
+	if code, _, _ := h.do(t, "POST", APIPrefix+"groups/etl/policy", opsToken, `{"roles": []}`); code != 503 {
+		t.Errorf("a write that timed out: %d", code)
+	}
+	if n := h.nodes.statements(`CREATE RESOURCE GROUP "etl"`); n != 1 {
+		t.Errorf("the write was sent %d times", n)
 	}
 }

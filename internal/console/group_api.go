@@ -2,6 +2,7 @@ package console
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
+	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
 	"github.com/hugr-lab/hugr-platform/pkg/plan"
 )
 
@@ -67,9 +69,6 @@ const drainSecondsMax = 86400
 // clientIDPattern is an IdP's client id as the console takes it: printable, no space (a UUID, a name, a URI).
 var clientIDPattern = regexp.MustCompile(`^[\x21-\x7e]{1,255}$`)
 
-// resourceGroupPattern is a resource group's name as the console writes it into a group (kubectl may write any).
-var resourceGroupPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
-
 func decodeStrict(r *http.Request, v any) error {
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
 	decoder.DisallowUnknownFields()
@@ -85,7 +84,7 @@ func changedBy(p *person) string {
 	return p.subject
 }
 
-func (s *Server) createGroup(w http.ResponseWriter, r *http.Request, _ string, p *person) {
+func (s *Server) createGroup(w http.ResponseWriter, r *http.Request, token string, p *person) {
 	var in GroupCreate
 	if err := decodeStrict(r, &in); err != nil {
 		problem(w, http.StatusBadRequest, "bad_request",
@@ -107,16 +106,19 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request, _ string, p
 			"a group needs its identity's client id: printable characters, no space, at most 255")
 		return
 	case in.DrainSeconds != nil && (*in.DrainSeconds < 0 || *in.DrainSeconds > drainSecondsMax):
-		problem(w, http.StatusBadRequest, "bad_request", "drainSeconds is 0 to 86400")
+		problem(w, http.StatusBadRequest, "bad_request", "the drain time is 0 to 86400 seconds")
 		return
-	case in.ResourceGroup != "" && !resourceGroupPattern.MatchString(in.ResourceGroup):
-		problem(w, http.StatusBadRequest, "bad_request",
-			"a resource group's name is letters, digits, '_', '.', '-', at most 63, starting with a letter or a digit")
+	case in.ResourceGroup != "" && !nodeproto.ValidPlainName(in.ResourceGroup):
+		// the first policy every node's document carries takes plain names only
+		problem(w, http.StatusBadRequest, "bad_request", "a resource group's name is letters, digits, '_' and '-', at most 63")
 		return
 	}
 	if s.NewGroupTLS.CSI == nil && s.NewGroupTLS.SecretRef == nil {
 		problem(w, http.StatusServiceUnavailable, "no_certificate",
 			"this console has no certificate issuer for a new group's doors; the chart names it")
+		return
+	}
+	if !s.rightsNow(w, r, token) {
 		return
 	}
 	platform, err := s.Platform(r.Context())
@@ -141,6 +143,30 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request, _ string, p
 	}
 	s.Log.Info("group made", "group", in.Name, "by", p.subject, "size", in.Size, "replicas", in.Replicas)
 	w.WriteHeader(http.StatusCreated)
+}
+
+// rightsNow reads the person's rights again, past the cache: a group made or deleted is a write of the operator's
+// ServiceAccount that nothing else judges by the person, so a right revoked a minute ago does not still make one.
+func (s *Server) rightsNow(w http.ResponseWriter, r *http.Request, token string) bool {
+	view, err := s.platformView(r.Context())
+	if err != nil {
+		problem(w, http.StatusServiceUnavailable, "kubernetes", "the platform's groups could not be read")
+		return false
+	}
+	info, err := askRights(r.Context(), s.Nodes, view, token, s.now(), s.random())
+	switch {
+	case errors.Is(err, errRefused):
+		problem(w, http.StatusUnauthorized, "unauthenticated", "the nodes refused your sign-in; sign in again")
+		return false
+	case err != nil:
+		problem(w, http.StatusServiceUnavailable, "no_node", "no node answers, so your rights cannot be read again now")
+		return false
+	case !RightsOf(info).Scale:
+		s.rights.forget(tokenHash(token))
+		problem(w, http.StatusForbidden, "forbidden", "your rights do not include this")
+		return false
+	}
+	return true
 }
 
 // platformGroup is the request's group if it is this platform's, else a 404.
@@ -175,7 +201,7 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, _ string, p 
 		problem(w, http.StatusBadRequest, "bad_request", "a group needs a size")
 		return
 	case patch.DrainSeconds != nil && (*patch.DrainSeconds < 0 || *patch.DrainSeconds > drainSecondsMax):
-		problem(w, http.StatusBadRequest, "bad_request", "drainSeconds is 0 to 86400")
+		problem(w, http.StatusBadRequest, "bad_request", "the drain time is 0 to 86400 seconds")
 		return
 	}
 	platform, group, ok := s.platformGroup(w, r)
@@ -200,13 +226,14 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, _ string, p 
 
 // deleteGroup deletes the group: its pods drain as they stop. Its resource group stays in the policy - taking it out
 // is its own action (spec 006).
-func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request, _ string, p *person) {
+func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request, token string, p *person) {
 	platform, group, ok := s.platformGroup(w, r)
-	if !ok {
+	if !ok || !s.rightsNow(w, r, token) {
 		return
 	}
-	if err := s.Groups.Delete(r.Context(), platform.Namespace, group.Name); err != nil {
-		if apierrors.IsNotFound(err) {
+	// the group read here, and no other of its name made since (the UID): its platform was judged on this one
+	if err := s.Groups.Delete(r.Context(), platform.Namespace, group.Name, group.UID); err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 			problem(w, http.StatusNotFound, "not_found", "no such group")
 			return
 		}

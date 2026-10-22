@@ -5,6 +5,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
@@ -43,7 +44,7 @@ type GroupChange struct {
 type GroupWriter interface {
 	Change(ctx context.Context, change GroupChange) error
 	Create(ctx context.Context, group *v1alpha1.HugrNodeGroup) error
-	Delete(ctx context.Context, namespace, name string) error
+	Delete(ctx context.Context, namespace, name string, uid types.UID) error
 }
 
 // ApplyWriter writes by server-side apply, taking the fields it sets: the count a person sets in the console is
@@ -105,8 +106,10 @@ func (w ApplyWriter) Create(ctx context.Context, group *v1alpha1.HugrNodeGroup) 
 	return w.Client.Create(ctx, group, client.FieldOwner(CreateFieldOwner))
 }
 
-// Delete deletes the group: its Deployment goes with it (the owner reference), each pod drains at its SIGTERM.
-func (w ApplyWriter) Delete(ctx context.Context, namespace, name string) error {
+// Delete deletes the group of that UID: its Deployment goes with it (the owner reference), each pod drains at its
+// SIGTERM.
+func (w ApplyWriter) Delete(ctx context.Context, namespace, name string, uid types.UID) error {
 	group := &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
-	return w.Client.Delete(ctx, group, client.PropagationPolicy(metav1.DeletePropagationBackground))
+	return w.Client.Delete(ctx, group, client.PropagationPolicy(metav1.DeletePropagationBackground),
+		client.Preconditions{UID: &uid})
 }
