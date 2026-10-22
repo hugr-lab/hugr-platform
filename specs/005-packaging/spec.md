@@ -418,6 +418,17 @@ Built (2026-10-21):
 
 ### Stage B: Azure (its own PRs, detailed when stage A lands)
 
+- **Each marketplace has its own recipe** (Helm or Bicep), and so does a private cloud's Kubernetes (the owner,
+  2026-10-22). What they share:
+  - **kista and tresor are external by default**: products of their own, used outside the platform too and possibly
+    by several platforms, each installed by its own recipe (on Azure its own Managed Application). The platform's
+    recipe takes their addresses. Only when none is given does it run its own, on SQLite, so nobody takes one for the
+    other.
+  - **The key store too**: the organisation's Vault or Key Vault; OpenBao installed with the platform only when
+    asked.
+  - **The databases**: Azure SQL Managed or Azure Database for PostgreSQL Flexible, made by the recipe or any the
+    customer gives. Backups are then the customer's or Azure's.
+  - The variants are not all written out now: each is added when a recipe needs it.
 - **Entra**:
   - app registrations for the nodes' API, the console's SPA, tresor and kista;
   - a user-assigned managed identity per group, with a federated credential for its ServiceAccount (what
@@ -435,16 +446,21 @@ Built (2026-10-21):
   - **tresor and kista** log in by their managed identity's Entra token, with no password (tresor's `auth: entra`,
     kista's `store.login.kind: entra`). The deployment script creates their database users for the identities
     (`CREATE USER … FROM EXTERNAL PROVIDER`, `pgaadauth_create_principal`).
-  - **The policy catalog on Azure SQL**: a node logs in by its group's Entra token through mssql and the linked `azure`
-    extension (mssql reads a token per connection), so `hugr_policy_catalog` in tresor names the host and the
-    database only. Still to verify: the group's workload identity reaching the `azure` extension's credential chain.
-    - **Checked 2026-10-21 (mssql-extension a7c320e):** a node logs in to Azure SQL by Entra today, as a service
-      principal (`PROVIDER service_principal`; mssql gets and renews the tokens itself). The principal's client secret
-      is then the one credential, and it lives only in tresor, in `hugr_policy_catalog`. mssql also takes a token from
-      the Azure CLI, an interactive login, the environment or a given token. What it lacks is the login with no secret
-      at all: a pod's workload identity (`AZURE_FEDERATED_TOKEN_FILE`), and its `managed_identity` provider is "not yet
-      implemented". That would remove the client secret too: a product gap for mssql-extension, to relay when stage B
-      starts.
+  - **The policy catalog on Azure SQL: the node, tresor, a token made on each read** (the owner, 2026-10-22; checked
+    in the code, not yet live). Nothing is stored and no product changes:
+    - tresor-server makes the token itself (its spec 023, a login of flow `rule` with an `azure` identity of
+      `dynamic.identities`: its own managed identity or a user-assigned one, scoped to Azure SQL). The secret is
+      `hugr_policy_catalog_token`: type `azure`, `PROVIDER access_token`, `ACCESS_TOKEN 'mint+rule://<login>#access_token'`.
+      It is served with `expires_at` = the token's expiry less 10 minutes.
+    - `hugr_policy_catalog` (type `mssql`) names the host, the database and `AZURE_SECRET 'hugr_policy_catalog_token'`.
+      Both are granted to the groups' identities.
+    - A node logs in to tresor by its own identity, as today. mssql's pool reads the azure secret again by name each
+      time its token expires (the pool's factory has the `DatabaseInstance` only). tresor's storage answers a lookup
+      without a context as the node itself, and fetches a dynamic secret again before it expires.
+    - The catalog then sees one login, the identity tresor makes the token with; which nodes read the catalog is
+      tresor's grants. A database user per node would need mssql to take a pod's workload identity itself
+      (`AZURE_FEDERATED_TOKEN_FILE`; its `managed_identity` provider is "not yet implemented") - not needed for this.
+    - A service principal (`PROVIDER service_principal`, its client secret in tresor) works too.
   - **The policy catalog on PostgreSQL** has one gap. An Entra token lives about an hour, and postgres_scanner takes
     its password once, so a new connection after that fails. Two ways close it: postgres_scanner re-reading a token as
     the password per connection (a patch of ours), or a dynamic secret in tresor that hands out a fresh token ("CREATE
