@@ -15,10 +15,12 @@
 #
 # Without a command a run does up and check (and, on kind and aks, down). The run's state - its CA, its secrets - is in
 # ~/.cache/hugr-platform-demo/<provider> (mode 0700); nothing of a token or a secret is printed.
-#   HUGR_NODE_DIST    the node's release assets (dist-linux_<arch>) instead of hugr-node's latest release dry run
-#   NODE_IMAGE        a published hugr-node image instead of the dry run's (the extensions still come from the dry run
-#                     or HUGR_NODE_DIST: they must be the image's duckdb's)
-#   HUGR_NODE_DIR     a checkout of hugr-node instead of its main (its scripts read the release's extensions)
+# The node is the hugr-node release the umbrella chart pins (charts/hugr/values.yaml): its image and its extensions.
+#   HUGR_NODE_DIST    a node's assets of one's own (a release dry run's dist-linux_<arch>): the image is built from them
+#   NODE_IMAGE        another hugr-node image (the extensions still come from the release or HUGR_NODE_DIST: they must
+#                     be the image's duckdb's)
+#   HUGR_NODE_DIR     a checkout of hugr-node instead of the release's tag (its scripts read the extensions; its
+#                     Dockerfile builds HUGR_NODE_DIST's image)
 #   HUGR_DEMO_ONLY    up to a step: images, db, idp, vault, chart, platform, seed (for working on one); every run
 #                     installs the chart afresh - the services' state and the catalog with it
 #   HUGR_DEMO_NODE_CPU  a node's CPU request (1; CI's 4-core runner: 250m - the node rounds it up to 1 thread)
@@ -55,7 +57,7 @@ else
 	. "$HERE/lib/idp-keycloak.sh"
 fi
 
-need docker kubectl helm go gh openssl python3 git
+need docker kubectl helm go curl shasum openssl python3 git
 provider_need
 
 stage() { # <name>: false once the step HUGR_DEMO_ONLY names is done

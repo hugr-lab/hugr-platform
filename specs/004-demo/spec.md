@@ -90,15 +90,18 @@ the system roots, the internal CA, the services' CAs and the private ones (the d
 - **tresor-server and kista** are the releases the umbrella chart pins: their charts and their published images.
 - **On minikube** an image goes in by `docker save | docker load`, judged by its build time. `minikube image load
   --overwrite` kept the old image under the tag, and runs before 2026-10-21 tested a stale operator and node.
-- **hugr-node** is built from the assets of a hugr-node release dry run, so nothing new is published.
-  - The release workflow's dry run builds the node and its extensions for both platforms and keeps them as an
-    artifact (`dist-linux_<arch>`, spec 008 there).
-  - The script downloads that artifact for the cluster's architecture: `gh run download` from hugr-node's latest
-    successful run that has one (a dispatch on main makes one), or `HUGR_NODE_DIST`, a directory already at hand.
-  - It builds the image from hugr-node's `docker/Dockerfile`, as the release does.
-  - The same assets seed kista (postgres_scanner and the others), so the node's duckdb and its extensions match.
-  - `NODE_IMAGE` uses a published image instead of the dry run's (a tag, once one carries spec 010). kista is still
-    seeded from the dry run's assets (or `HUGR_NODE_DIST`): they must be built for the image's duckdb.
+- **hugr-node** is the release the umbrella chart pins (`charts/hugr/values.yaml`, its node image's tag), moved by
+  hand with the chart (the owner, 2026-10-22):
+  - its published image, `ghcr.io/hugr-lab/hugr-node:<tag>`;
+  - its archive for the cluster's architecture (`hugr-node-<tag>-linux_<arch>.tar.gz`), checked against the
+    release's `SHA256SUMS`, seeds kista (postgres_scanner and the others), so the node's duckdb and its extensions
+    match; its scripts are read from hugr-node at the tag;
+  - until then the demo took the artifact of hugr-node's latest release dry run on main. That run is dispatched by
+    hand anyway, and GitHub's run listing filtered by branch answered no run now and then (main's demo failed on it
+    on 2026-10-22);
+  - `HUGR_NODE_DIST` (a directory of such assets, e.g. a dry run's `dist-linux_<arch>`) builds the image from them
+    with hugr-node's `docker/Dockerfile`, as the release does (`HUGR_NODE_DIR` a checkout for it); `NODE_IMAGE`
+    names another image. kista is seeded from the same assets: they must be built for the image's duckdb.
 
 ### The IdP on kind and minikube: Keycloak, with no client secret for a node
 
@@ -287,10 +290,8 @@ the kubelet rounds a request up to whole CPUs, so the node sees one), so check 8
 The run's generated values are masked in the job's log (`::add-mask::`); on a failure the job prints `diagnose`.
 AKS is never run by CI: it costs, and it needs a tenant's rights.
 
-- It uses the node assets of hugr-node's latest successful release dry run on main.
-- The job's own token reads hugr-node's artifacts (both repositories are public; proven by run 39180509095,
-  2026-10-19). A fine-grained token (Actions: read on hugr-node) in the secret `HUGR_NODE_ARTIFACTS_TOKEN` is used
-  instead when set; gh's refusal is reported as such.
+- It uses the hugr-node release the umbrella chart pins, downloaded from its public release: no token reads
+  hugr-node's Actions any more (the job's own did, and `HUGR_NODE_ARTIFACTS_TOKEN` could stand in, until 2026-10-22).
 - The demo step has its own limit (55 minutes) under the job's (75): a hang fails the step and the diagnosis still
   runs. The checker and `kubectl exec` are bounded too (`timeout`, 120 s). The first main run hung in check 3: a
   backgrounded shell function kept a `$(...)` pipe open under bash 5 (macOS's bash 3.2 does not), so the background
@@ -341,15 +342,15 @@ From the minikube run (2026-10-18), recorded in spec 001's "Still to verify":
 
 | # | question | proposal |
 | --- | --- | --- |
-| 1 | Where the node image comes from | hugr-node's release dry-run assets (`dist-linux_<arch>`): nothing new is published, and the node and its extensions match. `NODE_IMAGE` for a published tag once one carries spec 010 |
+| 1 | Where the node image comes from | the hugr-node release the umbrella chart pins: its published image and its archive, the node and its extensions match (2026-10-22; until then a release dry run's assets, which `HUGR_NODE_DIST` still takes) |
 | 2 | When CI runs it | kind, on pushes to main and dispatch; not every PR (about half an hour) |
 | 3 | The spec's number | 004: 002 (the front) and 003 (the console) keep the numbers spec 001 gave them |
 | 4 | Where it runs (the owner) | minikube on a developer's machine, kind in CI, and AKS by hand, as tresor-server's and kista's live runs |
 
 ## Alternatives considered
 
-- **Publishing a hugr-node image of every main commit** (`:edge`). It is a new public artifact, and the dry run's
-  assets give the same image without one.
+- **Publishing a hugr-node image of every main commit** (`:edge`). It is a new public artifact; the demo tests the
+  release the platform installs, and `HUGR_NODE_DIST` takes a dry run's assets for an unreleased node.
 - **cert-manager in the cluster for every certificate.** It is one more install and one more thing to wait for. The
   shipped install still uses it; the demo's own CA makes the run self-contained.
 - **A dev identity (a private key per node) instead of Keycloak's federation.** It would prove nothing about the

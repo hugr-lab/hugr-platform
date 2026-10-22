@@ -1,8 +1,8 @@
 # shellcheck shell=bash
-# The demo's images (spec 004): the operator from this checkout; hugr-node from the assets of a hugr-node release dry
-# run (dist-linux_<arch>) - nothing new is published. Each is <name>:demo, built by the provider: on kind and minikube
-# locally and loaded into the cluster, on AKS in the run's registry. tresor-server and kista are the releases the
-# umbrella chart pins, their published images (spec 005).
+# The demo's images (spec 004): the operator from this checkout; hugr-node the release the umbrella chart pins - its
+# published image and its extensions, moved by hand with the chart. Each is <name>:demo, built by the provider: on kind
+# and minikube locally and loaded into the cluster, on AKS in the run's registry. tresor-server and kista are the
+# releases the umbrella chart pins, their published images (spec 005).
 
 # REGISTRY: the images' registry with its slash (AKS's), or none (loaded into the cluster); PULL: their pull policy
 REGISTRY=""
@@ -23,45 +23,51 @@ local_build() {
 	provider_load "$1:demo"
 }
 
-# src <repository>: a checkout of hugr-lab/<repository>'s main in the cache (or the directory the caller names)
+# src <repository> <var> <tag>: a checkout of hugr-lab/<repository> at the tag in the cache (or the directory the
+# caller names)
 src() {
-	local repo="$1" var="$2" dir
+	local repo="$1" var="$2" tag="$3" dir
 	dir="${!var:-}"
 	if [ -n "$dir" ]; then
 		(cd "$dir" && pwd)
 		return
 	fi
-	dir="$CACHE/src/$repo"
-	if [ -d "$dir/.git" ]; then
-		git -C "$dir" fetch -q --depth 1 origin main && git -C "$dir" reset -q --hard origin/main
-	else
+	dir="$CACHE/src/$repo@$tag"
+	if [ ! -d "$dir/.git" ]; then
 		mkdir -p "$CACHE/src"
-		git clone -q --depth 1 "https://github.com/hugr-lab/$repo" "$dir"
+		git clone -q --depth 1 --branch "$tag" "https://github.com/hugr-lab/$repo" "$dir" 2>/dev/null ||
+			fail "hugr-lab/$repo at $tag"
 	fi
 	echo "$dir"
 }
 
-# node_dist: the node's assets for the cluster's architecture - HUGR_NODE_DIST, or the artifact of hugr-node's latest
-# successful release dry run on main that has one
+# node_version: the hugr-node release the umbrella chart pins (its node image's tag)
+node_version() {
+	local v
+	v="$(sed -n 's|^ *image: ghcr\.io/hugr-lab/hugr-node:\(v[0-9][0-9A-Za-z.-]*\)$|\1|p' "$ROOT/charts/hugr/values.yaml")"
+	[ -n "$v" ] && [ "$(echo "$v" | wc -l)" -eq 1 ] || fail "no single hugr-node image in charts/hugr/values.yaml"
+	echo "$v"
+}
+
+# node_dist: the node's assets for the cluster's architecture - HUGR_NODE_DIST, or the archive of the pinned release
+# (hugr-node-<tag>-linux_<arch>.tar.gz), checked against the release's SHA256SUMS
 node_dist() {
 	if [ -n "${HUGR_NODE_DIST:-}" ]; then
 		(cd "$HUGR_NODE_DIST" && pwd)
 		return
 	fi
-	local name="dist-linux_$ARCH" dir run runs
-	dir="$CACHE/$name"
-	# gh's own refusal (a token that may not read hugr-node's runs) is said as such, not as "no run"
-	runs="$(gh run list -R hugr-lab/hugr-node --workflow release.yml --branch main --status success --limit 20 \
-		--json databaseId --jq '.[].databaseId' 2>"$WORK/gh.err")" || fail "listing hugr-node's runs: $(cat "$WORK/gh.err")"
-	run="$(echo "$runs" | while read -r id; do
-		gh api "repos/hugr-lab/hugr-node/actions/runs/$id/artifacts" --jq '.artifacts[] | select(.expired | not) | .name' |
-			grep -qx "$name" && { echo "$id"; break; }
-	done)"
-	[ -n "$run" ] || fail "no hugr-node release run with $name (dispatch hugr-node's release workflow on main)"
-	if [ ! -f "$dir/.run" ] || [ "$(cat "$dir/.run")" != "$run" ]; then
-		rm -rf "$dir"
-		gh run download "$run" -R hugr-lab/hugr-node -n "$name" -D "$dir" >/dev/null || fail "the artifact $name of run $run"
-		echo "$run" >"$dir/.run"
+	local name="hugr-node-$NODE_VERSION-linux_$ARCH.tar.gz" dir="$CACHE/hugr-node-$NODE_VERSION-linux_$ARCH" get
+	get="$WORK/node-release"
+	if [ ! -f "$dir/.done" ]; then
+		rm -rf "$dir" "$get" && mkdir -p "$dir" "$get"
+		for f in "$name" SHA256SUMS; do
+			curl -fsSL -o "$get/$f" "https://github.com/hugr-lab/hugr-node/releases/download/$NODE_VERSION/$f" ||
+				fail "hugr-node $NODE_VERSION's $f"
+		done
+		(cd "$get" && grep -E "^[0-9a-f]{64}  $name\$" SHA256SUMS | shasum -a 256 -c --status -) ||
+			fail "hugr-node $NODE_VERSION's $name does not match its SHA256SUMS"
+		tar -xzf "$get/$name" -C "$dir" || fail "unpacking $name"
+		touch "$dir/.done"
 	fi
 	echo "$dir"
 }
@@ -70,12 +76,15 @@ build_images() {
 	step "the images"
 	provider_build hugr-platform "$ROOT"
 	ok "the operator's image $(img hugr-platform), from this checkout"
-	NODE_SRC="$(src hugr-node HUGR_NODE_DIR)"
+	NODE_VERSION="$(node_version)"
+	NODE_SRC="$(src hugr-node HUGR_NODE_DIR "$NODE_VERSION")"
 	# the assets seed kista whichever image runs: the node's extensions are its release's, for its DuckDB
 	DIST="$(node_dist)"
 	DUCKDB_VERSION="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["duckdb_version"])' \
 		"$(python3 "$NODE_SRC/scripts/ext_footer.py" "$DIST/hugr_node.duckdb_extension")")" ||
 		fail "the node's DuckDB version"
+	# the pinned release's image, unless the assets are one's own (HUGR_NODE_DIST): then the image is built from them
+	[ -n "${HUGR_NODE_DIST:-}" ] || NODE_IMAGE="${NODE_IMAGE:-ghcr.io/hugr-lab/hugr-node:$NODE_VERSION}"
 	if [ -n "${NODE_IMAGE:-}" ]; then
 		provider_import "$NODE_IMAGE" hugr-node
 		ok "$(img hugr-node), from $NODE_IMAGE"
@@ -85,6 +94,6 @@ build_images() {
 		cp "$DIST/duckdb" "$WORK/node-image/duckdb"
 		cp "$NODE_SRC/docker/Dockerfile" "$WORK/node-image/Dockerfile"
 		provider_build hugr-node "$WORK/node-image"
-		ok "$(img hugr-node), from the release dry run assets in $DIST"
+		ok "$(img hugr-node), from the assets in $DIST"
 	fi
 }

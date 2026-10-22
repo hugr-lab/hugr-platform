@@ -1,8 +1,7 @@
 # spec 004: the platform in one cluster - the umbrella chart (the operator, tresor-server, kista; spec 005), two groups
 # of hugr-node pods, Keycloak logging the nodes in by their ServiceAccount tokens, OpenBao and PostgreSQL as the
 # organisation's vault and database - on kind, with the checks of spec 001 and hugr-node spec 010. On main, on dispatch and from the release (spec 005), not on every PR: a run takes about half an hour. The
-# node's image is built from the assets of hugr-node's latest successful release dry run on main (a dispatch there makes
-# one).
+# node is the hugr-node release the umbrella chart pins: its published image and its extensions.
 name: Demo
 on:
   push:
@@ -20,9 +19,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      # hugr-node's dry-run assets: a token that reads hugr-node's Actions - a fine-grained one (Actions: read on
-      # hugr-node) in HUGR_NODE_ARTIFACTS_TOKEN if this job's own may not
-      GH_TOKEN: ${{ secrets.HUGR_NODE_ARTIFACTS_TOKEN || github.token }}
       # four nodes at once (check 8) on a 4-core runner; the kubelet rounds a request up to whole CPUs (HUGR_POD_CPU 1)
       HUGR_DEMO_NODE_CPU: 250m
       HUGR_DEMO_KEEP: "1"
