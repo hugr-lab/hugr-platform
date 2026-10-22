@@ -593,6 +593,48 @@ check_upgrade() {
 	ok "revision $revision: the services' databases left as they were, OpenBao configured by its own login, analyst_a still reads"
 }
 
+# check_rollout: a new node image - the same build under another name - rolls group by group (spec 008): the default
+# group a is the canary, b waits on its image until a is done, then moves; the status ends Complete and the fleet
+# serves
+check_rollout() {
+	step "12. a new node image: the canary group first, then the next, one at a time; the rollout ends Complete"
+	local from to seen="" phase group
+	from="$(img hugr-node)"
+	to="${from%:demo}:demo-next"
+	provider_retag "$from" "$to"
+	k -n hugr patch hugrplatform hugr --type merge -p "{\"spec\":{\"node\":{\"image\":\"$to\"}}}" >/dev/null ||
+		fail "the platform's node image could not be set"
+	local deadline=$((SECONDS + 900))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		phase="$(k -n hugr get hugrplatform hugr -o jsonpath='{.status.upgrade.phase}' 2>/dev/null || true)"
+		group="$(k -n hugr get hugrplatform hugr -o jsonpath='{.status.upgrade.group}' 2>/dev/null || true)"
+		case "$phase" in
+		Canary | Groups)
+			[[ " $seen " == *" $group "* ]] || seen="$seen $group"
+			if [ "$group" = a ] && [ "$(k -n hugr get deploy hugr-node-b -o jsonpath='{.spec.template.spec.containers[0].image}')" != "$from" ]; then
+				fail "b moved while the canary a rolled"
+			fi
+			;;
+		Complete) break ;;
+		Blocked) fail "the rollout blocked: $(k -n hugr get hugrplatform hugr -o jsonpath='{.status.upgrade.reason}')" ;;
+		esac
+		sleep 3
+	done
+	[ "$phase" = Complete ] || fail "the rollout did not complete in 15 minutes (phase $phase, group $group)"
+	[ "$seen" = " a b" ] || fail "the groups rolled in the order:$seen - want the default group a, then b"
+	[ "$(k -n hugr get hugrplatform hugr -o jsonpath='{.status.image}')" = "$to" ] || fail "status.image is not $to"
+	local g
+	for g in a b; do
+		[ "$(k -n hugr get deploy "hugr-node-$g" -o jsonpath='{.spec.template.spec.containers[0].image}')" = "$to" ] ||
+			fail "group $g does not run $to"
+		k -n hugr rollout status "deploy/hugr-node-$g" --timeout=300s >/dev/null || fail "group $g's roll"
+	done
+	local out
+	out="$(as analyst-a "$(first_pod a)" "SELECT count(*) FROM orders")" || fail "analyst_a's read after the rollout"
+	[ "$out" = 3 ] || fail "analyst_a after the rollout: $out"
+	ok "the canary a rolled first and b waited on its image, then b; the rollout is Complete on $to, and analyst_a still reads"
+}
+
 run_checks() {
 	checker_up
 	check_entry
@@ -608,6 +650,7 @@ run_checks() {
 	check_network
 	check_policy
 	check_upgrade
+	check_rollout
 	check_no_secrets
 	echo
 	echo "PASS: the platform in one cluster ($PROVIDER)"

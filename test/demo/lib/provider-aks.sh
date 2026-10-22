@@ -108,6 +108,8 @@ provider_build() {
 	docker --config "$WORK/docker" push -q "$(img "$1")" >/dev/null || fail "pushing $1 to $ACR"
 }
 provider_import() { azs acr import -n "$ACR" --source "$1" -t "$2:demo" --force -o none || fail "importing $1 into $ACR"; }
+# provider_retag <image> <another name>: the same image under another name, in the cluster (spec 008's rollout check)
+provider_retag() { azs acr import -n "$ACR" --source "$1" -t "${2#*/}" --force -o none || fail "tagging $1 as $2 in $ACR"; }
 provider_load() { :; }
 
 provider_down() {

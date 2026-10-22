@@ -153,6 +153,9 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
     target image, while the phase is Canary and the rollout migrates.
   - **The release's facts** come from the charts: `spec.node.duckdbVersion` (the umbrella takes `global.duckdbVersion`)
     and `catalogSchema` / `catalogMinReader` (22 / 21 for hugr-node v0.2.0, the schema of its acl, 41ec046).
+  - **The demo's check 12**: the same build under another name rolls group by group - the canary a first, b waiting on
+    its image, then b - and the rollout ends Complete with the fleet serving. A catalog migration needs a second acl
+    build: it is the bootstrap e2e's in hugr-node (spec 017) until a second release exists.
 - **Decisions taken while building** (within the accepted design):
   - **A blocked rollout stays blocked.** It continues after the administrator pauses and resumes it
     (`spec.upgrade.paused` true, then false), or sets another image. A repository that does not answer is waited

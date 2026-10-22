@@ -24,6 +24,8 @@ provider_up() {
 provider_context() { kind export kubeconfig --name "$DEMO_CLUSTER" >/dev/null 2>&1 || fail "the cluster's kube context"; }
 provider_build() { local_build "$@"; }
 provider_import() { local_import "$@"; }
+# provider_retag <image> <another name>: the same image under another name, in the cluster (spec 008's rollout check)
+provider_retag() { docker tag "$1" "$2" && provider_load "$2"; }
 provider_load() { kind load docker-image "$1" --name "$DEMO_CLUSTER" >/dev/null || fail "loading $1 into kind"; }
 
 provider_down() {
