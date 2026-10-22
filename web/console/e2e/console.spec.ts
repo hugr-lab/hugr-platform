@@ -166,3 +166,25 @@ test('an admin reads the policy: a catalog, a role and what it reads (spec 007)'
   await admin.getByRole('link', { name: 'Identity', exact: true }).click()
   await expect(admin.getByRole('region', { name: 'Issuers' }).locator('tbody tr').first()).toBeVisible()
 })
+
+test('a statement through the platform\'s quack door, from DuckDB in the page (spec 007)', async ({ browser }) => {
+  test.setTimeout(120_000) // the page loads DuckDB and quack the first time
+  const admin = await signIn(browser, 'admin', env('E2E_ADMIN_PW'))
+  await admin.getByRole('link', { name: 'SQL', exact: true }).click()
+  await admin.getByLabel('Statement').fill('SELECT 42 AS answer')
+  await admin.getByRole('button', { name: 'Run' }).click()
+  const answer = admin.getByRole('region', { name: 'The answer' })
+  await expect(answer.getByRole('cell', { name: '42', exact: true })).toBeVisible({ timeout: 90_000 })
+  // the break-glass door: plain SQL on the node's physical databases
+  await admin.getByText('ACL NATIVE', { exact: true }).click()
+  await admin.getByLabel('Statement').fill('SELECT count(*) AS n FROM phys.main.t')
+  await admin.getByRole('button', { name: 'Run' }).click()
+  await expect(answer.getByRole('columnheader', { name: 'n' })).toBeVisible({ timeout: 30_000 })
+  await expect(answer.getByRole('cell', { name: '1', exact: true })).toBeVisible()
+  await shot(admin, 'sql')
+
+  // ops: as itself only - no NATIVE offered
+  const ops = await signIn(browser, 'ops', env('E2E_OPS_PW'))
+  await ops.getByRole('link', { name: 'SQL', exact: true }).click()
+  await expect(ops.getByText('ACL NATIVE', { exact: true })).toHaveCount(0)
+})

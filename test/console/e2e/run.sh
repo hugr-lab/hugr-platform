@@ -19,6 +19,7 @@ DUCKDB="$ACL/build/release/duckdb"
 ACL_EXT="$ACL/build/release/extension/acl/acl.duckdb_extension"
 KC_PORT="${E2E_KC_PORT:-18691}"
 NODE_PORT="${E2E_NODE_PORT:-41102}"
+QUACK_PORT="${E2E_QUACK_PORT:-41103}" # the node's quack door, the console's /quack forwards to it (spec 007)
 CONSOLE_PORT="${E2E_CONSOLE_PORT:-18644}"
 KC="https://127.0.0.1:$KC_PORT"
 REALM="$KC/realms/hugr"
@@ -38,7 +39,7 @@ fail() {
 	for f in "$WORK"/*.log; do [ -f "$f" ] && { echo "--- $(basename "$f")" >&2; tail -25 "$f" >&2; }; done
 	exit 1
 }
-for port in $KC_PORT $NODE_PORT $CONSOLE_PORT; do
+for port in $KC_PORT $NODE_PORT $QUACK_PORT $CONSOLE_PORT; do
 	! (echo >"/dev/tcp/127.0.0.1/$port") 2>/dev/null || fail "port $port is taken"
 done
 
@@ -54,7 +55,7 @@ cert() { # <name> <subjectAltName>
 }
 cert kc "IP:127.0.0.1"
 cert console "IP:127.0.0.1"
-cert node "DNS:hugr-node-etl.hugr.svc"
+cert node "DNS:hugr-node-etl.hugr.svc,IP:127.0.0.1"
 # Keycloak's own, readable by its container's user (uid 1000): a directory of its own, the run's (mode 0700) holding
 # the rest
 mkdir -m 755 "$WORK/kc"
@@ -135,6 +136,7 @@ ACL ADMIN GRANT FUNCTION CATEGORY environment TO ROLE admin;
 SET GLOBAL acl_allow_anonymous_admin = false;
 SET GLOBAL acl_node_label = 'hugr-node-etl-a';
 SELECT acl_flight_serve('grpc+tls://127.0.0.1:$NODE_PORT', '$WORK/node.crt', '$WORK/node.key');
+SELECT acl_quack_serve('quack:127.0.0.1:$QUACK_PORT', '$(openssl rand -hex 16)', '$WORK/node.crt', '$WORK/node.key');
 SQL
 mkfifo "$WORK/node.in"
 "$DUCKDB" -unsigned <"$WORK/node.in" >"$WORK/node.log" 2>&1 &
@@ -148,7 +150,8 @@ echo "e2e: the console"
 (cd "$WEB" && npm run build >/dev/null) || fail "the web build"
 (cd "$ROOT" && GOWORK=off go build -o "$WORK/serve" ./test/console/serve) || fail "the console does not build"
 "$WORK/serve" -listen "127.0.0.1:$CONSOLE_PORT" -cert "$WORK/console.crt" -key "$WORK/console.key" -ca "$WORK/ca.crt" \
-	-node "etl=127.0.0.1:$NODE_PORT" -issuer "$REALM" -client-id hugr-console -audience hugr-nodes -dist "$WEB/dist" \
+	-node "etl=127.0.0.1:$NODE_PORT" -quack "https://127.0.0.1:$QUACK_PORT" -issuer "$REALM" -client-id hugr-console \
+	-audience hugr-nodes -dist "$WEB/dist" \
 	>"$WORK/console.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 50); do curl -sf --cacert "$WORK/ca.crt" "$CONSOLE/api/v1/console/config" >/dev/null && break; sleep 0.2; done

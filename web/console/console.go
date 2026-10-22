@@ -97,7 +97,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // policy sets the content security policy: the page's own origin, and the IdP's for the sign-in. The token is renewed
-// by its refresh token, never in a frame, so no frame-src.
+// by its refresh token, never in a frame, so no frame-src. The SQL page's DuckDB (spec 007) runs in a worker of the
+// page's own origin - the worker's script is served under this same policy, so it holds for the worker too: WebAssembly
+// compiled (wasm-unsafe-eval: no eval of JavaScript), quack loaded from this origin.
 func (h *Handler) policy(w http.ResponseWriter) {
 	idp := ""
 	if h.Issuer != nil {
@@ -105,8 +107,8 @@ func (h *Handler) policy(w http.ResponseWriter) {
 			idp = " https://" + u.Host
 		}
 	}
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; "+
-		"img-src 'self'; font-src 'self'; connect-src 'self'"+idp+"; object-src 'none'; base-uri 'self'; "+
-		"form-action 'self'"+idp+"; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; "+
+		"worker-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'"+idp+"; "+
+		"object-src 'none'; base-uri 'self'; form-action 'self'"+idp+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 }

@@ -10,6 +10,7 @@ import { Fleet } from './screens/Fleet'
 import { Group } from './screens/Group'
 import { Catalog, Catalogs, FunctionCategories, Identity, Keyed, Part, PolicyHome, ResourceGroups, Role, Roles, Sources } from './screens/Policy'
 import { readsPolicy } from './lib/policy'
+import { Sql } from './screens/Sql'
 import { Cluster } from './screens/Cluster'
 import { Mounted } from './screens/Mounted'
 import { Events } from './screens/node/Events'
@@ -85,6 +86,7 @@ export function App({ config, session }: { config: Config; session: Session }) {
                 <Route path="/policy/sources" element={<Part path="sources"><Sources /></Part>} />
               </>
             )}
+            {(rights.fleet || readsPolicy(rights)) && <Route path="/sql" element={<Sql />} />}
             {config.mounts.tresor && <Route path="/secrets/*" element={<Mounted which="tresor" basePath="/secrets" />} />}
             {config.mounts.kista && <Route path="/extensions/*" element={<Mounted which="kista" basePath="/extensions" />} />}
             <Route path="*" element={rights.fleet ? <Navigate to="/" replace /> : readsPolicy(rights) ? <Navigate to="/policy" replace /> : <NothingHere />} />

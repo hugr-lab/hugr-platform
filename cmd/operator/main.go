@@ -209,7 +209,8 @@ func main() {
 			Kube: console.KubeClient{Clientset: clientset, Namespace: namespace},
 			Mounts: []*console.Mount{console.TresorMount(platforms.Find, roots.Pool),
 				console.KistaMount(platforms.Find, roots.Pool)},
-			Log: logger.WithName("console")},
+			Quack: console.QuackMount(console.FrontQuackUpstream(platforms.Find), roots.Pool),
+			Log:   logger.WithName("console")},
 		Pool:  pool,
 		Watch: watch.New(clientset, namespace, nodes, 15*time.Second).Run,
 	}

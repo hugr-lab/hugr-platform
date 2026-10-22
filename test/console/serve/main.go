@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -48,6 +49,8 @@ func main() {
 	flag.StringVar(&clientID, "client-id", "hugr-console", "the console's public client")
 	flag.StringVar(&audience, "audience", "hugr-nodes", "the nodes' audience")
 	flag.StringVar(&dist, "dist", "web/console/dist", "the web build")
+	var quack string
+	flag.StringVar(&quack, "quack", "", "the node's quack door (https://host:port) the console's /quack forwards to (spec 007)")
 	flag.Parse()
 	group, address, _ := strings.Cut(nodeFlag, "=")
 	host, portText, _ := strings.Cut(address, ":")
@@ -96,6 +99,7 @@ func main() {
 		Groups:   &memoryWriter{reader: reader, log: log},
 		// spec 006: a group the console makes - kept in memory, as every write of this server
 		NewGroupTLS: console.GroupTLS("hugr-internal", "720h"),
+		Quack:       quackDoor(quack, roots),
 		Fleet:       nodes,
 		Nodes:       &console.Pool{Namespace: "hugr", Roots: func(context.Context) (*x509.CertPool, error) { return roots, nil }},
 		Kube:        madeUpKube{label: label, group: group},
@@ -202,4 +206,17 @@ func (k madeUpKube) UsageAll(context.Context) (map[string]console.Usage, error) 
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(2)
+}
+
+// quackDoor is the console's /quack forwarded to the node's own door - the stand has no front; none without one.
+func quackDoor(door string, roots *x509.CertPool) *console.Mount {
+	if door == "" {
+		return nil
+	}
+	upstream, err := url.Parse(door)
+	if err != nil {
+		fail(err)
+	}
+	return console.QuackMount(func(context.Context) (*url.URL, error) { return upstream, nil },
+		func(context.Context) (*x509.CertPool, error) { return roots, nil })
 }

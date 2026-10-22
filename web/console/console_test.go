@@ -48,15 +48,17 @@ func TestServing(t *testing.T) {
 		t.Errorf("an unchanged page: %d", w.Code)
 	}
 	csp := serve(t, h, "GET", "/").Header().Get("Content-Security-Policy")
-	for _, want := range []string{"default-src 'self'", "script-src 'self'", "style-src 'self'",
-		"connect-src 'self' https://login.example.org;", "form-action 'self' https://login.example.org;",
-		"frame-ancestors 'none'", "object-src 'none'"} {
+	for _, want := range []string{"default-src 'self'", "script-src 'self' 'wasm-unsafe-eval';", "worker-src 'self';",
+		"style-src 'self'", "connect-src 'self' https://login.example.org;",
+		"form-action 'self' https://login.example.org;", "frame-ancestors 'none'", "object-src 'none'"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("the policy lacks %q: %s", want, csp)
 		}
 	}
-	if strings.Contains(csp, "unsafe") || strings.Contains(csp, "data:") || strings.Contains(csp, "frame-src") {
-		t.Errorf("no inline, no data:, no frame: %s", csp)
+	// WebAssembly compiles; nothing inline, no eval of JavaScript, no data:, no frame, no blob: worker
+	if strings.Contains(strings.ReplaceAll(csp, "'wasm-unsafe-eval'", ""), "unsafe") || strings.Contains(csp, "data:") ||
+		strings.Contains(csp, "frame-src") || strings.Contains(csp, "blob:") {
+		t.Errorf("no inline, no eval, no data:, no frame: %s", csp)
 	}
 	if w := serve(t, h, "POST", "/"); w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("a POST to the page: %d", w.Code)

@@ -347,6 +347,14 @@ check_console() {
 	if console_api analyst-a GET "policy/views/grants" >/dev/null 2>"$WORK/console.err"; then fail "analyst_a read the grants"; fi
 	grep -q 'answered 403' "$WORK/console.err" || fail "analyst_a's grants: $(cat "$WORK/console.err")"
 	ok "the policy through the console: the catalog demo's grants, analyst_a's effective rights there; analyst_a reads none of it (403)"
+	# spec 007: the console's /quack is the platform's door for the SQL page's DuckDB - forwarded to the front for a
+	# person signed in to the console (the front answers what is no quack message), never for anyone else
+	if out="$(console_api admin POST /quack "not quack" 2>&1)"; then fail "the front took no quack message"; fi
+	grep -q 'answered 400' <<<"$out" && grep -q 'not a quack message' <<<"$out" || fail "the console's /quack: $out"
+	[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 --cacert "$WORK/ca.crt" -X POST --data 'x' \
+		--connect-to "hugr-platform-console.hugr.svc:443:127.0.0.1:$(console_port)" https://hugr-platform-console.hugr.svc/quack)" = 401 ] ||
+		fail "the console's /quack forwards a request of nobody signed in"
+	ok "the console's /quack reaches the front's quack door for a person signed in to the console, nobody else (401)"
 
 	# a person's session on a node: its tracing, then its end - analyst_a's own, held as a driver holds one
 	as analyst-a "$a" "SELECT count(*) FROM orders" -hold >/dev/null || fail "analyst_a's own session on $a"
