@@ -40,12 +40,13 @@ same `CLUSTER` statements, judged by a node.
   - the document's parts as a person reads them: tresor (host; the identity's issuer, client id, scope), the
     repository (name, prefix), the catalog (secret, schema, a migration pending), the heartbeat, the first policy
     (issuer, audiences, roles claim, clients, the administrators' claim value, the resource groups and the default);
-  - the document as JSON, as the node receives it;
-  - a refused document as the page's first line, with the reason.
+  - the document as JSON, as the node receives it (refused: as the operator would hand it);
+  - a refused document as the group page's first alert, with the reason - read again with the page.
 - **The profile on the group's page**: the items that apply to its nodes, as a node of the group computes them
   (`platform.cluster_effective` on one of its serving nodes - the node's rule of a group's item over the cluster's,
-  never a copy in the console), and the profile's version against the one each node applied (the load report's
-  `config.target` / `config.applied`). With no serving node the section says so.
+  never a copy in the console), the profile's version, how many nodes applied it and which are behind (each node's
+  `config.target` / `config.applied` from its heartbeat). With no serving node, without the right, or on a standalone
+  node (no profile) the section says which.
 
 ### Stage 2: changed (after stage 1)
 
@@ -82,8 +83,9 @@ same `CLUSTER` statements, judged by a node.
   - a refused document with the reason;
   - the `fleet` right;
   - an unknown group gives 404.
-- **vitest**: the document's parts as the page shows them; a refused document first.
-- **Browser e2e**: the group's page shows the stand's document, and a person without `fleet` is refused.
+- **vitest**: the document's parts as the page shows them; a refused document's title; the nodes behind the profile.
+- **Browser e2e**: the group's page shows the stand's document, served (no alert), no first policy, its standalone
+  node's word on the profile. A person without `fleet` is refused by the route (Go, `TestRightsGateEveryRoute`).
 - **Demo** (check 4c): the console's document for group a is served (its nodes run on it) and names the platform's
   tresor, the group's own identity and the first policy's groups.
 - Stage 2:

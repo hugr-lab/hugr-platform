@@ -1,6 +1,6 @@
 // A group's bootstrap document as a person reads it (spec 010): its parts, each a label and a value, in the order the
 // node uses them - where it logs in, what it trusts, its catalog, how often it reports, the policy it may write.
-import type { BootstrapDocument } from './types'
+import type { BootstrapPage, BootstrapDocument, NodeInfo } from './types'
 
 export interface DocumentPart {
   title: string
@@ -43,4 +43,14 @@ export function documentParts(d: BootstrapDocument): DocumentPart[] {
     })
   }
   return parts
+}
+
+/** the JSON's title: what a node receives, or - refused - what the operator would hand one and does not */
+export function documentTitle(page: BootstrapPage): string {
+  return page.served ? 'The document as a node receives it' : 'The document the operator would hand a node - refused now'
+}
+
+/** the group's nodes that applied an older profile than the one written, each with the version it applied */
+export function behind(nodes: NodeInfo[], target: number): string[] {
+  return nodes.filter((n) => n.leaseAge !== null && n.applied < target).map((n) => `${n.label} (version ${n.applied})`)
 }

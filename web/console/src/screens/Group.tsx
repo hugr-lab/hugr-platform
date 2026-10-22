@@ -6,7 +6,7 @@ import { useApp, useLoad } from '../lib/context'
 import { bytes, share } from '../lib/format'
 import type { NodeInfo } from '../lib/types'
 import { groupState, podReason, starting } from './Fleet'
-import { BootstrapSection } from './Bootstrap'
+import { BootstrapRefused, BootstrapSection } from './Bootstrap'
 import { DeleteGroupDialog, EditGroupDialog, PolicySection } from './GroupActions'
 
 export function nodeState(n: NodeInfo): { mark: 'ok' | 'half' | 'off'; text: string; why?: string } {
@@ -33,6 +33,8 @@ export function Group() {
   const navigate = useNavigate()
   const fleet = useLoad(() => api.fleet(), [api])
   const group = fleet.data?.groups.find((g) => g.name === name)
+  // spec 010: the group's document, read again with the fleet - a refused one is why its nodes do not start
+  const bootstrap = useLoad(() => api.groupBootstrap(name), [api, name, fleet.at?.getTime()])
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
   return (
@@ -71,6 +73,7 @@ export function Group() {
             <Stat label="Profile" value={`version ${group.profile.target}`} sub={`${group.profile.applied} of ${group.replicas} applied`} />
             <Stat label="Sessions" value={group.nodes.reduce((n, x) => n + x.sessions, 0)} />
           </section>
+          <BootstrapRefused page={bootstrap.data} />
           {group.problem && (
             <div role="alert" className="flex items-start gap-4 rounded-md border border-line px-6 py-4">
               <CircleAlert size={20} aria-hidden="true" className="mt-0.5 flex-none" />
@@ -174,7 +177,7 @@ export function Group() {
             </p>
           </section>
           {rights.policy && <PolicySection group={group} read={fleet.at?.getTime()} onChanged={fleet.reload} />}
-          <BootstrapSection group={group} />
+          <BootstrapSection group={group} page={bootstrap} read={fleet.at?.getTime()} />
         </>
       )}
     </>

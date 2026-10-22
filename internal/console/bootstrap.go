@@ -32,7 +32,7 @@ func (s *Server) groupBootstrap(w http.ResponseWriter, r *http.Request, _ string
 	if platform.Spec.FirstPolicy != nil {
 		var list v1alpha1.HugrNodeGroupList
 		if err := s.Reader.List(r.Context(), &list, client.InNamespace(platform.Namespace)); err != nil {
-			problem(w, http.StatusServiceUnavailable, "no_platform", "the platform's groups are not read now")
+			problem(w, http.StatusServiceUnavailable, "kubernetes", "the platform's groups could not be read")
 			return
 		}
 		groups = list.Items

@@ -4,7 +4,7 @@ import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import { caps, cell, readsPolicy } from './policy'
-import { documentParts } from './bootstrap'
+import { behind, documentParts, documentTitle } from './bootstrap'
 import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, changes, doorSecret, doorURI, enter, literal, personOf, statementOf, tresorService, type Conn } from './duckdb'
 import type { Fleet, Group } from './types'
 
@@ -313,5 +313,14 @@ describe('a group\'s bootstrap document (spec 010)', () => {
     const policy = parts.find((p) => p.title === 'First policy')!
     expect(policy.rows).toContainEqual(['Resource groups', 'etl (default), general'])
     expect(policy.rows).toContainEqual(['Clients', 'console (hugr-console)'])
+  })
+  it('titles a refused document as one no node receives', () => {
+    expect(documentTitle({ document: d, served: true })).toBe('The document as a node receives it')
+    expect(documentTitle({ document: d, served: false, refused: 'x' })).toMatch(/refused now/)
+  })
+  it('names the nodes behind the profile written, not the ones that never reported', () => {
+    const n = (label: string, applied: number, leaseAge: number | null) => ({ label, applied, leaseAge }) as never
+    expect(behind([n('a', 4, 1), n('b', 3, 2), n('c', 0, null)], 4)).toEqual(['b (version 3)'])
+    expect(behind([n('a', 4, 1)], 4)).toEqual([])
   })
 })

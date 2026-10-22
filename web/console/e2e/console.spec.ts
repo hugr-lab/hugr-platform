@@ -210,7 +210,10 @@ test('a group\'s bootstrap: the document its nodes are handed (spec 010)', async
   await expect(tresor.getByText(/^127\.0\.0\.1:\d+$/)).toBeVisible()
   await expect(tresor.getByText('e2e-etl', { exact: true })).toBeVisible()
   await expect(section.getByLabel('Extension repository').getByText('https://kista.invalid/corp/prod')).toBeVisible()
-  await expect(section.getByRole('alert')).toHaveCount(0)
+  // served: no refusal anywhere on the page; the stand names no first policy; its node is a standalone one
+  await expect(admin.getByRole('alert')).toHaveCount(0)
+  await expect(section.getByLabel('First policy')).toHaveCount(0)
+  await expect(section.getByText('A standalone node keeps no cluster profile', { exact: false })).toBeVisible()
   await section.getByText('The document as a node receives it').click()
   await expect(section.getByText(/"node_label": "<pod>"/)).toBeVisible()
   await shot(admin, 'bootstrap')

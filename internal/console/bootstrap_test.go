@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
+	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/internal/nodeapi"
 	"github.com/hugr-lab/hugr-platform/internal/upgrade"
 )
@@ -39,6 +40,8 @@ func TestGroupBootstrap(t *testing.T) {
 	}
 	platform.Spec.Tresor.Host = "tresor.hugr-tresor.svc:443"
 	platform.Spec.Node.Image = "ghcr.io/hugr-lab/hugr-node:v0.2.0"
+	platform.Spec.Heartbeat.IntervalSeconds = 7 // not the default: the pods' own interval is what is shown
+	platform.Spec.Sizes = map[string]v1alpha1.SizeSpec{"small": {}}
 	platform.Spec.FirstPolicy = &v1alpha1.FirstPolicySpec{Administrators: "platform_admin",
 		Issuer: v1alpha1.FirstPolicyIssuer{Name: "idp", RolesClaim: "roles"}}
 	if err := h.kube.Update(ctx, &platform); err != nil {
@@ -50,6 +53,7 @@ func TestGroupBootstrap(t *testing.T) {
 	}
 	for i := range groups.Items {
 		groups.Items[i].Spec.Identity.ClientID = "hugr-node-" + groups.Items[i].Name
+		groups.Items[i].Spec.TLS = newTLS // a group the operator can make a Deployment of
 		if err := h.kube.Update(ctx, &groups.Items[i]); err != nil {
 			t.Fatal(err)
 		}
@@ -60,22 +64,10 @@ func TestGroupBootstrap(t *testing.T) {
 		d.Tresor.Host != "tresor.hugr-tresor.svc:443" || d.Tresor.Identity.ClientID != "hugr-node-etl" ||
 		d.Tresor.Identity.Issuer != "https://login.example.org" || d.Catalog.Secret != v1alpha1.DefaultCatalogSecret ||
 		d.Catalog.Migrate || d.Repository.Prefix != "https://kista.example.org/ext/corp/prod" ||
-		d.Heartbeat.IntervalSeconds < 1 || d.FirstPolicy == nil || d.FirstPolicy.Administrators != "platform_admin" {
+		d.Heartbeat.IntervalSeconds != 7 || d.FirstPolicy == nil || d.FirstPolicy.Administrators != "platform_admin" {
 		t.Fatalf("a complete platform's document: %d %+v", code, out)
 	}
-	// the node API's own, for a pod of the group made from the platform's image
-	var etl v1alpha1.HugrNodeGroup
-	_ = h.kube.Get(ctx, client.ObjectKey{Namespace: "hugr", Name: "etl"}, &etl)
-	_ = h.kube.Get(ctx, client.ObjectKey{Namespace: "hugr", Name: "hugr"}, &platform)
-	_ = h.kube.List(ctx, &groups, client.InNamespace("hugr"))
-	served, err := nodeapi.NodeDocument(&platform, &etl, groups.Items, "hugr-node-etl-a", platform.Spec.Node.Image,
-		int32(d.Heartbeat.IntervalSeconds))
-	served.NodeLabel = PodPlaceholder
-	a, _ := json.Marshal(served)
-	b, _ := json.Marshal(d)
-	if err != nil || string(a) != string(b) {
-		t.Errorf("the console's document is not the node API's:\n%s\n%s (%v)", a, b, err)
-	}
+	sameAsAPod(t, h, &out)
 
 	// the rollout's canary: the group's new nodes, made from the target image, migrate the catalog; another group not
 	platform.Status.Upgrade = &v1alpha1.UpgradeStatus{To: platform.Spec.Node.Image, Phase: upgrade.PhaseCanary,
@@ -85,6 +77,8 @@ func TestGroupBootstrap(t *testing.T) {
 	}
 	if _, out := get("groups/etl/bootstrap"); !out.Document.Catalog.Migrate {
 		t.Error("the canary's document does not migrate")
+	} else {
+		sameAsAPod(t, h, &out)
 	}
 	if _, out := get("groups/general/bootstrap"); out.Document.Catalog.Migrate {
 		t.Error("another group's document migrates")
@@ -93,5 +87,41 @@ func TestGroupBootstrap(t *testing.T) {
 		if code, _ := get(path); code != http.StatusNotFound {
 			t.Errorf("%s: %d", path, code)
 		}
+	}
+	// the first policy's own refusal: a default group no group of the namespace has
+	platform.Spec.FirstPolicy.DefaultGroup = "nowhere"
+	if err := h.kube.Update(ctx, &platform); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := get("groups/etl/bootstrap"); code != 200 || out.Served || !strings.Contains(out.Refused, "nowhere") {
+		t.Errorf("the first policy's refusal: %d %+v", code, out)
+	}
+}
+
+// sameAsAPod: the console's answer is what the node API serves a pod of the group as the operator makes it - the
+// group's Deployment template (its image by the rollout, its heartbeat annotation) - the label aside
+func sameAsAPod(t *testing.T, h *harness, out *BootstrapAnswer) {
+	t.Helper()
+	ctx := context.Background()
+	var platform v1alpha1.HugrPlatform
+	var etl v1alpha1.HugrNodeGroup
+	var groups v1alpha1.HugrNodeGroupList
+	_ = h.kube.Get(ctx, client.ObjectKey{Namespace: "hugr", Name: "hugr"}, &platform)
+	_ = h.kube.Get(ctx, client.ObjectKey{Namespace: "hugr", Name: "etl"}, &etl)
+	_ = h.kube.List(ctx, &groups, client.InNamespace("hugr"))
+	with := platform.DeepCopy()
+	with.Spec.Node.Image = upgrade.ImageFor(&platform, etl.Name, "")
+	deployment, err := build.Deployment(with, &etl, build.Settings{OrchestratorURL: "https://hugr-platform.hugr.svc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := deployment.Spec.Template
+	served, err := nodeapi.NodeDocument(&platform, &etl, groups.Items, "hugr-node-etl-a", build.NodeImage(&pod.Spec),
+		build.HeartbeatSeconds(&platform, pod.Annotations))
+	served.NodeLabel = PodPlaceholder
+	a, _ := json.Marshal(served)
+	b, _ := json.Marshal(out.Document)
+	if err != nil || string(a) != string(b) {
+		t.Errorf("the console's document is not a pod's:\n%s\n%s (%v)", a, b, err)
 	}
 }
