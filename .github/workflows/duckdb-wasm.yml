@@ -116,13 +116,16 @@ jobs:
     - name: Build quack for wasm_eh
       working-directory: quack
       run: make wasm_eh
-    # quack's HTTP in wasm is httpfs': built with it (quack's own test dependency), by the same emscripten
+    # quack's HTTP in wasm is httpfs': built with it (quack's own test dependency), by the same emscripten - the two in
+    # one flat directory (an artifact of several paths keeps their tree below the common one)
+    - run: |
+        mkdir -p out
+        cp quack/build/wasm_eh/extension/quack/quack.duckdb_extension.wasm \
+          quack/build/wasm_eh/extension/httpfs/httpfs.duckdb_extension.wasm out/
     - uses: actions/upload-artifact@v4
       with:
         name: quack
-        path: |
-          quack/build/wasm_eh/extension/quack/quack.duckdb_extension.wasm
-          quack/build/wasm_eh/extension/httpfs/httpfs.duckdb_extension.wasm
+        path: out/
         if-no-files-found: error
         retention-days: 3
 
