@@ -84,8 +84,9 @@ without tresor is not the platform: for it the open duckdb-acl is the simpler ch
 - The audience defaults to `console.audiences.nodes`. On Entra that is an `api://` URI, and On-Behalf-Of mints by the
   API's client id (a GUID): the chart refuses an `api://` audience, so an Entra install names `door.audience`.
 - An existing `hugr_door` is left as it is, as `hugr_policy_catalog` is (nothing is rewritten by itself), and granted
-  only while it is a `quack` secret within `door.scopes`: another type, no scope or a door not named fails the run,
-  granting nothing. The grants are written again at every run: a revoke goes in the values.
+  only while it is a `quack` secret within `door.scopes`, made for its reader (`dynamic`): another type, no scope, a
+  door not named or a fixed value fails the run, granting nothing - as does a name taken by an entry the listing does
+  not show (the write refused as taken). The grants are written again at every run: a revoke goes in the values.
 - The database administrator's one-time Secret is deleted once the catalog is done, before this step: a failing
   doors' write leaves no credential behind.
 

@@ -150,7 +150,11 @@ export class Session {
   private renew(key: string, run: () => Promise<string>): Promise<string> {
     let p = this.renewing.get(key)
     if (!p) {
-      p = run().finally(() => this.renewing.delete(key))
+      const mine: Promise<string> = run().finally(() => {
+        // a newer renewal (after another person's sign-in cleared these) is not this one's to end
+        if (this.renewing.get(key) === mine) this.renewing.delete(key)
+      })
+      p = mine
       this.renewing.set(key, p)
     }
     return p

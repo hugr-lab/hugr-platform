@@ -4,7 +4,7 @@ import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import { caps, cell, readsPolicy } from './policy'
-import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, doorSecret, doorURI, enter, literal, personOf, reset, statementOf, tresorService, type Conn } from './duckdb'
+import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, changes, doorSecret, doorURI, enter, literal, personOf, statementOf, tresorService, type Conn } from './duckdb'
 import type { Fleet, Group } from './types'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -237,11 +237,11 @@ const jwt = (claims: object) => `e30.${btoa(JSON.stringify(claims)).replace(/=+$
 
 describe('the door through tresor (spec 009)', () => {
   it('hands tresor the token as a parameter with the issuer named, attaches once, and finds the door there', async () => {
-    reset()
     const { conn, asked } = fakeConn([TRESOR])
+    const seat = { conn }
     const issuer = 'https://idp.example/realms/hugr'
-    await enter(conn, 'the-token', issuer, at)
-    await enter(conn, 'a-renewed-token', issuer, at)
+    await enter(seat, 'the-token', issuer, at)
+    await enter(seat, 'a-renewed-token', issuer, at)
     expect(asked.map((a) => a.sql)).toEqual([
       'FROM tresor_web_token(?, ?, issuer := ?)',
       "ATTACH IF NOT EXISTS 'tresor:console.example.org/tresor' AS hugr_tresor (ISSUER 'https://idp.example/realms/hugr')",
@@ -255,15 +255,21 @@ describe('the door through tresor (spec 009)', () => {
     expect(asked.some((a) => a.sql.includes('the-token'))).toBe(false)
   })
   it('refuses without tresor\'s secret for the door, whatever else DuckDB holds', async () => {
-    reset()
     const { conn } = fakeConn(['memory'])
-    await expect(enter(conn, 't', 'https://idp.example', at)).rejects.toThrow(/tresor serves you no secret/)
+    await expect(enter({ conn }, 't', 'https://idp.example', at)).rejects.toThrow(/tresor serves you no secret/)
   })
   it('tells one person from another by the token, unverified, and an opaque token from everyone', () => {
     expect(personOf(jwt({ iss: 'https://idp', sub: 'alice' }))).toBe('https://idp|alice')
     expect(personOf(jwt({ iss: 'https://idp', sub: 'bob' }))).not.toBe(personOf(jwt({ iss: 'https://idp', sub: 'alice' })))
     expect(personOf('opaque')).toBe('')
     expect(personOf(jwt({ sub: 'no-issuer' }))).toBe('')
+  })
+  it("ends the page's DuckDB for another person or an opaque token, keeps it for the same person", () => {
+    expect(changes(undefined, 'https://idp|alice')).toBe(false) // nothing opened yet
+    expect(changes('https://idp|alice', 'https://idp|alice')).toBe(false)
+    expect(changes('https://idp|alice', 'https://idp|bob')).toBe(true)
+    expect(changes('https://idp|alice', '')).toBe(true)
+    expect(changes('', '')).toBe(true)
   })
   it("names tresor as the console serves it: its own origin's /tresor", () => {
     expect(tresorService({ host: 'console.example.org' })).toBe('tresor:console.example.org/tresor')

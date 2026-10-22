@@ -88,6 +88,8 @@ type Descriptor struct {
 	Name  string   `json:"name"`
 	Type  string   `json:"type"`
 	Scope []string `json:"scope"`
+	// Dynamic: made on each read for the reader (a generated parameter), not one value for everyone
+	Dynamic bool `json:"dynamic"`
 }
 
 // Describe is the secret's descriptor among those the caller (an administrator: all of them) may see; nil when there

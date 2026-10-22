@@ -20,13 +20,14 @@ export interface Answer {
 interface Opened {
   db: AsyncDuckDB
   conn: AsyncDuckDBConnection
+  /** tresor attached on this DuckDB, once */
+  attached?: Promise<unknown>
 }
 
 let opened: Promise<Opened> | undefined
 /** whom the page's DuckDB holds tresor for: tresor keeps a door's minted token for its next lookup, whoever asks, so
  * another person gets a DuckDB of their own */
 let holder: string | undefined
-let attached: Promise<unknown> | undefined
 
 async function open(): Promise<Opened> {
   const duckdb = await import('@duckdb/duckdb-wasm')
@@ -57,13 +58,13 @@ async function open(): Promise<Opened> {
 function close() {
   const was = opened
   opened = undefined
-  attached = undefined
   holder = undefined
   void was?.then(({ db }) => db.terminate()).catch(() => undefined)
 }
 
-/** for the tests: the page's DuckDB and its tresor forgotten */
-export const reset = close
+/** whether the page's DuckDB must end before this token's run: it holds tresor for another person, or the token names
+ * nobody (an opaque one: every run its own) */
+export const changes = (holding: string | undefined, who: string) => holding !== undefined && (who === '' || who !== holding)
 
 /** the token's iss|sub, read and never verified (the page only tells one person from another); '' when it names none */
 export function personOf(token: string): string {
@@ -132,12 +133,15 @@ export function bounded(columns: string[], rows: Iterable<(string | null)[]>): A
 
 /** what enter() asks of a connection: its prepared statements and its queries */
 export type Conn = Pick<AsyncDuckDBConnection, 'prepare' | 'query'>
+/** a DuckDB of the page's as enter() needs it: its connection, and whether tresor is attached there */
+export type Seat = { conn: Conn; attached?: Promise<unknown> }
 
 /** hands tresor the person's token (each run: tresor takes the newest at its next call), attaches it once, and finds the
  * door's secret there. The token is a parameter, never in a statement's text (tresor spec 043); the issuer is named,
  * as tresor-server lists every issuer it trusts - the cluster's too. */
-export async function enter(conn: Conn, token: string, issuer: string, location: { host: string; hostname: string;
+export async function enter(seat: Seat, token: string, issuer: string, location: { host: string; hostname: string;
   port: string; protocol: string }): Promise<void> {
+  const { conn } = seat
   const service = tresorService(location)
   const uri = doorURI(location)
   const hand = await conn.prepare('FROM tresor_web_token(?, ?, issuer := ?)')
@@ -146,12 +150,12 @@ export async function enter(conn: Conn, token: string, issuer: string, location:
   } finally {
     await hand.close()
   }
-  attached ??= conn.query(`ATTACH IF NOT EXISTS ${literal(service)} AS ${TRESOR} (ISSUER ${literal(issuer)})`)
+  seat.attached ??= conn.query(`ATTACH IF NOT EXISTS ${literal(service)} AS ${TRESOR} (ISSUER ${literal(issuer)})`)
     .catch((e) => {
-      attached = undefined
+      seat.attached = undefined
       throw e
     })
-  await attached
+  await seat.attached
   const which = await conn.prepare("SELECT storage FROM which_secret(?, 'quack')")
   try {
     const found = await which.query(uri)
@@ -166,15 +170,16 @@ export async function enter(conn: Conn, token: string, issuer: string, location:
  * they are); the answer is read batch by batch and the read stops at the page's bounds. */
 export async function run(sql: string, tresorToken: string, issuer: string, native: boolean): Promise<Answer> {
   const who = personOf(tresorToken)
-  if (holder !== undefined && (who === '' || who !== holder)) close()
+  if (changes(holder, who)) close()
   opened ??= open().catch((e) => {
     opened = undefined
     throw e
   })
-  const { conn } = await opened
+  const seat = await opened
+  const { conn } = seat
   holder = who
   const uri = doorURI(window.location)
-  await enter(conn, tresorToken, issuer, window.location)
+  await enter(seat, tresorToken, issuer, window.location)
   // TLS as the page's own: quack goes without it to a local address by default, and the console's origin is https
   const statement = await conn.prepare('SELECT COLUMNS(*)::VARCHAR FROM ' +
     `(FROM quack_query(?, ?, disable_ssl := ?) LIMIT ${ROWS_MAX + 1})`)

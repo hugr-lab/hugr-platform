@@ -57,7 +57,7 @@ func (f *fakeTresor) Describe(_ context.Context, name string) (*Descriptor, erro
 
 // theDoors is the doors' secret as the test configuration names it
 func theDoors() *Descriptor {
-	return &Descriptor{Name: "hugr_door", Type: "quack",
+	return &Descriptor{Name: "hugr_door", Type: "quack", Dynamic: true,
 		Scope: []string{"quack:hugr.example.org:9494", "quack:console.example.org:443"}}
 }
 func (f *fakeTresor) Create(_ context.Context, name string, s Secret) error {
@@ -175,7 +175,8 @@ func TestRunAgain(t *testing.T) {
 		t.Errorf("a run again: grants %v, admin deleted %v", tr.grants, admin.deleted)
 	}
 	// the doors' secret an administrator wrote (or changed) is theirs: a run with the catalog's made writes only that
-	tr = &fakeTresor{door: &Descriptor{Name: "hugr_door", Type: "quack", Scope: []string{"quack:console.example.org:443"}}}
+	tr = &fakeTresor{door: &Descriptor{Name: "hugr_door", Type: "quack", Dynamic: true,
+		Scope: []string{"quack:console.example.org:443"}}}
 	if err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil },
 		&fakeAdmin{}, quiet()); err != nil {
 		t.Fatal(err)
@@ -190,10 +191,11 @@ func TestRunAgain(t *testing.T) {
 // Secret's deletion are done before it
 func TestRunDoorNotOurs(t *testing.T) {
 	for name, d := range map[string]*Descriptor{
-		"another type":   {Name: "hugr_door", Type: "http", Scope: []string{"quack:console.example.org:443"}},
-		"a broader door": {Name: "hugr_door", Type: "quack", Scope: []string{"quack:console.example.org:4"}},
-		"another door":   {Name: "hugr_door", Type: "quack", Scope: []string{"quack:elsewhere.example:443"}},
-		"no scope":       {Name: "hugr_door", Type: "quack"},
+		"another type":   {Name: "hugr_door", Type: "http", Dynamic: true, Scope: []string{"quack:console.example.org:443"}},
+		"a broader door": {Name: "hugr_door", Type: "quack", Dynamic: true, Scope: []string{"quack:console.example.org:4"}},
+		"another door":   {Name: "hugr_door", Type: "quack", Dynamic: true, Scope: []string{"quack:elsewhere.example:443"}},
+		"no scope":       {Name: "hugr_door", Type: "quack", Dynamic: true},
+		"a fixed token":  {Name: "hugr_door", Type: "quack", Scope: []string{"quack:console.example.org:443"}},
 	} {
 		tr, admin := &fakeTresor{door: d}, &fakeAdmin{}
 		err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil }, admin,
@@ -216,6 +218,50 @@ func TestRunDoorNotOurs(t *testing.T) {
 		admin, quiet()); err == nil || !admin.deleted {
 		t.Errorf("a failed doors' write: %v, admin deleted %v", err, admin.deleted)
 	}
+}
+
+// TestRunDoorTakenUnseen: the doors' write refused as taken (412) though the listing showed none - written meanwhile,
+// or an entry the listing hides (a service login): judged before any grant, never granted unseen
+func TestRunDoorTakenUnseen(t *testing.T) {
+	for name, after := range map[string]*Descriptor{
+		"hidden from the listing":   nil,
+		"another's, not the doors'": {Name: "hugr_door", Type: "quack", Scope: []string{"quack:console.example.org:443"}},
+	} {
+		tr := &takenDoor{fakeTresor: &fakeTresor{}, after: after}
+		err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil },
+			&fakeAdmin{}, quiet())
+		if err == nil || len(tr.grants["hugr_door"]) != 0 {
+			t.Errorf("%s: %v, grants %v", name, err, tr.grants)
+		}
+	}
+	// written meanwhile by another run, as ours: granted
+	tr := &takenDoor{fakeTresor: &fakeTresor{}, after: theDoors()}
+	if err := Run(context.Background(), testConfig(), tr, func() (Database, error) { return &fakeDatabase{}, nil },
+		&fakeAdmin{}, quiet()); err != nil || len(tr.grants["hugr_door"]) != 1 {
+		t.Errorf("the doors' secret written meanwhile: %v, grants %v", err, tr.grants)
+	}
+}
+
+// takenDoor answers the doors' write with ErrExists, then describes it as after
+type takenDoor struct {
+	*fakeTresor
+	after   *Descriptor
+	refused bool
+}
+
+func (f *takenDoor) Create(ctx context.Context, name string, s Secret) error {
+	if name == "hugr_door" {
+		f.refused = true
+		return ErrExists
+	}
+	return f.fakeTresor.Create(ctx, name, s)
+}
+
+func (f *takenDoor) Describe(ctx context.Context, name string) (*Descriptor, error) {
+	if name == "hugr_door" && f.refused {
+		return f.after, nil
+	}
+	return f.fakeTresor.Describe(ctx, name)
 }
 
 // failingDoor refuses the doors' write only

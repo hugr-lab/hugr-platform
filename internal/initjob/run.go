@@ -102,10 +102,26 @@ func door(ctx context.Context, c *Config, tresor SecretsService, log *slog.Logge
 		log.Info("the doors' secret is in tresor already: left as it is", "secret", name)
 	} else {
 		err := tresor.Create(ctx, name, doorSecret(c))
-		if err != nil && !errors.Is(err, ErrExists) {
+		switch {
+		case errors.Is(err, ErrExists):
+			// written meanwhile, or an entry the listing does not show (a service login): judged as any existing one
+			existing, err = tresor.Describe(ctx, name)
+			if err != nil {
+				return err
+			}
+			if existing == nil {
+				return fmt.Errorf("hugr-init: %s is taken in tresor by an entry its listing does not show: nothing "+
+					"granted - name the doors' secret otherwise (door.secret)", name)
+			}
+			if problem := outsideDoors(existing, c.Door.Scopes); problem != "" {
+				return fmt.Errorf("hugr-init: %s in tresor %s: nothing granted - delete it, or name its doors in "+
+					"door.scopes", name, problem)
+			}
+		case err != nil:
 			return fmt.Errorf("hugr-init: tresor: %w", err)
+		default:
+			log.Info("the doors' secret is in tresor", "secret", name, "doors", len(c.Door.Scopes))
 		}
-		log.Info("the doors' secret is in tresor", "secret", name, "doors", len(c.Door.Scopes))
 	}
 	for _, principal := range c.Door.Grants {
 		if err := tresor.Grant(ctx, name, grantID(principal), principal); err != nil {
@@ -123,6 +139,9 @@ func outsideDoors(d *Descriptor, doors []string) string {
 	}
 	if len(d.Scope) == 0 {
 		return "has no scope: it would go to every quack server"
+	}
+	if !d.Dynamic {
+		return "carries a fixed value, not one made for its reader: one credential would go to everyone granted"
 	}
 	for _, scope := range d.Scope {
 		if !slices.Contains(doors, scope) {
