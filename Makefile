@@ -23,6 +23,8 @@ manifests:
 		output:webhook:artifacts:config=config/webhook
 	@# spec 005: the chart carries the same generated files - its CRDs, the operator's rules, the webhook's registration
 	cp config/crd/platform.hugr.io_*.yaml charts/hugr-platform/crds/
+	@# spec 008: and the operator's image, whose hugr-init applies them before an upgrade (Helm never upgrades crds/)
+	cp config/crd/platform.hugr.io_*.yaml internal/crds/
 	cp config/rbac/role.yaml charts/hugr-platform/files/rbac/role.yaml
 	cp config/webhook/manifests.yaml charts/hugr-platform/files/webhook/manifests.yaml
 

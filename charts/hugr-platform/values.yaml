@@ -113,6 +113,16 @@ hugrInit:
     requests: {cpu: 10m, memory: 32Mi}
     limits: {memory: 128Mi}
 
+# The CRDs, before an upgrade (spec 008): Helm installs crds/ at the first install and never upgrades them, so a
+# pre-upgrade hook Job of the new release's operator image applies the CRDs it carries, server-side. A CRD that would
+# drop a version the cluster serves or stores is refused, and the upgrade stops there. Its right - get and patch of the
+# platform's two CRDs, by name - exists only while the upgrade runs.
+crdUpgrade:
+  enabled: true
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
 # The first node groups, created once, at install (post-install hooks, after the operator - whose webhook judges a
 # group - is ready: install with --wait): an upgrade never touches them, so a scale made in the console or with kubectl
 # stays, and they stay when the release goes. tls defaults to a certificate the csi-driver issues into each pod from
