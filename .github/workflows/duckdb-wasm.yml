@@ -149,9 +149,10 @@ jobs:
         ref: ${{ needs.pin.outputs.tresor }}
         path: tresor
         submodules: recursive
+    # the submodule is shallow, with no tag: v2.0.0 is its commit
     - name: DuckDB v2.0.0 under tresor
       working-directory: tresor
-      run: test "$(git -C duckdb describe --tags --exact-match)" = v2.0.0
+      run: test "$(git -C duckdb rev-parse HEAD)" = d54cbbe3df17e8e5ce68312f483b4155836112aa
     - run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
     - uses: mymindstorm/setup-emsdk@v14
       with:
