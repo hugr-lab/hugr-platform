@@ -75,6 +75,10 @@ The node behind the door enforces the policy, as it does for any quack client.
     - A quack built by another emscripten (3.1.71, DuckDB's for its v2.0 extensions) fails to link against the bindings.
     - The `wasm_threads` build loads no extension of DuckDB's v2.0 repository.
   - httpfs, quack's HTTP in wasm, built with it;
+  - the console names the release's package by its URL (`web/console/package.json`), the lockfile its integrity; a new
+    pin pair is a new release, and the console moves to it by a change of that line, never by itself;
+  - DuckDB is 34 MB, 8 gzipped: the console gzips a compressible asset once, at its first request that takes gzip,
+    and the page loads it only when the SQL page opens (cached as immutable after that);
   - both shipped in the package and loaded unsigned from the console's own origin, with autoinstall off: the page
     reaches its own origin only. The CSP allows WebAssembly (`'wasm-unsafe-eval'`) and a worker of its own origin.
   - Without a heartbeat (no thread in `wasm_eh`), the node's lease ends a connection idle past its timeout. Each run
