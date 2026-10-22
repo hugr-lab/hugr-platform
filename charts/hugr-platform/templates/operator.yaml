@@ -33,6 +33,9 @@ spec:
         - --orchestrator-url=https://hugr-platform.{{ .Release.Namespace }}.svc:8443
         # spec 005: the platform's CA bundle - the image's public roots, the internal CA, the organisation's CAs
         - --ca-bundle={{ include "hugr.bundleName" . }}
+        # spec 006: a group the console makes gets the doors' certificate the chart's own groups get
+        - --console-group-issuer={{ include "hugr.issuerName" . }}
+        - --console-group-certificate-duration={{ .Values.groupCertificateDuration }}
         {{- with .Values.caBundle.extra }}
         - --ca-bundle-extra={{ range $i, $s := . }}{{ if $i }},{{ end }}{{ $s.name }}/{{ $s.key }}{{ end }}
         {{- end }}

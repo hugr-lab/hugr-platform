@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -93,11 +94,13 @@ func main() {
 		Platform: func(context.Context) (*v1alpha1.HugrPlatform, error) { return platform.DeepCopy(), nil },
 		Reader:   reader,
 		Groups:   &memoryWriter{reader: reader, log: log},
-		Fleet:    nodes,
-		Nodes:    &console.Pool{Namespace: "hugr", Roots: func(context.Context) (*x509.CertPool, error) { return roots, nil }},
-		Kube:     madeUpKube{label: label, group: group},
-		Web:      web,
-		Log:      log,
+		// spec 006: a group the console makes - kept in memory, as every write of this server
+		NewGroupTLS: console.GroupTLS("hugr-internal", "720h"),
+		Fleet:       nodes,
+		Nodes:       &console.Pool{Namespace: "hugr", Roots: func(context.Context) (*x509.CertPool, error) { return roots, nil }},
+		Kube:        madeUpKube{label: label, group: group},
+		Web:         web,
+		Log:         log,
 	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -129,8 +132,31 @@ func (w *memoryWriter) Change(ctx context.Context, change console.GroupChange) e
 	if change.RestartedAt != "" {
 		g.Spec.RestartedAt = change.RestartedAt
 	}
+	if change.Size != "" {
+		g.Spec.Size = change.Size
+	}
+	if change.Quack != nil {
+		g.Spec.Doors.Quack = *change.Quack
+	}
+	if change.DrainSeconds != nil {
+		g.Spec.DrainSeconds = change.DrainSeconds
+	}
 	w.log.Info("group changed", "group", change.Name, "by", change.ChangedBy)
 	return w.reader.Update(ctx, &g)
+}
+
+func (w *memoryWriter) Create(ctx context.Context, group *v1alpha1.HugrNodeGroup) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.log.Info("group made", "group", group.Name)
+	return w.reader.Create(ctx, group)
+}
+
+func (w *memoryWriter) Delete(ctx context.Context, namespace, name string, _ types.UID) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.log.Info("group deleted", "group", name)
+	return w.reader.Delete(ctx, &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}})
 }
 
 // madeUpKube is the node's pod as a page shows it: its usage and the pod made up, no events, a log that says where it

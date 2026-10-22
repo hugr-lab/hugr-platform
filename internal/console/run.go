@@ -21,9 +21,10 @@ import (
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 )
 
-// The console reads the platform's CA bundle and writes a group's count and restart (spec 003).
+// The console reads the platform's CA bundle and writes the groups: a field of one, a new one, a deletion (specs 003,
+// 006).
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get
-// +kubebuilder:rbac:groups=platform.hugr.io,resources=hugrnodegroups,verbs=patch
+// +kubebuilder:rbac:groups=platform.hugr.io,resources=hugrnodegroups,verbs=create;patch;delete
 
 // Door serves the console over TLS on every replica (spec 003: the leader only reconciles), its certificate - the
 // Secret hugr-console, the administrator's or cert-manager's - re-read when it rotates.

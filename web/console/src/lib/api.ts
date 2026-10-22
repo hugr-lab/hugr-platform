@@ -1,6 +1,7 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
-import type { AuditEvent, ClusterPage, Config, Fleet, InventoryPage, MemoryPage, NodePage, PodPage, Rights, SessionRow } from './types'
+import type { AuditEvent, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, Rights,
+  SessionRow } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -60,14 +61,26 @@ export class Api {
       if (res.status === 401) this.onUnauthorized()
     }
     if (!res.ok) throw await failure(res)
-    if (res.status === 204) return undefined as T
-    return (await res.json()) as T
+    // a write answers without a body (201 a group made, 204 a change): nothing to read
+    const text = await res.text()
+    if (text === '') return undefined as T
+    return JSON.parse(text) as T
   }
 
   me = () => this.request<{ rights: Rights }>('GET', 'me')
   fleet = () => this.request<Fleet>('GET', 'groups')
   scale = (group: string, replicas: number) => this.request<void>('PATCH', `groups/${part(group)}`, { replicas })
   restart = (group: string) => this.request<void>('PATCH', `groups/${part(group)}`, { restart: true })
+  // spec 006: the groups themselves, and a group's place in the policy
+  createGroup = (group: NewGroup) => this.request<void>('POST', 'groups', group)
+  changeGroup = (group: string, patch: GroupPatch) => this.request<void>('PATCH', `groups/${part(group)}`, patch)
+  deleteGroup = (group: string) => this.request<void>('DELETE', `groups/${part(group)}`)
+  groupPolicy = (group: string) => this.request<GroupPolicy>('GET', `groups/${part(group)}/policy`)
+  addToPolicy = (group: string, roles: string[], isDefault: boolean) =>
+    this.request<GroupPolicy>('POST', `groups/${part(group)}/policy`, isDefault ? { roles, default: true } : { roles })
+  // the resource group the page shows: one that changed since (kubectl) is refused, never another dropped
+  removeFromPolicy = (group: string, resourceGroup: string) =>
+    this.request<void>('DELETE', `groups/${part(group)}/policy`, { resourceGroup })
   node = (label: string) => this.request<NodePage>('GET', `nodes/${part(label)}`)
   sessions = (label: string) => this.request<{ sessions: SessionRow[] }>('GET', `nodes/${part(label)}/sessions`)
   endSession = (label: string, id: string) =>

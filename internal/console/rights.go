@@ -27,8 +27,12 @@ type Rights struct {
 	Resume     bool `json:"resume"`
 	// Tracing: a session's audit and profile levels (spec 003 round 2).
 	Tracing bool `json:"tracing"`
-	// Scale and restart a group: the infrastructure's right, the cluster bundle (spec 003 Q5).
+	// Scale and restart a group, make, change and delete one: the infrastructure's right, the cluster bundle (spec 003
+	// Q5, spec 006).
 	Scale bool `json:"scale"`
+	// Policy: a group's place in the policy - its resource group and the roles bound to it (spec 006), the policy
+	// bundle's; the node judges each write again.
+	Policy bool `json:"policy"`
 	// Infrastructure: a node's logs and Kubernetes' writes (the cluster bundle, Q6); the profile's views are the
 	// node's to name (Drift, Profile, Effective below).
 	Infrastructure bool `json:"infrastructure"`
@@ -59,6 +63,7 @@ func RightsOf(info Info) Rights {
 		Resume:         function("resume"),
 		Tracing:        function("session_audit_level") && function("session_profile"),
 		Scale:          cluster,
+		Policy:         slices.Contains(info.Bundles, "policy") || slices.Contains(info.Bundles, "passthrough"),
 		Infrastructure: cluster,
 		Events:         view("audit_events"),
 		Drift:          view("drift"),

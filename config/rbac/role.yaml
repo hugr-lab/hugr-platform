@@ -113,6 +113,8 @@ rules:
   resources:
   - hugrnodegroups
   verbs:
+  - create
+  - delete
   - get
   - list
   - patch

@@ -16,6 +16,15 @@ import (
 type FleetAnswer struct {
 	Plan   PlanAnswer    `json:"plan"`
 	Groups []GroupAnswer `json:"groups"`
+	// NewGroup is what a new group's form needs (spec 006).
+	NewGroup NewGroupAnswer `json:"newGroup"`
+}
+
+// NewGroupAnswer: whether the console makes a group (it has a certificate issuer for its doors), and the subject a
+// group's identity must trust - the prefix its ServiceAccount's name completes.
+type NewGroupAnswer struct {
+	Available     bool   `json:"available"`
+	SubjectPrefix string `json:"subjectPrefix"`
 }
 
 // PlanAnswer is the installation's plan.
@@ -40,6 +49,9 @@ type GroupAnswer struct {
 	Scaling ScalingAnswer `json:"scaling"`
 	// Identity is who the group's nodes are (round 2): every node of a group is the same workload.
 	Identity IdentityAnswer `json:"identity"`
+	// Quack and DrainSeconds are the group's doors and a stopping node's wait for its sessions (spec 006).
+	Quack        bool  `json:"quack"`
+	DrainSeconds int32 `json:"drainSeconds"`
 	// MemoryLimitBytes is a node's pod limit, its size's (0 when the size names none).
 	MemoryLimitBytes int64 `json:"memoryLimitBytes"`
 	// Problem is what the group's Deployment says stops its pods (none: empty).
@@ -123,6 +135,7 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 	answer := FleetAnswer{Plan: PlanAnswer{Sizes: []string{}}, Groups: []GroupAnswer{}}
 	if platform != nil {
 		answer.Plan = PlanAnswer{MaxNodes: platform.Spec.Plan.MaxNodes, Sizes: append([]string{}, platform.Spec.Plan.Sizes...)}
+		answer.NewGroup.SubjectPrefix = "system:serviceaccount:" + platform.Namespace + ":" + build.NodeName + "-"
 	}
 	warnings := newestWarnings(kube.Warnings)
 	pods := map[string]*corev1.Pod{}
@@ -183,6 +196,8 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 		}
 		answer.Groups = append(answer.Groups, GroupAnswer{
 			MemoryLimitBytes:   limit,
+			Quack:              g.Spec.Doors.Quack,
+			DrainSeconds:       g.EffectiveDrainSeconds(),
 			Name:               g.Name,
 			Size:               g.Spec.Size,
 			Replicas:           g.Spec.Replicas,

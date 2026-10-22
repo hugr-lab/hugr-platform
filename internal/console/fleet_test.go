@@ -91,6 +91,22 @@ func TestGroupChangeContent(t *testing.T) {
 	if _, ok := restart["metadata"].(map[string]any)["annotations"]; ok {
 		t.Error("no changed-by without a subject")
 	}
+	// spec 006: every field the console sets has its own owner - an apply of one never drops another
+	quack, ten := true, int32(10)
+	changes := []GroupChange{{Replicas: &three}, {RestartedAt: "x"}, {Size: "large"}, {Quack: &quack},
+		{DrainSeconds: &ten}}
+	wants := []map[string]any{{"replicas": int64(3)}, {"restartedAt": "x"}, {"size": "large"},
+		{"doors": map[string]any{"quack": true}}, {"drainSeconds": int64(10)}}
+	owners := map[string]bool{}
+	for i, c := range changes {
+		if spec := c.Content()["spec"]; !reflect.DeepEqual(spec, wants[i]) {
+			t.Errorf("change %d applies %v, not %v", i, spec, wants[i])
+		}
+		owners[c.Owner()] = true
+	}
+	if len(owners) != len(changes) || owners[CreateFieldOwner] {
+		t.Errorf("one owner per field, none the create's: %v", owners)
+	}
 }
 
 func TestRootsAndPlatform(t *testing.T) {

@@ -5,6 +5,7 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,11 +14,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/internal/controller"
+	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
 	"github.com/hugr-lab/hugr-platform/pkg/plan"
 )
 
@@ -39,6 +42,11 @@ func (v *GroupValidator) ValidateUpdate(ctx context.Context, old, group *v1alpha
 	if group.DeletionTimestamp != nil {
 		return nil, nil // a group going (the garbage collector's finalizer removal is an update)
 	}
+	if group.Spec.ResourceGroup != old.Spec.ResourceGroup {
+		if err := CheckResourceGroup(group.Spec.ResourceGroup); err != nil {
+			return nil, err
+		}
+	}
 	if old.Spec.Size == group.Spec.Size && old.Spec.Platform == group.Spec.Platform && group.Spec.Replicas <= old.Spec.Replicas {
 		return nil, CheckTLS(group.Spec.TLS)
 	}
@@ -50,6 +58,9 @@ func (v *GroupValidator) ValidateDelete(context.Context, *v1alpha1.HugrNodeGroup
 	return nil, nil
 }
 
+// errNotRead is what a write learns when the webhook could not read what it judges by: try again.
+var errNotRead = errors.New("the platform's groups could not be read to judge this; try again")
+
 func (v *GroupValidator) check(ctx context.Context, group *v1alpha1.HugrNodeGroup) error {
 	if err := plan.CheckName(group.Name); err != nil {
 		return err
@@ -57,19 +68,26 @@ func (v *GroupValidator) check(ctx context.Context, group *v1alpha1.HugrNodeGrou
 	if err := CheckTLS(group.Spec.TLS); err != nil {
 		return err
 	}
+	if err := CheckResourceGroup(group.Spec.ResourceGroup); err != nil {
+		return err
+	}
 	var platform v1alpha1.HugrPlatform
 	if err := v.Reader.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: group.Spec.Platform}, &platform); err != nil {
 		if apierrors.IsNotFound(err) {
 			return fmt.Errorf("the platform %q is not in the namespace %q", group.Spec.Platform, group.Namespace)
 		}
-		return err
+		// the API server's own error names the operator's ServiceAccount and its URLs: logged, never the answer (a
+		// person reads the answer in the console, spec 006)
+		log.FromContext(ctx).Error(err, "the platform not read")
+		return errNotRead
 	}
 	if err := build.CheckSize(&platform, group.Spec.Size); err != nil {
 		return err
 	}
 	var groups v1alpha1.HugrNodeGroupList
 	if err := v.Reader.List(ctx, &groups, client.InNamespace(group.Namespace)); err != nil {
-		return err
+		log.FromContext(ctx).Error(err, "the groups not read")
+		return errNotRead
 	}
 	var others []plan.Group
 	for _, g := range groups.Items {
@@ -79,6 +97,16 @@ func (v *GroupValidator) check(ctx context.Context, group *v1alpha1.HugrNodeGrou
 	}
 	return controller.PlanOf(&platform).CheckChange(
 		plan.Group{Name: group.Name, Size: group.Spec.Size, Replicas: group.Spec.Replicas}, others)
+}
+
+// CheckResourceGroup says whether a group may name this resource group (empty: its own name). Every node's bootstrap
+// document lists every group's in the first policy, which takes plain names only: one it refuses stops every node of
+// the platform from starting (spec 006). A group that names one already keeps it until the name changes.
+func CheckResourceGroup(name string) error {
+	if name != "" && !nodeproto.ValidPlainName(name) {
+		return fmt.Errorf("the resource group %q is not a plain name: letters, digits, '_' and '-', at most 63", name)
+	}
+	return nil
 }
 
 // TLSSecretPrefix: a group mounts into its pods only a Secret named for the nodes - never another of the namespace

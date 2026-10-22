@@ -57,6 +57,8 @@ func main() {
 		consoleAddr     string
 		consoleCertDir  string
 		consolePlatform string
+		groupIssuer     string
+		groupCertTTL    string
 		caBundle        string
 		caBundleRoots   string
 		caBundleExtra   string
@@ -74,6 +76,9 @@ func main() {
 	flag.StringVar(&consoleAddr, "console-address", ":8444", "where the web console listens (https, spec 003)")
 	flag.StringVar(&consoleCertDir, "console-cert-dir", "/etc/hugr-console/tls", "the console's public certificate (tls.crt, tls.key); none: no console")
 	flag.StringVar(&consolePlatform, "console-platform", "", "the HugrPlatform the console serves (empty: the only one of the namespace)")
+	flag.StringVar(&groupIssuer, "console-group-issuer", "", "spec 006: the cert-manager Issuer of the namespace that "+
+		"issues the doors' certificate of a group the console makes, through the csi-driver (empty: the console makes no group)")
+	flag.StringVar(&groupCertTTL, "console-group-certificate-duration", "", "the duration of that certificate (empty: the csi-driver's)")
 	flag.StringVar(&caBundle, "ca-bundle", "", "spec 005: the ConfigMap (key ca.crt) the operator writes the platform's CA bundle "+
 		"into - the image's public roots, the issuer of its serving certificate, the extra CAs (empty: none written)")
 	flag.StringVar(&caBundleRoots, "ca-bundle-roots", "/etc/ssl/certs/ca-certificates.crt", "the public roots the CA bundle starts from")
@@ -199,7 +204,8 @@ func main() {
 		Addr:    consoleAddr,
 		CertDir: consoleCertDir,
 		Server: &console.Server{Platform: platforms.Find, Reader: mgr.GetClient(),
-			Groups: console.ApplyWriter{Client: mgr.GetClient()}, Fleet: nodes, Nodes: pool, Web: web,
+			Groups: console.ApplyWriter{Client: mgr.GetClient()}, NewGroupTLS: console.GroupTLS(groupIssuer, groupCertTTL),
+			Fleet: nodes, Nodes: pool, Web: web,
 			Kube: console.KubeClient{Clientset: clientset, Namespace: namespace},
 			Mounts: []*console.Mount{console.TresorMount(platforms.Find, roots.Pool),
 				console.KistaMount(platforms.Find, roots.Pool)},

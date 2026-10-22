@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { CircleAlert, Minus, Plus, RotateCcw } from 'lucide-react'
+import { NewGroupDialog } from './GroupActions'
 import { Link } from 'react-router-dom'
 import { Chip, Dialog, Glyph, Header, Problem, Refresh, Stat, Status, messageOf, type Mark } from '../components/ui'
 import { useApp, useLoad } from '../lib/context'
@@ -61,6 +62,7 @@ export function Fleet() {
   const fleet = useLoad(() => api.fleet(), [api])
   const [scaling, setScaling] = useState<Group | null>(null)
   const [restarting, setRestarting] = useState<Group | null>(null)
+  const [making, setMaking] = useState(false)
   const data = fleet.data
   const running = data?.groups.reduce((n, g) => n + g.replicas, 0) ?? 0
   const ready = data?.groups.reduce((n, g) => n + g.readyReplicas, 0) ?? 0
@@ -68,7 +70,17 @@ export function Fleet() {
     <>
       <Header title="Fleet"
         lead="The node groups of this platform and how their nodes are doing. Kubernetes holds this state; the page reads it when it opens."
-        actions={<Refresh at={fleet.at} loading={fleet.loading} onClick={fleet.reload} />} />
+        actions={
+          <div className="flex flex-wrap items-center gap-4">
+            <Refresh at={fleet.at} loading={fleet.loading} onClick={fleet.reload} />
+            {rights.scale && data?.newGroup?.available && (
+              <button type="button" className="btn-primary" onClick={() => setMaking(true)}>
+                <Plus size={18} aria-hidden="true" />
+                New group
+              </button>
+            )}
+          </div>
+        } />
       {fleet.error !== undefined && <Problem error={fleet.error} />}
       {data && (
         <>
@@ -157,11 +169,12 @@ export function Fleet() {
             </div>
             {!rights.scale && (
               <p className="text-sm text-ink-muted">
-                Scaling and restarting a group take the cluster right. Your rights come from the policy; ask its administrator.
+                Scaling and restarting a group take the cluster right, as making, changing and deleting one do. Your rights come from the policy; ask its administrator.
               </p>
             )}
           </section>
           {scaling && <ScaleDialog fleet={data} group={scaling} onDone={(changed) => { setScaling(null); if (changed) fleet.reload() }} />}
+          {making && <NewGroupDialog fleet={data} onDone={(made) => { setMaking(false); if (made) fleet.reload() }} />}
           {restarting && <RestartDialog group={restarting} onDone={(changed) => { setRestarting(null); if (changed) fleet.reload() }} />}
         </>
       )}

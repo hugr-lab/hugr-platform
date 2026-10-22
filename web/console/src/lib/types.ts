@@ -30,6 +30,8 @@ export interface Rights {
   resume: boolean
   tracing: boolean
   scale: boolean
+  /** a group's place in the policy (spec 006): the policy bundle's, the node judges each write again */
+  policy: boolean
   infrastructure: boolean
   events: boolean
   /** a node against the cluster's profile, the profile's items, a node's items: a cluster node's views only */
@@ -103,6 +105,9 @@ export interface Group {
   scaling: { mode: 'manual' | 'auto'; min?: number; max?: number }
   identity: Identity
   memoryLimitBytes: number
+  /** the quack door beside Flight, and a stopping node's wait for its sessions (spec 006) */
+  quack: boolean
+  drainSeconds: number
   /** what the group's Deployment says stops its pods */
   problem?: string
   nodes: NodeInfo[]
@@ -111,6 +116,32 @@ export interface Group {
 export interface Fleet {
   plan: { maxNodes: number; sizes: string[] }
   groups: Group[]
+  /** whether the console makes a group, and the subject a new group's identity trusts (its prefix) */
+  newGroup: { available: boolean; subjectPrefix: string }
+}
+
+/** `POST groups` (spec 006): the identity is given - an existing one's client id */
+export interface NewGroup {
+  name: string
+  size: string
+  replicas: number
+  clientID: string
+  quack: boolean
+  drainSeconds?: number
+  resourceGroup?: string
+}
+
+/** one field of a group a `PATCH groups/{g}` changes */
+export type GroupPatch = { replicas: number } | { restart: true } | { size: string } | { quack: boolean } |
+  { drainSeconds: number }
+
+/** a group's place in the policy, as a node answers it for the person */
+export interface GroupPolicy {
+  resourceGroup: string
+  inPolicy: boolean
+  default: boolean
+  roles: string[]
+  bound: string[]
 }
 
 export interface NodePage {
