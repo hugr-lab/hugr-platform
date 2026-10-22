@@ -17,7 +17,9 @@ const walk = (deps = {}) => {
     let lic = d.license
     if (!lic && d.path) {
       try {
-        lic = JSON.parse(readFileSync(join(d.path, 'package.json'), 'utf8')).license
+        const pkg = JSON.parse(readFileSync(join(d.path, 'package.json'), 'utf8'))
+        // the old form names its licences in a list: [{"type": "MIT", "url": ...}] (json-bignum, apache-arrow's)
+        lic = pkg.license ?? (Array.isArray(pkg.licenses) ? pkg.licenses.map((l) => l?.type ?? l).join(' OR ') : undefined)
       } catch {
         /* no package.json */
       }
