@@ -177,7 +177,7 @@ export function Group() {
             </p>
           </section>
           {rights.policy && <PolicySection group={group} read={fleet.at?.getTime()} onChanged={fleet.reload} />}
-          <BootstrapSection group={group} page={bootstrap} read={fleet.at?.getTime()} />
+          <BootstrapSection group={group} page={bootstrap} read={fleet.at?.getTime()} onChanged={fleet.reload} />
         </>
       )}
     </>

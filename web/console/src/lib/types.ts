@@ -227,6 +227,36 @@ export interface BootstrapDocument {
   }
 }
 
+/** one change of the cluster's profile (spec 010 stage 2): a CLUSTER statement's fields; group scopes it to a resource group */
+export interface ProfileChange {
+  action: 'install' | 'update' | 'remove' | 'attach' | 'detach' | 'set' | 'reset'
+  extension?: string
+  version?: string
+  repository?: string
+  path?: string
+  alias?: string
+  type?: string
+  secret?: string
+  readOnly?: boolean
+  lineage?: string
+  dependsOn?: string[]
+  cascade?: boolean
+  force?: boolean
+  setting?: string
+  value?: string
+  group?: string
+  comment?: string
+}
+
+/** what the node did: the profile's version after it, how the change reaches the nodes, the writing node */
+export interface ProfileWritten {
+  version: number
+  class: string
+  appliedHere: boolean
+  note: string
+  node: string
+}
+
 export interface BootstrapPage {
   document: BootstrapDocument
   /** false: the operator refuses it now, and a node of the group does not start; refused says why */

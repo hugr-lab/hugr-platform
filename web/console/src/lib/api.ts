@@ -1,6 +1,6 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
-import type { AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, Rights, SessionRow, ViewPage } from './types'
+import type { AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, Rights, SessionRow, ViewPage } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -80,6 +80,7 @@ export class Api {
   groupPolicy = (group: string) => this.request<GroupPolicy>('GET', `groups/${part(group)}/policy`)
   // spec 010: what a node of the group starts with
   groupBootstrap = (group: string) => this.request<BootstrapPage>('GET', `groups/${part(group)}/bootstrap`)
+  changeProfile = (change: ProfileChange) => this.request<ProfileWritten>('POST', 'cluster/profile', change)
   addToPolicy = (group: string, roles: string[], isDefault: boolean) =>
     this.request<GroupPolicy>('POST', `groups/${part(group)}/policy`, isDefault ? { roles, default: true } : { roles })
   // the resource group the page shows: one that changed since (kubectl) is refused, never another dropped

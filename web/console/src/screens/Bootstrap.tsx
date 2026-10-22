@@ -1,12 +1,14 @@
 // A group's bootstrap (spec 010): what its nodes start with - the operator's document, and the profile's items that
 // apply to them as one of its nodes computes them. Seen only: the document's parts are the install's values (the chart
 // owns the platform's spec), the profile's are CLUSTER statements.
+import { useState } from 'react'
 import { CircleAlert } from 'lucide-react'
 import { Problem } from '../components/ui'
 import { behind, documentParts, documentTitle } from '../lib/bootstrap'
 import { useApp, useLoad, type Loaded } from '../lib/context'
 import { sentence } from '../lib/format'
 import type { BootstrapPage, Group } from '../lib/types'
+import { ProfileDialog } from './ProfileDialog'
 
 /** the operator refusing the group's document: a node of the group does not start - the group page's first alert */
 export function BootstrapRefused({ page }: { page?: BootstrapPage }) {
@@ -24,8 +26,10 @@ export function BootstrapRefused({ page }: { page?: BootstrapPage }) {
 
 const note = 'rounded-md border border-line px-6 py-4 text-sm'
 
-export function BootstrapSection({ group, page, read }: { group: Group; page: Loaded<BootstrapPage>; read?: number }) {
+export function BootstrapSection({ group, page, read, onChanged }: { group: Group; page: Loaded<BootstrapPage>;
+  read?: number; onChanged: () => void }) {
   const { api, rights } = useApp()
+  const [changing, setChanging] = useState(false)
   // the node's own rule of a group's item over the cluster's: read on one of the group's serving nodes, never redone here
   const serving = group.nodes.find((n) => n.serving && n.ready)
   const standalone = rights.deployment === 'standalone'
@@ -65,8 +69,15 @@ export function BootstrapSection({ group, page, read }: { group: Group; page: Lo
           <p className="mt-2 text-ink-muted">Each node gets its own label in place of <span className="mono">&lt;pod&gt;</span>. Names and addresses only: the document never holds a credential.</p>
         </details>
       )}
-      <div>
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <h3 className="text-lg font-semibold">The profile its nodes apply</h3>
+        {rights.infrastructure && !standalone && (
+          <button type="button" className="btn-outline" onClick={() => setChanging(true)}>Change for {group.resourceGroup}</button>
+        )}
+      </div>
+      {changing && <ProfileDialog group={group.resourceGroup}
+        onDone={(changed) => { setChanging(false); if (changed) { onChanged(); inventory.reload() } }} />}
+      <div>
         <p className="text-sm text-ink-muted">
           Version {group.profile.target}, applied by {group.profile.applied} of {group.replicas}{late.length > 0 ? `; behind: ${late.join(', ')}` : ''}.
           {serving && rights.effective && !standalone && <> The items below are as <span className="mono">{serving.label}</span> computes them: the group's own over the cluster's.</>}

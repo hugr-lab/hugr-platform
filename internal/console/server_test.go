@@ -242,6 +242,7 @@ func TestRightsGateEveryRoute(t *testing.T) {
 		{"POST", "nodes/hugr-node-etl-a/drain", "", operateInfo},
 		{"POST", "nodes/hugr-node-etl-a/resume", "", operateInfo},
 		{"PATCH", "groups/etl", `{"replicas": 3}`, clusterInfo},
+		{"POST", "cluster/profile", `{"action": "reset", "setting": "threads"}`, clusterInfo},
 	}
 	nothing := infoRow(nil, nil, nil)
 	for _, route := range routes {

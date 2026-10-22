@@ -5,6 +5,7 @@ import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import { caps, cell, readsPolicy } from './policy'
 import { behind, documentParts, documentTitle } from './bootstrap'
+import { changeOf, changeProblem, reachOf } from './profile'
 import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, changes, doorSecret, doorURI, enter, literal, personOf, statementOf, tresorService, type Conn } from './duckdb'
 import type { Fleet, Group } from './types'
 
@@ -322,5 +323,34 @@ describe('a group\'s bootstrap document (spec 010)', () => {
     const n = (label: string, applied: number, leaseAge: number | null) => ({ label, applied, leaseAge }) as never
     expect(behind([n('a', 4, 1), n('b', 3, 2), n('c', 0, null)], 4)).toEqual(['b (version 3)'])
     expect(behind([n('a', 4, 1)], 4)).toEqual([])
+  })
+})
+
+describe('a change of the profile from a form (spec 010 stage 2)', () => {
+  it('sends only the fields its action takes, scoped to a group when one is given', () => {
+    const f = { extension: 'mssql', version: 'v2.0.1', path: 'x', alias: 'a', type: 'duckdb', setting: 's', value: '1',
+      comment: 'c', readOnly: true, dependsOn: [] as string[] }
+    expect(changeOf('update', f)).toEqual({ action: 'update', extension: 'mssql', version: 'v2.0.1' })
+    expect(changeOf('attach', f, 'etl')).toEqual({ action: 'attach', path: 'x', alias: 'a', type: 'duckdb',
+      readOnly: true, comment: 'c', group: 'etl' })
+    expect(changeOf('reset', f)).toEqual({ action: 'reset', setting: 's' })
+  })
+  it('says what the form lacks, and nothing once it may be sent', () => {
+    expect(changeProblem({ action: 'install', extension: 'x y', version: '1' })).toMatch(/extension/)
+    expect(changeProblem({ action: 'install', extension: 'x', version: '' })).toMatch(/version/)
+    expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'a', type: 'duckdb) --' })).toMatch(/type/)
+    expect(changeProblem({ action: 'attach', path: 'a\nb', alias: 'a', type: 'duckdb' })).toMatch(/path/)
+    expect(changeProblem({ action: 'set', setting: 'threads' })).toMatch(/value/)
+    expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'Lake "eu"', type: 'duckdb', secret: 'ro' })).toBeUndefined()
+    expect(changeProblem({ action: 'detach', alias: 'scratch' })).toBeUndefined()
+    expect(changeProblem({ action: 'detach', alias: 'a,b' })).toMatch(/comma/)
+    expect(changeProblem({ action: 'detach', alias: ' a' })).toMatch(/comma/)
+    expect(changeProblem({ action: 'detach', alias: 'x'.repeat(257) })).toMatch(/alias/)
+    expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'a', type: 'duckdb', dependsOn: ['b\u0085'] })).toMatch(/dependency/)
+  })
+  it('reads the node\'s answer as how the change reaches the nodes', () => {
+    expect(reachOf({ version: 7, class: 'hot', appliedHere: true, note: '', node: 'n-a' })).toMatch(/version 7: applied live - n-a applied it/)
+    expect(reachOf({ version: 8, class: 'restart', appliedHere: false, note: '', node: 'n-a' })).toMatch(/at a restart/)
+    expect(reachOf({ version: 9, class: 'drain', appliedHere: false, note: '', node: 'n-a' })).toMatch(/drains/)
   })
 })

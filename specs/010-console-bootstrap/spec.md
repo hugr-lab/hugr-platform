@@ -1,6 +1,6 @@
 # Spec 010: the bootstrap in the console - what a node starts with
 
-- **Status**: stage 1 implemented; stage 2 accepted (2026-10-22; decisions 1-3 as proposed)
+- **Status**: implemented (2026-10-22; decisions 1-3 as proposed)
 - **Date**: 2026-10-22
 - **Author**: hugr lab (the owner, 2026-10-20, spec 003's follow-up: the bootstrap seen in the console first, edited
   later)
@@ -56,8 +56,19 @@ same `CLUSTER` statements, judged by a node.
   it (the `cluster` bundle) and answers `{version, class, applied_here, note}`.
   - The page shows the class: hot (applied there at once, the others on their tick), drain or restart (the
     orchestrator rolls the nodes).
-  - The statement's text is built by the console from the form's fields as quoted identifiers and literals; nothing a
-    person types reaches it as SQL. A source names a `SECRET` (never a credential: the node refuses one anyway).
+  - The statement's text is built by the console (`POST cluster/profile`, the `cluster` bundle's - `Rights.Infrastructure`)
+    from the form's fields; nothing a person types reaches it as SQL:
+    - an extension, a repository, a type, a secret and a setting are plain names (`[A-Za-z_][A-Za-z0-9_]*`), written
+      bare;
+    - an alias and a dependency are quoted identifiers - never with a comma or edge spaces: hugr-node keeps a
+      dependency list joined by commas and trims each name - and a resource group (`IN GROUP`) a resource group's
+      name, quoted; hugr-node reads a quoted name as one (`NameValue`);
+    - a path, a version, a lineage name, a comment and a setting's value are string literals (the node keeps a
+      setting's value as text whatever it is written as).
+  - A source names a `SECRET` (never a credential: the node refuses one anyway). ATTACH's options beyond `READ_ONLY`
+    stay the statement's own (SQL on a node).
+  - The Cluster page offers the forms for the whole cluster, a group's page for its resource group - on a cluster node
+    only (a standalone one keeps no profile).
 - **The document's parts stay the install's.** The platform's spec is rendered by the chart from its values: a
   `helm upgrade` would put back whatever the console wrote. The group's parts (identity, size, doors) are spec 006's
   already.
@@ -89,8 +100,12 @@ same `CLUSTER` statements, judged by a node.
 - **Demo** (check 4c): the console's document for group a is served (its nodes run on it) and names the platform's
   tresor, the group's own identity and the first policy's groups.
 - Stage 2:
-  - the statements built from forms, with their quoting;
-  - the e2e: an extension installed and removed for a group, the answer's class shown.
+  - Go: each form's statement, with its quoting, and the refusals of what would be SQL (`TestProfileStatement`); the
+    route writes once on a node that seats the person and answers the node's `{version, class, applied_here, note}`;
+    the `cluster` bundle's;
+  - vitest: the fields each change sends, what a form lacks, how the answer reads;
+  - the e2e's node is a standalone one: no form offered there;
+  - the demo (a cluster node): a source attached for group b through the console, listed, detached - each hot.
 
 ## Alternatives considered
 
@@ -99,6 +114,13 @@ same `CLUSTER` statements, judged by a node.
 - **Editing the platform's spec in the console**: the chart owns it; the console's write would be undone at the next
   upgrade, or would need the chart to give up those fields.
 - **The effective profile computed in the console from the items**: a second copy of the node's override rule.
+
+## Follow-ups
+
+- **hugr-node: `CLUSTER UPDATE EXTENSION` keeps what it does not name.** Today it writes the item's comment empty and
+  resolves the repository again with no `FROM` (its grammar takes none): on a node trusting one repository the item
+  moves to it, on one trusting several every update is refused. Found by this spec's review; the console's update
+  form inherits it (a platform's nodes trust one repository, its kista channel).
 
 ## Decisions for the owner
 
