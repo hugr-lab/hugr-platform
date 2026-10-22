@@ -60,11 +60,29 @@ The page embeds duckdb-wasm, which attaches the platform's quack door as a clien
 there. acl is not in the browser (its wasm build is out by the owner's decision of 2026-09-14: a tab is no boundary).
 The node behind the door enforces the policy, as it does for any quack client.
 
-- **The path:** duckdb-wasm runs the quack client from `extensions.duckdb.org/v2.0.0/wasm_eh/quack`, DuckDB-signed. A
-  quack URI has no path, so the client posts to `https://<host>/quack`. The console serves `POST /quack` (and
-  `GET /.well-known/quack-auth`) on its own origin and proxies them to the front's quack door, which seats the person on
-  a node of their group (spec 002). The browser reaches nothing but the console: the nodes and the front stay
-  in-cluster, their certificates the internal CA's, and the page needs no CORS.
+- **The path:** duckdb-wasm attaches the platform with the quack client. A quack URI has no path, so the client posts
+  to `https://<host>/quack`. The console serves `POST /quack` (and `GET /.well-known/quack-auth`) on its own origin and
+  forwards them to the front's quack door, which seats the person on a node of their group (spec 002). The browser
+  reaches nothing but the console: the nodes and the front stay in-cluster, their certificates the internal CA's, and
+  the page needs no CORS. The console forwards only a request of a person signed in to it (the page's quack secret
+  sends the console's token as a header too) and takes that header off; the door authenticates the quack session by the
+  token in its CONNECT, as for any client.
+- **The DuckDB the page runs** (built here, `.github/workflows/duckdb-wasm.yml`, a release per pin):
+  - duckdb-wasm at a pinned commit of its main (DuckDB v2.0.0), its `wasm_eh` bindings able to LOAD extensions;
+  - quack for `wasm_eh` built at a pinned commit by the same emscripten (6.0.9):
+    - The official one could not connect from `wasm_eh`: its client started a `std::thread` per connection. We
+      reported it as duckdb/duckdb-quack#328, and quack fixed it the same day (4f4b4c0), which is our pin.
+    - A quack built by another emscripten (3.1.71, DuckDB's for its v2.0 extensions) fails to link against the bindings.
+    - The `wasm_threads` build loads no extension of DuckDB's v2.0 repository.
+  - httpfs, quack's HTTP in wasm, built with it;
+  - the console names the release's package by its URL (`web/console/package.json`), the lockfile its integrity; a new
+    pin pair is a new release, and the console moves to it by a change of that line, never by itself;
+  - DuckDB is 34 MB, 8 gzipped: the console gzips a compressible asset once, at its first request that takes gzip,
+    and the page loads it only when the SQL page opens (cached as immutable after that);
+  - both shipped in the package and loaded unsigned from the console's own origin, with autoinstall off: the page
+    reaches its own origin only. The CSP allows WebAssembly (`'wasm-unsafe-eval'`) and a worker of its own origin.
+  - Without a heartbeat (no thread in `wasm_eh`), the node's lease ends a connection idle past its timeout. Each run
+    opens a fresh one: `quack_query` connects at its bind and disconnects at its end.
 - **The sign-in is the console's:** the person's token (the nodes' audience) goes into a quack secret in the page's
   DuckDB memory, and the door verifies it as any client's (duckdb-acl spec 041). Later: tresor's own flows, when they
   come to the browser.
@@ -73,14 +91,22 @@ The node behind the door enforces the policy, as it does for any quack client.
     management grammar the person's bundles allow.
   - "NATIVE": offered only with `passthrough`. The page writes `ACL NATIVE ` in front of the statement, the break-glass
     door, where nothing is refused (the owner, 2026-10-15). The page says so above the box.
-- **The answer is capped** at 1000 rows and 4 MiB: the page stops reading the stream there, cancels the rest and says
+- **The answer is DuckDB's text**: every value cast to VARCHAR by the page's DuckDB, so a DECIMAL keeps its scale, a
+  date reads as a date, a list or a 64-bit integer as they are.
+- **The answer is capped** at 1000 rows and 4 MiB of UTF-8: the page reads it batch by batch, stops there, and says
   how much it cut.
-- **The text is the person's.** The node judges it as any client's. The console's proxy sees only quack's frames,
-  logs a request's size and the person's subject, never a statement.
+- **The text is the person's.** The node judges it as any client's; it is a bound parameter of the page's statement,
+  never run in the page's DuckDB. The console logs no quack request - the door's audit records the sessions and the
+  statements - only a forward that failed.
+- **The door has no deadline in the console** (a PREPARE answers when its statement's first batch is ready); the
+  quack client bounds its own wait. A run outliving the person's token past its grace is refused at its next request.
 - **What it needs:**
-  - a duckdb-wasm built on DuckDB v2.0.0 (its main since 2026-10-21; its npm package is not yet on 2.0);
   - a group with its quack door open (`doors.quack`), since the front seats a quack client only on such a node;
-  - the console's CSP allowing wasm (`'wasm-unsafe-eval'`) and a worker of its own origin.
+  - a front certificate that names `hugr-front.<namespace>.svc`, the name the console dials. The chart's internal CA
+    issues it with that name. An organisation's certificate needs the name added, or every `/quack` fails, and the
+    operator's log says why.
+- **What it opens:** `/quack` puts the front's quack door (ClusterIP by default) within reach of anyone signed in to
+  the console, with their own token and rights - as reaching the front directly would.
 
 The same embedding is what the second stage's grids read from.
 
@@ -166,4 +192,18 @@ a time on one node and stops at the first refusal, and re-reads the object first
     reach.
 
   Ours, when it comes: the mount of `/.well-known/duckdb-secrets` and the CSP.
+
+  tresor's plan, the owner's approval of 2026-10-22:
+  - Step 1: tresor builds for wasm without OpenSSL, sockets or threads, and is back in its CI and distribution
+    (duckdb-ext-common v0.15.0).
+  - Step 2: no second sign-in, and no exchange on the server.
+    - The page hands tresor the access token for tresor's audience, as a parameter (`tresor_web_token(service, ?)`),
+      and a new one at every renewal of its own.
+    - tresor holds that token only, never the site's refresh token.
+    - Its helper `attachTresor` takes `{token, onTokenChange}` and signs nobody in.
+  - What the platform then gives:
+    - tresor's audience in the console's token;
+    - tresor-server's `public_url` = `https://<console>/tresor`;
+    - the mount of `/tresor/.well-known/duckdb-secrets` and `/tresor/v1/`;
+    - the CSP.
 - A DDL / export tab, when duckdb-acl 120.4 lands (the DBeaver client waits for it too).

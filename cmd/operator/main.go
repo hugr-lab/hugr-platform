@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -209,7 +210,8 @@ func main() {
 			Kube: console.KubeClient{Clientset: clientset, Namespace: namespace},
 			Mounts: []*console.Mount{console.TresorMount(platforms.Find, roots.Pool),
 				console.KistaMount(platforms.Find, roots.Pool)},
-			Log: logger.WithName("console")},
+			Quack: quackMount(console.QuackMount(console.FrontQuackUpstream(platforms.Find), roots.Pool), logger),
+			Log:   logger.WithName("console")},
 		Pool:  pool,
 		Watch: watch.New(clientset, namespace, nodes, 15*time.Second).Run,
 	}
@@ -311,4 +313,10 @@ func ownImage(clientset kubernetes.Interface, namespace string) (string, string)
 		}
 	}
 	return "", ""
+}
+
+// quackMount logs the door's failed forwards: a front unreachable, or its certificate not naming hugr-front.<ns>.svc
+func quackMount(m *console.Mount, log logr.Logger) *console.Mount {
+	m.Log = log.WithName("console").WithName("quack")
+	return m
 }

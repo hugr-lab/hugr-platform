@@ -44,7 +44,10 @@ type Server struct {
 	Web http.Handler
 	// Mounts are the services the mounted consoles talk to, under the console's origin (/tresor, /kista).
 	Mounts []*Mount
-	Log    logr.Logger
+	// Quack is the platform's quack door under the console's origin, for the SQL page's DuckDB (spec 007); nil
+	// serves none.
+	Quack *Mount
+	Log   logr.Logger
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 
@@ -137,6 +140,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET "+APIPrefix+"policy/views/{view}", s.person(nil, s.policyView))
 	mux.Handle("GET "+APIPrefix+"policy/sources", s.person(nil, s.policySources))
 	mux.Handle("GET "+APIPrefix+"policy/functions/{function}", s.person(nil, s.policyCall))
+	// the quack door for the SQL page's DuckDB: a person signed in to the console, whatever their rights - the door
+	// judges the session
+	for _, path := range quackPaths {
+		mux.Handle(path, s.person(nil, s.quackDoor))
+	}
 	mux.Handle("GET "+APIPrefix+"nodes/{label}", s.person(func(r Rights) bool { return r.Fleet }, s.node))
 	mux.Handle("GET "+APIPrefix+"nodes/{label}/sessions",
 		s.person(func(r Rights) bool { return r.Sessions }, s.sessions))

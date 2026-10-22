@@ -4,6 +4,7 @@ import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import { caps, cell, readsPolicy } from './policy'
+import { BYTES_MAX, ROWS_MAX, bounded, doorURI, literal, statementOf } from './duckdb'
 import type { Fleet, Group } from './types'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -186,5 +187,28 @@ describe('the policy pages (spec 007)', () => {
     expect(readsPolicy(r(['clients']))).toBe(true)
     expect(readsPolicy(r(['keys']))).toBe(false) // read only from a catalog's page
     expect(readsPolicy(r([], ['exposures']))).toBe(true)
+  })
+})
+
+describe('the SQL page (spec 007)', () => {
+  it("names the platform's door as the console's own host", () => {
+    expect(doorURI({ hostname: 'console.example.org', port: '', protocol: 'https:' })).toBe('quack:console.example.org:443')
+    expect(doorURI({ hostname: '127.0.0.1', port: '18644', protocol: 'https:' })).toBe('quack:127.0.0.1:18644')
+  })
+  it('runs the text as written, or behind ACL NATIVE', () => {
+    expect(statementOf('SELECT 1', false)).toBe('SELECT 1')
+    expect(statementOf('SELECT 1', true)).toBe('ACL NATIVE SELECT 1')
+    expect(literal("o'hara")).toBe("'o''hara'")
+  })
+  it('cuts an answer at its rows or its bytes, whole rows only, and says so', () => {
+    const many = Array.from({ length: ROWS_MAX + 1 }, (_, i) => [String(i)])
+    const rows = bounded(['n'], many)
+    expect(rows.rows.length).toBe(ROWS_MAX)
+    expect(rows.cut).toBe(`the first ${ROWS_MAX} rows`)
+    const wide = Array.from({ length: 10 }, () => ['x'.repeat(BYTES_MAX / 4)])
+    const bytes = bounded(['t'], wide)
+    expect(bytes.rows.length).toBe(4) // four quarters fit exactly; the fifth is past the bound
+    expect(bytes.cut).toMatch(/MiB/)
+    expect(bounded(['n'], [['1'], [null]]).cut).toBeUndefined()
   })
 })

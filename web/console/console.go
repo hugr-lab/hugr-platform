@@ -5,6 +5,7 @@ package webconsole
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -13,7 +14,9 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,7 +40,18 @@ type Handler struct {
 	// Issuer is the IdP's issuer URL now (the platform's spec.idp.issuer): its origin is the sign-in's connect-src
 	// and form-action.
 	Issuer func() string
+	// zipped holds an asset gzipped at its first request that takes gzip: the SQL page's DuckDB is 34 MB, 8 when
+	// compressed (spec 007).
+	zipped sync.Map // name -> *zippedAsset
 }
+
+type zippedAsset struct {
+	once sync.Once
+	data []byte // nil: compression did not make it smaller
+}
+
+// compressible are the extensions whose files compress; the fonts (woff2) already are.
+var compressible = map[string]bool{".wasm": true, ".js": true, ".css": true, ".svg": true}
 
 // New handler over the embedded build, or over `files` when a test gives one.
 func New(issuer func() string, files fs.FS) (*Handler, error) {
@@ -77,6 +91,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// Vite names an asset by its content
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			}
+			if zipped := h.gzipped(name, data); zipped != nil {
+				w.Header().Add("Vary", "Accept-Encoding")
+				if acceptsGzip(r) {
+					w.Header().Set("Content-Encoding", "gzip")
+					data = zipped
+				}
+			}
 			http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
 			return
 		}
@@ -96,8 +117,45 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(h.index)
 }
 
+// gzipped is the file compressed, once per file, or nil when it does not compress.
+func (h *Handler) gzipped(name string, data []byte) []byte {
+	if !compressible[path.Ext(name)] || len(data) < 1024 {
+		return nil
+	}
+	v, _ := h.zipped.LoadOrStore(name, &zippedAsset{})
+	z := v.(*zippedAsset)
+	z.once.Do(func() {
+		var b bytes.Buffer
+		zw := gzip.NewWriter(&b)
+		if _, err := zw.Write(data); err == nil && zw.Close() == nil && b.Len() < len(data) {
+			z.data = b.Bytes()
+		}
+	})
+	return z.data
+}
+
+// acceptsGzip says whether the request's Accept-Encoding takes gzip (not with q=0).
+func acceptsGzip(r *http.Request) bool {
+	for _, header := range r.Header.Values("Accept-Encoding") {
+		for _, item := range strings.Split(header, ",") {
+			coding, params, _ := strings.Cut(strings.TrimSpace(item), ";")
+			if !strings.EqualFold(strings.TrimSpace(coding), "gzip") {
+				continue
+			}
+			q := 1.0
+			if v, ok := strings.CutPrefix(strings.TrimSpace(params), "q="); ok {
+				q, _ = strconv.ParseFloat(strings.TrimSpace(v), 64)
+			}
+			return q > 0
+		}
+	}
+	return false
+}
+
 // policy sets the content security policy: the page's own origin, and the IdP's for the sign-in. The token is renewed
-// by its refresh token, never in a frame, so no frame-src.
+// by its refresh token, never in a frame, so no frame-src. The SQL page's DuckDB (spec 007) runs in a worker of the
+// page's own origin - the worker's script is served under this same policy, so it holds for the worker too: WebAssembly
+// compiled (wasm-unsafe-eval: no eval of JavaScript), quack loaded from this origin.
 func (h *Handler) policy(w http.ResponseWriter) {
 	idp := ""
 	if h.Issuer != nil {
@@ -105,8 +163,8 @@ func (h *Handler) policy(w http.ResponseWriter) {
 			idp = " https://" + u.Host
 		}
 	}
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; "+
-		"img-src 'self'; font-src 'self'; connect-src 'self'"+idp+"; object-src 'none'; base-uri 'self'; "+
-		"form-action 'self'"+idp+"; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; "+
+		"worker-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'"+idp+"; "+
+		"object-src 'none'; base-uri 'self'; form-action 'self'"+idp+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 }

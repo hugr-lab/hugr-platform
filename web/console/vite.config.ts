@@ -28,10 +28,21 @@ export default defineConfig({
     emptyOutDir: false, // cleanDist does it, keeping dist/.gitkeep
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },
+    rollupOptions: {
+      output: {
+        // DuckDB-wasm loads an extension only from a file named <name>.duckdb_extension.wasm (spec 007): its hash goes
+        // into the directory, so the file keeps its name and assets/ stays content-named
+        assetFileNames: (asset) =>
+          (asset.names ?? []).some((n) => n.endsWith('.duckdb_extension.wasm'))
+            ? 'assets/[hash]/[name][extname]'
+            : 'assets/[name]-[hash][extname]',
+      },
+    },
   },
   server: {
     // npm run dev against an operator's console (CONSOLE_URL, default https://localhost:8444)
-    proxy: { '/api': { target: process.env.CONSOLE_URL ?? 'https://localhost:8444', secure: false } },
+    proxy: Object.fromEntries(['/api', '/quack', '/.well-known/quack-auth'].map((path) =>
+      [path, { target: process.env.CONSOLE_URL ?? 'https://localhost:8444', secure: false }])),
   },
   test: { environment: 'jsdom', include: ['src/**/*.test.{ts,tsx}'] }, // e2e/ is Playwright's
 })
