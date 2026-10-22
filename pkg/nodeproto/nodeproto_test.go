@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func validDocument() Document {
@@ -138,6 +139,42 @@ func TestSummaryAnnotations(t *testing.T) {
 	noQuack := SummaryOf(Report{}, Load{})
 	if noQuack.SeatsLeft != -1 {
 		t.Errorf("a node without a quack door has seats: %d", noQuack.SeatsLeft)
+	}
+}
+
+// spec 008: what a node is (hugr-node spec 017's fields) survives the Lease, and an older node's report says none of it
+func TestSummaryBuild(t *testing.T) {
+	body := `{"node_id": "n", "image": "v0.3.0", "duckdb": "d54cbbe", "duckdb_version": "v2.0.0", "platform": "linux_arm64",
+	  "catalog": {"type": "postgres", "extension": "postgres_scanner", "build": 23, "build_min_reader": 22, "schema": 22,
+	  "min_reader": 21, "mode": "refused"}}`
+	r, load, err := ReadReport(strings.NewReader(body), "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := SummaryOf(r, load)
+	if s.Build != "v0.3.0" || s.DuckDBVersion != "v2.0.0" || s.Platform != "linux_arm64" ||
+		s.CatalogExtension != "postgres_scanner" || s.CatalogBuild != 23 || s.CatalogBuildMinReader != 22 ||
+		s.CatalogSchema != 22 || s.CatalogMinReader != 21 {
+		t.Errorf("the build is read wrong: %+v", s)
+	}
+	if back := ParseSummary(s.Annotations()); back.Build != s.Build || back.DuckDBVersion != s.DuckDBVersion ||
+		back.Platform != s.Platform || back.CatalogExtension != s.CatalogExtension || back.CatalogBuild != s.CatalogBuild ||
+		back.CatalogBuildMinReader != s.CatalogBuildMinReader || back.CatalogSchema != s.CatalogSchema ||
+		back.CatalogMinReader != s.CatalogMinReader {
+		t.Errorf("the build does not survive its annotations: %+v -> %+v", s, back)
+	}
+	older := SummaryOf(Report{}, Load{}).Annotations()
+	for _, key := range ReportedKeys {
+		if _, ok := older[key]; ok {
+			t.Errorf("a report that says nothing of %s writes it", key)
+		}
+	}
+	long := SummaryOf(Report{Image: strings.Repeat("x", 4096)}, Load{})
+	if len(long.Build) != maxReported {
+		t.Errorf("a node's build of 4096 bytes is kept at %d", len(long.Build))
+	}
+	if cut := SummaryOf(Report{Image: strings.Repeat("a", maxReported-1) + "é"}, Load{}); !utf8.ValidString(cut.Build) {
+		t.Errorf("a cut through a rune is kept as it is: %q", cut.Build)
 	}
 }
 

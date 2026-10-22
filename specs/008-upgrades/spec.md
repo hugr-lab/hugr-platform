@@ -127,6 +127,18 @@ Today an upgrade is a plain Kubernetes rolling update, and nothing else (researc
 | hugr-node | the document's `catalog.migrate`: step 5 migrates when told, and only then; the heartbeat adds the catalog's stamp (`acl_catalog_schema`) |
 | the demo | an upgrade check: install, upgrade to a node image with another tag, then watch the groups roll one by one, nothing lost, the status complete. A catalog migration needs two acl builds, so it runs once a second release exists |
 
+### Built so far
+
+- **hugr-node spec 017** (hugr-node #18): the document's `catalog.migrate`, and the heartbeat's `duckdb_version`,
+  `platform` and `catalog` (`type`, `extension`, `build`, `build_min_reader`, `schema`, `min_reader`, `mode`). Its
+  bootstrap e2e stamps a catalog one schema version back: a node without the flag stops at step 5, and one with it
+  migrates and serves.
+- **What each node is, in the fleet** (this repository): the heartbeat's build, DuckDB release, platform, catalog
+  extension and catalog stamps go into the node's Lease (`platform.hugr.io/build`, `duckdb-version`, `platform`,
+  `catalog-*`). A key the latest report leaves out is removed, so a value never outlives the build that wrote it, and
+  a node's string is kept to 128 bytes. A group's status gains `builds` (live nodes per build and DuckDB release)
+  and `catalog` (the newest stamp a live node read).
+
 ## Security
 
 - **An upgrade is the admin's act, and so is a rollback.** The operator never chooses a version. It only orders what

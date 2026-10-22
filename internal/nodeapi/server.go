@@ -190,11 +190,15 @@ func (s *Server) renew(ctx context.Context, node *Node, summary nodeproto.Summar
 		if lease.Annotations == nil {
 			lease.Annotations = map[string]string{}
 		}
-		for k, v := range summary.Annotations() {
+		written := summary.Annotations()
+		for k, v := range written {
 			lease.Annotations[k] = v
 		}
-		if summary.GroupKnown == nil {
-			delete(lease.Annotations, nodeproto.AnnotationGroupKnown)
+		// what this report leaves out goes: a key never outlives the report that wrote it
+		for _, k := range nodeproto.ReportedKeys {
+			if _, ok := written[k]; !ok {
+				delete(lease.Annotations, k)
+			}
 		}
 		lease.Spec.HolderIdentity = &key.Name
 		lease.Spec.LeaseDurationSeconds = &seconds

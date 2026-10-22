@@ -288,6 +288,8 @@ func (r *GroupReconciler) aggregate(ctx context.Context, group *v1alpha1.HugrNod
 	status.Profile = fleet.Profile
 	status.Lost = fleet.Lost
 	status.ResourceGroupKnown = fleet.GroupKnown
+	status.Builds = fleet.Builds
+	status.Catalog = fleet.Catalog
 
 	ready := status.ReadyReplicas == group.Spec.Replicas && status.Replicas == group.Spec.Replicas
 	if meta.IsStatusConditionTrue(status.Conditions, ConditionRefused) {
