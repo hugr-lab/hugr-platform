@@ -586,10 +586,10 @@ sys.exit(0 if "hugr-init" in managers else 1)' || fail "the CRDs were not applie
 	ok "revision $revision: the CRDs applied by the pre-upgrade hook (its right gone after), analyst_a still reads"
 }
 
-# check_console_group: spec 006 - the console makes a group (its identity given beforehand: the IdP's client and
-# tresor's actor are the installation's), whose node drains itself until the policy has its resource group; the
-# console adds it by hand on a node under the admin's token, a principal of a role bound there is served, then the
-# group leaves the policy (its node drains itself again) and is deleted (its node drains and goes)
+# check_console_group: spec 006 - the console makes a group (its identity given beforehand: the IdP's client, holding
+# the nodes' role tresor's actor rule names, is the installation's), whose node drains itself until the policy has its
+# resource group; the console adds it by hand on a node under the admin's token, a principal of a role bound there is
+# served, then the group leaves the policy (its node drains itself again) and is deleted (its node drains and goes)
 check_console_group() {
 	step "13. a group from the console (spec 006): made, added to the policy by hand, serving, removed, deleted"
 	local g="$CONSOLE_GROUP" out pod got body
