@@ -40,10 +40,10 @@ spec:
     mode: auto           # manual (the default) | auto
     min: 0               # 0..max; the default group's min is at least 1 (refused otherwise)
     max: 4               # <= the plan's maxNodes counted over every group at its max
-    idle: 10m            # a node with no session for this long is drained and stopped (while above min)
-    wait: 90s            # how long the front holds a client of a group with no placeable node
+    idle: 30m            # a node with no session for this long is drained and stopped (while above min)
     scaleUp:             # a new node when, on every placeable node, for `for`:
-      seatsUsed: 0.8     #   the seats used reach this share (duckdb-acl spec 079), or
+      memoryUsed: 0.8    #   duckdb's memory in use reaches this share of its memory_limit (the main signal), or
+      seatsUsed: 0.9     #   the seats used reach this share (duckdb-acl spec 079), or
       streamsWaiting: 1  #   this many streams wait for the stream budget (spec 080)
       for: 60s
     cooldown: 120s       # no second scaling decision for a group within this
@@ -51,8 +51,12 @@ status:
   scaling: {last: {at, from, to, reason}}   # what the console shows (spec 003)
 ```
 
-`wait` replaces the front's global `noNodeWait` for the group (5 s stays the default of a manual group). A duration is
-written as Kubernetes writes one (`90s`, `10m`).
+A duration is written as Kubernetes writes one (`60s`, `30m`). There is no per-group wait (the owner): the front holds
+a client of a group at 0 while a node is starting - the client's own timeout decides how long it waits.
+
+CPU is no signal (the owner): duckdb takes every thread it is given, so a busy node always reads as saturated. Memory
+is - duckdb-acl's load report gains `memory: {used, limit}` (the buffer manager's memory in use and its limit) beside
+the seats and the streams, and the Lease's summary carries `memory-used`.
 
 ### Waking a group at 0: the front's demand
 
@@ -63,18 +67,19 @@ written as Kubernetes writes one (`90s`, `10m`).
   no new port, no call to the operator. RBAC: the front may create / update Leases named `hugr-demand-*` only.
 - The operator watches those Leases. A live demand Lease of an auto group below 1 node sets `replicas = max(1, min)`
   at once (no `for`, no cooldown: a client is waiting).
-- The front holds the client up to the group's `wait` (an HTTP / gRPC call kept open, nothing sent), seats it as soon
-  as a node of the group is placeable (its Lease says `admit.new_session`), and otherwise answers as today
-  (UNAVAILABLE / 503 `hugr: no node of group <g> can take a new session - retry`). A client whose own timeout is
-  shorter (quack's 30 s HTTP timeout) gets its error and reconnects; the node is coming up meanwhile and the demand
-  stays renewed while any of the front's replicas holds a client.
+- The front holds the client (an HTTP / gRPC call kept open, nothing sent) while the group's node is starting, and
+  seats it as soon as a node of the group is placeable (its Lease says `admit.new_session`). The client's own timeout
+  ends the wait (quack's 30 s HTTP timeout); it reconnects, and the node is coming up meanwhile - the demand stays
+  renewed while any of the front's replicas holds a client. A group the operator cannot start (past the plan, a pod
+  that does not schedule) is answered as today (UNAVAILABLE / 503 `hugr: no node of group <g> can take a new session -
+  retry`) once the operator marks it `Refused`.
 - **The session moves**: the client's first answer comes from the group's node, so there is nothing to move on quack;
   on Flight the default group's node opened nothing (it refused the seat), and spec 002's re-seat carries the call.
 
 ### Growing under load
 
-The operator's leader reads each auto group's Leases (spec 001's summary: seats left, sessions, `admit`) every 5 s, as
-it already aggregates the status. When every placeable node of the group passes a `scaleUp` threshold for `for`,
+The operator's leader reads each auto group's Leases (spec 001's summary: memory used, seats left, sessions, `admit`)
+every 5 s, as it already aggregates the status. When every placeable node of the group passes a `scaleUp` threshold for `for`,
 `replicas` grows by one, up to `max`, then waits `cooldown`. A node that is not yet placeable (starting) counts as
 capacity on its way: no second step while one is starting.
 
@@ -96,8 +101,8 @@ capacity on its way: no second step while one is starting.
 
 ### The console (spec 003)
 
-The reserved `scaling: {mode, min, max, last}` API: an auto group's dialog edits `min`, `max`, `idle` and `wait`
-within the plan and never `replicas`; the fleet shows "stopped - starts on the first client" for a group at 0, and the
+The reserved `scaling: {mode, min, max, last}` API: an auto group's dialog edits `min`, `max`, `idle` and the
+thresholds within the plan and never `replicas`; the fleet shows "stopped - starts on the first client" for a group at 0, and the
 last decision with its reason. The plan's check counts an auto group at its `max`.
 
 ## Enforcement & security
@@ -111,20 +116,21 @@ last decision with its reason. The plan's check counts an auto group at its `max
 ## Testing
 
 - operator: the autoscaler's decision is pure (`pkg/autoscale`: from (spec, Leases, demand Leases, now) to the next
-  replicas and the reason) - wake from 0 on demand, no step while one starts, growth on seats / streams for `for`,
+  replicas and the reason) - wake from 0 on demand, no step while one starts, growth on memory / seats / streams for
+  `for`,
   cooldown, shrink only an idle node above min, the last node of a min-0 group after `idle` with no demand, the
   default group's min >= 1 refused;
-- front: the demand Lease written while a client of a 0-node group is held, renewed, released; the hold up to `wait`;
-  the seat once a node is placeable;
+- front: the demand Lease written while a client of a 0-node group is held, renewed, released; the hold until the
+  client's timeout or a `Refused` group; the seat once a node is placeable;
 - e2e (kind / minikube demo): an ETL group with `min: 0` - a client connects, a node starts, the query runs; the
   client leaves, the node stops after `idle`; a second client during the stop is seated after a new node starts.
 
-## Open questions
+## Decisions (owner, 2026-11-16)
 
-1. `idle` and `wait` defaults (proposed 10m and 90s) - and whether `wait` above the client's own timeout is worth it.
-2. Scaling up on seats and streams only, or on CPU / memory too (the pod's metrics are Kubernetes', the seats are
-   ours).
-3. The front's demand as a Lease (proposed) or a call to the operator's API.
+1. `idle` defaults to 30 minutes; no per-group wait - the client's own timeout decides.
+2. Memory is the main signal to grow (duckdb takes every thread, so CPU always reads saturated), with the seats and the
+   stream queue beside it.
+3. The front's demand is a Lease.
 
 ## Alternatives considered
 
