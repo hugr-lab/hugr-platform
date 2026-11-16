@@ -1,6 +1,6 @@
 # Spec 011: a node group scales itself - from its load, down to zero
 
-- **Status**: draft (for the owner's review)
+- **Status**: accepted (the owner, 2026-11-16)
 - **Date**: 2026-11-16
 - **Author**: Claude, from the owner's decisions of 2026-11-16 (in the release, not after it)
 - **Follows**: spec 001 (the operator, the heartbeat, the Lease, the pod-deletion cost), spec 002 (the front's seating,
