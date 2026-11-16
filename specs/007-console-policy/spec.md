@@ -31,7 +31,7 @@ person's own token, through `onNode` from spec 006 (it tries the next node on a 
 | page | reads | the DBeaver client's |
 | --- | --- | --- |
 | Catalogs, a catalog | `catalogs`, `relations`, `relation_columns`, `schemas`, `functions`, `function_columns`, `references`, `keys`; `check_catalog(c)` | the data tree and Check |
-| Grants of a catalog | `grants`, `schema_grants`, `object_grants`, `grant_columns` | the grant nodes |
+| Grants of a catalog | `grants`, `schema_grants`, `object_grants` (duckdb-acl spec 158 stage 3 dropped `grant_columns`) | the grant nodes |
 | Roles, a role | `roles`, `role_claims`, `admins`, `platform_grants`, `role_resource_groups`; per catalog the role holds, `effective_rights(role, catalog)` | the role and its Effective rights tab |
 | Identity | `issuers`, `clients`, `role_mappings` | Issuers, Clients, Mappings |
 | Functions | `function_categories`, `function_category_members`, `function_grants` | Function categories |

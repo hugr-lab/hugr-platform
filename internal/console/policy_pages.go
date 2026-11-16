@@ -20,7 +20,7 @@ import (
 var policyViews = map[string]bool{
 	"catalogs": true, "relations": true, "relation_columns": true, "schemas": true, "functions": true,
 	"function_columns": true, "references": true, "keys": true,
-	"grants": true, "schema_grants": true, "object_grants": true, "grant_columns": true,
+	"grants": true, "schema_grants": true, "object_grants": true,
 	"roles": true, "role_claims": true, "admins": true, "platform_grants": true,
 	"issuers": true, "clients": true, "role_mappings": true,
 	"function_categories": true, "function_category_members": true, "function_grants": true,
