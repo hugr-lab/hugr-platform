@@ -117,7 +117,6 @@ export function Catalog({ name }: { name: string }) {
       {reads(rights, 'grants') && <ViewTable view="grants" filters={at} title="Catalog grants" columns={['role', 'is_main', 'caps', 'rls', 'columns']} format={grantCaps} />}
       {reads(rights, 'schema_grants') && <ViewTable view="schema_grants" filters={at} title="Schema grants" columns={['role', 'schema_path', 'caps', 'inherited', 'into', 'virtual_only']} format={objectCaps} />}
       {reads(rights, 'object_grants') && <ViewTable view="object_grants" filters={at} title="Object grants" columns={['role', 'object', 'caps', 'rls', 'columns']} format={objectCaps} />}
-      {reads(rights, 'grant_columns') && <ViewTable view="grant_columns" filters={at} title="What each grant's projection produces" columns={['role', 'object', 'pos', 'name', 'type']} />}
     </Frame>
   )
 }

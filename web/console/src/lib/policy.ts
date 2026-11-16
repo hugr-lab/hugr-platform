@@ -4,7 +4,7 @@ import type { Rights } from './types'
 
 /** the policy's views - the server reads no other on these pages */
 export const policyViews = ['catalogs', 'relations', 'relation_columns', 'schemas', 'functions', 'function_columns',
-  'references', 'keys', 'grants', 'schema_grants', 'object_grants', 'grant_columns', 'roles', 'role_claims', 'admins',
+  'references', 'keys', 'grants', 'schema_grants', 'object_grants', 'roles', 'role_claims', 'admins',
   'platform_grants', 'issuers', 'clients', 'role_mappings', 'function_categories', 'function_category_members',
   'function_grants', 'resource_groups', 'role_resource_groups']
 
