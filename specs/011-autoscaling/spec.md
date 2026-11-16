@@ -43,7 +43,8 @@ spec:
     idle: 30m            # a node with no session for this long is drained and stopped (while above min)
     scaleUp:             # a new node when, on every placeable node, for `for`:
       memoryUsed: 0.8    #   duckdb's memory in use reaches this share of its memory_limit (the main signal), or
-      seatsUsed: 0.9     #   the seats used reach this share (duckdb-acl spec 079), or
+      sessionsUsed: 0.9  #   the live sessions reach this share of the node's acl_max_sessions (duckdb-acl spec 044), or
+      seatsUsed: 0.9     #   the quack seats used reach this share (duckdb-acl spec 079), or
       streamsWaiting: 1  #   this many streams wait for the stream budget (spec 080)
       for: 60s
     cooldown: 120s       # no second scaling decision for a group within this
@@ -78,7 +79,8 @@ the seats and the streams, and the Lease's summary carries `memory-used`.
 
 ### Growing under load
 
-The operator's leader reads each auto group's Leases (spec 001's summary: memory used, seats left, sessions, `admit`)
+The operator's leader reads each auto group's Leases (spec 001's summary: memory used, sessions and their limit, seats left,
+`admit`)
 every 5 s, as it already aggregates the status. When every placeable node of the group passes a `scaleUp` threshold for `for`,
 `replicas` grows by one, up to `max`, then waits `cooldown`. A node that is not yet placeable (starting) counts as
 capacity on its way: no second step while one is starting.
@@ -116,7 +118,7 @@ last decision with its reason. The plan's check counts an auto group at its `max
 ## Testing
 
 - operator: the autoscaler's decision is pure (`pkg/autoscale`: from (spec, Leases, demand Leases, now) to the next
-  replicas and the reason) - wake from 0 on demand, no step while one starts, growth on memory / seats / streams for
+  replicas and the reason) - wake from 0 on demand, no step while one starts, growth on memory / sessions / seats / streams for
   `for`,
   cooldown, shrink only an idle node above min, the last node of a min-0 group after `idle` with no demand, the
   default group's min >= 1 refused;
@@ -128,8 +130,9 @@ last decision with its reason. The plan's check counts an auto group at its `max
 ## Decisions (owner, 2026-11-16)
 
 1. `idle` defaults to 30 minutes; no per-group wait - the client's own timeout decides.
-2. Memory is the main signal to grow (duckdb takes every thread, so CPU always reads saturated), with the seats and the
-   stream queue beside it.
+2. Memory is the main signal to grow (duckdb takes every thread, so CPU always reads saturated), with the node's session
+   limit, the seats and the stream queue beside it.
+4. An administrator's role belongs to a group whose nodes attach every source (hugr-node spec 035).
 3. The front's demand is a Lease.
 
 ## Alternatives considered
