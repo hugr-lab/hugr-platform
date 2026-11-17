@@ -31,7 +31,7 @@ person's own token, through `onNode` from spec 006 (it tries the next node on a 
 | page | reads | the DBeaver client's |
 | --- | --- | --- |
 | Catalogs, a catalog | `catalogs`, `relations`, `relation_columns`, `schemas`, `functions`, `function_columns`, `references`, `keys`; `check_catalog(c)` | the data tree and Check |
-| Grants of a catalog | `grants`, `schema_grants`, `object_grants` (duckdb-acl spec 158 stage 3 dropped `grant_columns`) | the grant nodes |
+| Grants of a catalog | `grants`, `schema_grants`, `object_grants` (duckdb-acl spec 158 stage 3 dropped `grant_columns`) | the grant nodes: a catalog grant's caps, RLS and versions (it states no columns since spec 158); an object grant's caps, RLS, `COLUMNS` as the grant writes it (`*`, `a, b`, `* EXCLUDE (a, b)`), `MASK` items and versions |
 | Roles, a role | `roles`, `role_claims`, `admins`, `platform_grants`, `role_resource_groups`; per catalog the role holds, `effective_rights(role, catalog)` | the role and its Effective rights tab |
 | Identity | `issuers`, `clients`, `role_mappings` | Issuers, Clients, Mappings |
 | Functions | `function_categories`, `function_category_members`, `function_grants` | Function categories |
@@ -116,8 +116,9 @@ The same embedding is what the second stage's grids read from.
 - **View-as:** maybe, and maybe the DBeaver client's alone (the owner, 2026-10-22).
 - **The DBeaver client's editors,** in the same order spec 008 built them:
 
-    1. The grant editor: catalog / schema / object grants with the row filter, the columns tree (visible / masked /
-       hidden) and "Check with the node" (`check_grant`), saved as `GRANT` / `ALTER GRANT` statements.
+    1. The grant editor: catalog / schema / object grants with the row filter, an object grant's `COLUMNS` test and
+       `MASK` items (duckdb-acl spec 158) and "Check with the node" (`check_grant`), saved as `GRANT` / `ALTER GRANT`
+       statements.
     2. Roles, resource groups, role mappings.
     3. Catalog objects (tables, views, schemas, functions, references) and repair from `check_catalog`.
     4. Issuers, clients, function categories and admin bundles.

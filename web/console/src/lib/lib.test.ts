@@ -3,7 +3,7 @@ import { Api, ApiError } from './api'
 import { localPath, ownTokenScope } from './auth'
 import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
-import { caps, cell, readsPolicy } from './policy'
+import { caps, cell, grantColumns, grantMasks, readsPolicy } from './policy'
 import { behind, documentParts, documentTitle } from './bootstrap'
 import { changeOf, changeProblem, reachOf } from './profile'
 import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, changes, doorSecret, doorURI, enter, literal, personOf, statementOf, tresorService, type Conn } from './duckdb'
@@ -179,6 +179,13 @@ describe('the policy pages (spec 007)', () => {
     expect(caps(null, 'unstated: every data capability')).toBe('unstated: every data capability')
     expect(caps([], 'x')).toBe('none')
     expect(caps({ select: true }, 'x')).toBe('select')
+    // an object grant's COLUMNS and MASK as the grant writes them (duckdb-acl spec 158)
+    expect(grantColumns(null)).toBe('*')
+    expect(grantColumns({ mode: 'all', names: [] })).toBe('*')
+    expect(grantColumns({ mode: 'only', names: ['id', 'ssn'] })).toBe('id, ssn')
+    expect(grantColumns({ mode: 'except', names: ['salary'] })).toBe('* EXCLUDE (salary)')
+    expect(grantMasks([])).toBe('-')
+    expect(grantMasks([{ column: 'ssn', mask: "'***'" }])).toBe("ssn AS '***'")
   })
   it('offers the Policy by the parts a person reads', () => {
     const r = (views: string[], functions: string[] = []) => ({ fleet: true, sessions: false, endSession: false,

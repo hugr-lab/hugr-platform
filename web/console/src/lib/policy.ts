@@ -34,6 +34,23 @@ export function caps(value: unknown, unstated: string): string {
   return cell(value)
 }
 
+/** an object grant's COLUMNS as the grant writes it (duckdb-acl spec 158): a test on the object's names - every
+ * column (`*`, also NULL), these (`a, b`), or every one but these (`* EXCLUDE (a, b)`) */
+export function grantColumns(value: unknown): string {
+  if (value === null || value === undefined || typeof value !== 'object') return '*'
+  const { mode, names } = value as { mode?: string; names?: string[] }
+  const listed = (names ?? []).join(', ')
+  if (mode === 'only') return listed || '-'
+  if (mode === 'except') return `* EXCLUDE (${listed})`
+  return '*'
+}
+
+/** an object grant's MASK items as the grant writes them (`ssn AS <expression>, …`), none as a dash */
+export function grantMasks(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) return '-'
+  return value.map((m) => `${(m as { column?: string }).column} AS ${(m as { mask?: string }).mask}`).join(', ')
+}
+
 /** a value as a cell shows it: a list joined, a structure as its true keys or compact JSON, nothing as a dash */
 export function cell(value: unknown): string {
   if (value === null || value === undefined) return '-'
