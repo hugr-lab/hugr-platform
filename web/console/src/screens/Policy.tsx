@@ -5,16 +5,21 @@ import { Link, NavLink, Navigate, useParams } from 'react-router-dom'
 import { Crumbs, Header, Problem } from '../components/ui'
 import { Rows, Section, ViewTable } from '../components/ViewTable'
 import { useApp, useLoad } from '../lib/context'
-import { calls, caps, policyParts, reads } from '../lib/policy'
+import { calls, caps, grantColumns, grantMasks, policyParts, reads } from '../lib/policy'
 import type { ViewPage } from '../lib/types'
 
 const enc = encodeURIComponent
 
 /** a catalog grant's caps: NULL is every data capability; an object grant's: NULL inherits the catalog grant's */
 const grantCaps = (column: string, value: unknown) =>
-  column === 'caps' ? caps(value, 'unstated: every data capability') : undefined
+  column === 'caps' ? caps(value, 'unstated: every data capability')
+    : column === 'versions' ? (value ?? 'current') as string : undefined
 const objectCaps = (column: string, value: unknown) =>
-  column === 'caps' ? caps(value, "inherited: the catalog grant's") : undefined
+  column === 'caps' ? caps(value, "inherited: the catalog grant's")
+    : column === 'versions' ? (value ?? "inherited: the catalog grant's") as string : undefined
+/** an object grant: its caps and versions as above, its COLUMNS and MASK as the grant writes them (spec 158) */
+const objectGrant = (column: string, value: unknown) =>
+  column === 'columns' ? grantColumns(value) : column === 'masks' ? grantMasks(value) : objectCaps(column, value)
 const answerCaps = (column: string, value: unknown) => (column === 'caps' ? caps(value, '-') : undefined)
 
 function PartsNav() {
@@ -114,9 +119,9 @@ export function Catalog({ name }: { name: string }) {
       {fn && <ViewTable key={fn} view="function_columns" filters={{ ...at, function: fn }} title={`Parameters and columns of ${fn}`}
         columns={['kind', 'pos', 'name', 'type', 'nullable', 'comment']} />}
       {reads(rights, 'references') && <ViewTable view="references" filters={at} title="References" columns={['name', 'from_object', 'to_object', 'cardinality', 'optional', 'comment']} />}
-      {reads(rights, 'grants') && <ViewTable view="grants" filters={at} title="Catalog grants" columns={['role', 'is_main', 'caps', 'rls', 'columns']} format={grantCaps} />}
+      {reads(rights, 'grants') && <ViewTable view="grants" filters={at} title="Catalog grants" columns={['role', 'is_main', 'caps', 'rls', 'versions']} format={grantCaps} />}
       {reads(rights, 'schema_grants') && <ViewTable view="schema_grants" filters={at} title="Schema grants" columns={['role', 'schema_path', 'caps', 'inherited', 'into', 'virtual_only']} format={objectCaps} />}
-      {reads(rights, 'object_grants') && <ViewTable view="object_grants" filters={at} title="Object grants" columns={['role', 'object', 'caps', 'rls', 'columns']} format={objectCaps} />}
+      {reads(rights, 'object_grants') && <ViewTable view="object_grants" filters={at} title="Object grants" columns={['role', 'object', 'caps', 'rls', 'columns', 'masks', 'versions']} format={objectGrant} />}
     </Frame>
   )
 }
@@ -155,7 +160,7 @@ export function Role({ name }: { name: string }) {
   return (
     <Frame title={name} crumbs={[{ label: 'Policy', to: '/policy/roles' }, { label: name }]}>
       {reads(rights, 'grants') && (
-        <ViewTable view="grants" filters={of} title="Catalog grants" columns={['catalog', 'is_main', 'caps', 'rls', 'columns']} format={grantCaps}
+        <ViewTable view="grants" filters={of} title="Catalog grants" columns={['catalog', 'is_main', 'caps', 'rls', 'versions']} format={grantCaps}
           link={(c, row) => c === 'catalog' && effective
             ? <Pick name={String(row.catalog)} picked={catalog === row.catalog} onPick={() => setCatalog(String(row.catalog))} />
             : undefined} />
@@ -169,7 +174,7 @@ export function Role({ name }: { name: string }) {
       )}
       {reads(rights, 'role_claims') && <ViewTable view="role_claims" filters={of} title="Default claims" columns={['claim', 'value']} />}
       {reads(rights, 'schema_grants') && <ViewTable view="schema_grants" filters={of} title="Schema grants" columns={['catalog', 'schema_path', 'caps', 'inherited']} format={objectCaps} />}
-      {reads(rights, 'object_grants') && <ViewTable view="object_grants" filters={of} title="Object grants" columns={['catalog', 'object', 'caps', 'rls', 'columns']} format={objectCaps} />}
+      {reads(rights, 'object_grants') && <ViewTable view="object_grants" filters={of} title="Object grants" columns={['catalog', 'object', 'caps', 'rls', 'columns', 'masks', 'versions']} format={objectGrant} />}
       {reads(rights, 'admins') && <ViewTable view="admins" filters={of} title="Administration" columns={['scope', 'catalog']} />}
       {reads(rights, 'platform_grants') && <ViewTable view="platform_grants" filters={of} title="Platform grants" columns={['object', 'kind', 'allowed']} />}
       {reads(rights, 'role_resource_groups') && <ViewTable view="role_resource_groups" filters={of} title="Resource groups" columns={['group']} />}
