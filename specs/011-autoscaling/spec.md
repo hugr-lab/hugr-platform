@@ -43,6 +43,7 @@ spec:
     idle: 30m            # a node with no session for this long is drained and stopped (while above min)
     scaleUp:             # a new node when, on every placeable node, for `for`:
       memoryUsed: 0.8    #   duckdb's memory in use reaches this share of its memory_limit (the main signal), or
+      tempUsed: 0.8      #   its spilled data reaches this share of max_temp_directory_size, or
       sessionsUsed: 0.9  #   the live sessions reach this share of the node's acl_max_sessions (duckdb-acl spec 044), or
       seatsUsed: 0.9     #   the quack seats used reach this share (duckdb-acl spec 079), or
       streamsWaiting: 1  #   this many streams wait for the stream budget (spec 080)
@@ -56,8 +57,27 @@ A duration is written as Kubernetes writes one (`60s`, `30m`). There is no per-g
 a client of a group at 0 while a node is starting - the client's own timeout decides how long it waits.
 
 CPU is no signal (the owner): duckdb takes every thread it is given, so a busy node always reads as saturated. Memory
-is - duckdb-acl's load report gains `memory: {used, limit}` (the buffer manager's memory in use and its limit) beside
-the seats and the streams, and the Lease's summary carries `memory-used`.
+is, in its two parts (the owner, 2026-11-18):
+
+- **RAM**: the buffer manager's memory in use against `memory_limit`;
+- **the spill**: what duckdb wrote to `temp_directory` (sorts, hash tables, joins too big for RAM) against
+  `max_temp_directory_size`. A query that needs more fails there with RAM to spare - and past the volume's `sizeLimit`
+  the kubelet evicts the pod with every session on it.
+
+duckdb-acl's load report gains `memory: {used, limit, temp_used, temp_limit}` (the buffer manager's
+`GetUsedMemory` / `GetMaxMemory` / `GetUsedSwap` / `GetMaxSwap`; `temp_limit` null when no maximum is set - nothing to
+take a share of) beside the seats and the streams, and the Lease's summary carries `memory-used` and `temp-used`. A new
+node relieves new sessions only: a query already spilling stays where it runs.
+
+**The spill's own volume** (the chart, hugr-node): a node's `temp_directory` is a volume of its own with a `sizeLimit`,
+and the node sets `max_temp_directory_size` below it (90% by default), so duckdb refuses a query before the kubelet
+evicts the pod. The two are one value in the chart, never set apart.
+
+**At a critical level a node takes no new work** (the owner, 2026-11-18): past `memory_used` or `temp_used` of 95% (a
+node setting, `acl_node_admit_memory`), the load report says `admit.new_session = false` and `admit.new_stream =
+false` - the front seats a new client on another node of the group, and the queries already running keep what is
+left. A group of one node then holds a new client until a second node is placeable (the growth signal is past its
+threshold by then).
 
 ### Waking a group at 0: the front's demand
 
@@ -118,12 +138,15 @@ last decision with its reason. The plan's check counts an auto group at its `max
 ## Testing
 
 - operator: the autoscaler's decision is pure (`pkg/autoscale`: from (spec, Leases, demand Leases, now) to the next
-  replicas and the reason) - wake from 0 on demand, no step while one starts, growth on memory / sessions / seats / streams for
+  replicas and the reason) - wake from 0 on demand, no step while one starts, growth on memory / spill / sessions / seats /
+  streams for
   `for`,
   cooldown, shrink only an idle node above min, the last node of a min-0 group after `idle` with no demand, the
   default group's min >= 1 refused;
 - front: the demand Lease written while a client of a 0-node group is held, renewed, released; the hold until the
   client's timeout or a `Refused` group; the seat once a node is placeable;
+- duckdb-acl: the load report's `memory.temp_used` / `temp_limit` against a query that spills under a small
+  `max_temp_directory_size`; `admit` false past the critical level, true again below it;
 - e2e (kind / minikube demo): an ETL group with `min: 0` - a client connects, a node starts, the query runs; the
   client leaves, the node stops after `idle`; a second client during the stop is seated after a new node starts.
 
@@ -131,7 +154,8 @@ last decision with its reason. The plan's check counts an auto group at its `max
 
 1. `idle` defaults to 30 minutes; no per-group wait - the client's own timeout decides.
 2. Memory is the main signal to grow (duckdb takes every thread, so CPU always reads saturated), with the node's session
-   limit, the seats and the stream queue beside it.
+   limit, the seats and the stream queue beside it. Memory is RAM and the spill to `temp_directory` alike (2026-11-18),
+   and a node past 95% of either takes no new session or stream.
 4. An administrator's role belongs to a group whose nodes attach every source (hugr-node spec 035).
 3. The front's demand is a Lease.
 
