@@ -229,16 +229,17 @@ func TestPartsShowWhatTheNodeAllows(t *testing.T) {
 			return clusterRights(), nil
 		case stmtMemory:
 			return &Result{Columns: []string{"tag", "memory_usage_bytes"}, Rows: [][]any{{"BASE_TABLE", int64(1024)}}}, nil
-		case stmtSpill:
-			return &Result{Columns: []string{"size"}, Rows: [][]any{{int64(10)}, {int64(32)}}}, nil
 		case stmtDrift, stmtEffective:
 			return nil, &NodeError{Code: codes.InvalidArgument, Message: `acl: no access to object "platform.drift"`}
 		}
 		return &Result{Columns: []string{"extension_name"}, Rows: [][]any{{"acl"}}}, nil
 	}
 	_, out, _ := h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/memory", opsToken, "")
-	if out["spillBytes"] != float64(42) || len(out["tags"].(map[string]any)["rows"].([]any)) != 1 {
-		t.Errorf("the engine's memory, the spill summed: %v", out)
+	if len(out["tags"].(map[string]any)["rows"].([]any)) != 1 || len(out) != 1 {
+		t.Errorf("the engine's memory by use, nothing else read: %v", out)
+	}
+	if n := len(h.nodes.calls); n == 0 || h.nodes.calls[n-1].statement != stmtMemory {
+		t.Errorf("one statement, duckdb_memory(): %v", h.nodes.calls)
 	}
 	_, out, _ = h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/inventory", opsToken, "")
 	if out["drift"].(map[string]any)["error"] == "" || len(out["extensions"].(map[string]any)["rows"].([]any)) != 1 {

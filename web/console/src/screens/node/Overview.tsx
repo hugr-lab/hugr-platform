@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Bar, Problem, Ring } from '../../components/ui'
 import { useApp, useLoad } from '../../lib/context'
@@ -12,7 +12,12 @@ export function Overview() {
   const { label = '' } = useParams()
   const { api } = useApp()
   const pod = useLoad(() => api.pod(label), [api, label])
-  const memory = useLoad(() => api.memory(label), [api, label])
+  // the engine's memory by use is duckdb_memory(): a statement, whose session's end is the node's activity - read only
+  // when asked, so looking at a node leaves its idle time alone (spec 012); the totals come with the load report
+  // asked for one node: another node's page starts without it, in the same render (never a read of the new node first)
+  const [byUseOf, setByUseOf] = useState<string>()
+  const byUse = byUseOf === label
+  const memory = useLoad(() => (byUse ? api.memory(label) : Promise.resolve(undefined)), [api, label, byUse])
   // a new pod has no sample for up to a minute: read it again until it has one (a few times, then the person's Refresh)
   const asked = useRef(0)
   useEffect(() => {
@@ -28,7 +33,7 @@ export function Overview() {
     return () => clearTimeout(timer)
   }, [pending, pod.data])
   return (
-    <NodeFrame label={label} alsoReload={() => { pod.reload(); memory.reload() }}>
+    <NodeFrame label={label} alsoReload={() => { pod.reload(); if (byUse) memory.reload() }}>
       {(page) => {
         const load = page.data?.load
         const p = pod.data
@@ -38,7 +43,12 @@ export function Overview() {
           .filter((t) => t.used > 0)
           .sort((a, b) => b.used - a.used)
         const engineUsed = tags.reduce((n, t) => n + t.used, 0)
-        const limits = m?.limits.rows[0] as Record<string, string> | undefined
+        const size = (v: unknown) => (typeof v === 'number' ? v : null)
+        const used = size(load?.memory_used)
+        const working = size(load?.memory_working)
+        const limit = size(load?.memory_limit)
+        const spill = size(load?.temp_used)
+        const spillLimit = size(load?.temp_limit)
         return (
           <>
             {page.error !== undefined && <Problem error={page.error} />}
@@ -109,25 +119,45 @@ export function Overview() {
                   )}
                 </div>
                 <div className="flex flex-col gap-6 rounded-lg border border-line p-8">
-                  <div className="flex items-baseline justify-between gap-4"><h3 className="text-lg font-semibold">The engine</h3><span className="mono text-ink-muted">duckdb_memory()</span></div>
-                  {m?.tags.error && <p role="note" className="text-sm">{m.tags.error} - reading the engine's memory takes the policy's meta category.</p>}
-                  {m && !m.tags.error && (
+                  <div className="flex items-baseline justify-between gap-4"><h3 className="text-lg font-semibold">The engine</h3><span className="text-sm text-ink-muted">from its load report</span></div>
+                  {load && used !== null ? (
                     <>
-                      <dl className="flex flex-wrap gap-x-10 gap-y-2 text-sm">
-                        <div><dt className="eyebrow">Buffer pool</dt><dd className="text-lg font-semibold">{bytes(engineUsed)}{limits?.memory_limit ? ` of ${limits.memory_limit}` : ''}</dd></div>
-                        <div><dt className="eyebrow">Spill</dt><dd className="font-semibold">{bytes(m.spillBytes)}{limits?.max_temp_directory_size ? ` of ${limits.max_temp_directory_size}` : ''}</dd></div>
-                      </dl>
-                      <ul className="flex flex-col gap-2 text-sm" aria-label="The buffer pool by use">
-                        {tags.slice(0, 6).map((t) => (
-                          <li key={t.tag} className="grid grid-cols-[140px_minmax(0,1fr)_72px] items-center gap-3">
-                            <span className="mono text-xs">{t.tag}</span>
-                            <Bar dark percent={share(t.used, engineUsed)} />
-                            <span className="text-right tabular-nums">{bytes(t.used)}</span>
-                          </li>
-                        ))}
-                        {tags.length === 0 && <li className="text-ink-muted">Nothing held now.</li>}
-                      </ul>
+                      <div className="flex items-center gap-6">
+                        <Ring percent={working !== null && limit ? share(working, limit) : undefined}
+                          label="the share of the memory limit the engine works with" />
+                        <dl className="flex flex-col gap-2 text-sm">
+                          <div><dt className="eyebrow">Working</dt><dd className="text-lg font-semibold">{bytes(working)}{limit ? ` of ${bytes(limit)}` : ''}</dd></div>
+                          <div><dt className="eyebrow">Buffer pool</dt><dd className="font-semibold">{bytes(used)}</dd></div>
+                          <div><dt className="eyebrow">Spill</dt><dd className="font-semibold">{bytes(spill)}{spillLimit ? ` of ${bytes(spillLimit)}` : ''}</dd></div>
+                        </dl>
+                      </div>
+                      {load.memory_critical === true && (
+                        <p role="note" className="text-sm font-semibold">Past the critical level: the node admits no new session or stream.</p>
+                      )}
+                      <p className="text-sm text-ink-muted">The buffer pool also holds what the engine has cached and drops when it needs room; working memory leaves that out.</p>
                     </>
+                  ) : (
+                    <p className="text-sm text-ink-muted">{load ? "This node's load report carries no memory figures." : 'No load report.'}</p>
+                  )}
+                  {!byUse && (
+                    <div className="flex flex-col gap-2">
+                      <button type="button" className="btn-outline self-start" onClick={() => setByUseOf(label)}>By use</button>
+                      <p className="text-sm text-ink-muted">Reads <span className="mono">duckdb_memory()</span> - a statement on the node, which counts as its activity.</p>
+                    </div>
+                  )}
+                  {byUse && memory.error !== undefined && <Problem error={memory.error} />}
+                  {byUse && m?.tags.error && <p role="note" className="text-sm">{m.tags.error} - reading the engine's memory takes the policy's meta category.</p>}
+                  {byUse && m && !m.tags.error && (
+                    <ul className="flex flex-col gap-2 text-sm" aria-label="The buffer pool by use">
+                      {tags.slice(0, 6).map((t) => (
+                        <li key={t.tag} className="grid grid-cols-[140px_minmax(0,1fr)_72px] items-center gap-3">
+                          <span className="mono text-xs">{t.tag}</span>
+                          <Bar dark percent={share(t.used, engineUsed)} />
+                          <span className="text-right tabular-nums">{bytes(t.used)}</span>
+                        </li>
+                      ))}
+                      {tags.length === 0 && <li className="text-ink-muted">Nothing held now.</li>}
+                    </ul>
                   )}
                 </div>
               </div>

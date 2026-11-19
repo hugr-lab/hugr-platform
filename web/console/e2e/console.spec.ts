@@ -52,7 +52,12 @@ test('an operator runs the fleet; an analyst sees nothing', async ({ browser }) 
 
   await ops.getByRole('link', { name: 'hugr-node-etl-a' }).click()
   await expect(ops.getByRole('heading', { name: 'Load' })).toBeVisible()
-  await expect(ops.getByText('Buffer pool')).toBeVisible() // the engine's memory: the operator's roles hold meta
+  // the engine's memory from the load report, read over the Flight Handshake - no session on the node (spec 012)
+  await expect(ops.getByText('Working', { exact: true })).toBeVisible()
+  await expect(ops.getByText('Buffer pool', { exact: true })).toBeVisible()
+  // by use is duckdb_memory(), a statement, read when asked: the operator's roles hold meta
+  await ops.getByRole('button', { name: 'By use' }).click()
+  await expect(ops.getByRole('list', { name: 'The buffer pool by use' })).toBeVisible()
   await expect(ops.getByText(/expires/)).toBeVisible() // the doors' certificate, from the console's handshake
   await expect(ops.getByRole('link', { name: 'Open in Grafana' })).toHaveAttribute('href', /node=hugr-node-etl-a/)
   await shot(ops, 'node-overview')

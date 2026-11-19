@@ -112,8 +112,8 @@ capacity on its way: no second step while one is starting.
 
 - duckdb-acl adds `sessions.idle_since` to `acl_node_load()`: the time the node's live sessions last fell to 0 (unix
   seconds), `null` while it has one. A reader's own cookie-less session is not counted live, but its end is a session's end: the
-  console reads a node's report through the Flight Handshake `node-load` (no session), not `platform.node_load` over
-  SQL, or every view of a node would move its `idle_since`. hugr-node's heartbeat carries the load report as is, and the Lease's summary gains
+  console reads a node's report through the Flight Handshake `node-load` (no session; spec 012, the node serving it
+  since hugr-node spec 043), not `platform.node_load` over SQL, or every view of a node would move its `idle_since`. hugr-node's heartbeat carries the load report as is, and the Lease's summary gains
   `idle-since`.
 - An auto group above `min` with a node idle longer than `idle` loses one replica: the pod-deletion cost (spec 001)
   already makes the scale-down remove the pod with the fewest sessions; the costs become `-3` for a lost node, `-2` for

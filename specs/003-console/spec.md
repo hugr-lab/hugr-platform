@@ -85,7 +85,8 @@ C3); the fleet's state comes from Kubernetes (C1). The policy is not edited here
   policy knows it, the profile's target and applied version, a restart pending, draining. Actions: scale (within the
   plan: the webhook refuses past it, with its reason), restart (the group's `restartedAt`).
 - **Group** - one row per node: label, ready, the Lease's age, sessions, seats left, admitting, the image's version.
-- **Node** - its load report (`platform.node_load`, read with the person's token), its sessions (`platform.sessions`:
+- **Node** - its load report (the Flight Handshake `node-load` with the person's token, which opens no session -
+  spec 012; `platform.node_load` where the node does not answer it), its sessions (`platform.sessions`:
   principal, door, opened, idle, groups) with "end session"; drain / resume.
 - **Secrets** - tresor-server's console, mounted. **Extensions** - kista's, mounted with the tenant the repository's
   prefix names.

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -156,6 +157,152 @@ func (p *Pool) Query(ctx context.Context, node fleet.Node, token, statement stri
 		}
 	}
 	return result, nil
+}
+
+// loadReader reads a node's load report without a statement (the Pool does; a test's Caller may not).
+type loadReader interface {
+	Load(ctx context.Context, node fleet.Node, token string) (map[string]any, error)
+}
+
+// Load reads the node's load report through the Flight Handshake `node-load` (duckdb-acl spec 079 / 097), which opens
+// no session: a statement's per-call session is one more session's end, and so moves the node's `idle_since` - the
+// autoscaler would never see a node idle that the console looks at (spec 012). The answer is flattened to the columns
+// of `platform.node_load`, so the page reads one shape. The node answers the Handshake only with its endpoint on and to
+// a bearer holding `observe`; a node that does not (an older bootstrap) or a person who reads the view by a point
+// grant alone is read by the statement instead.
+func (p *Pool) Load(ctx context.Context, node fleet.Node, token string) (map[string]any, error) {
+	if node.FlightPort == 0 || node.Address == "" {
+		return nil, errUnreachable
+	}
+	client, err := p.client(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	report, err := p.handshakeLoad(ctx, client, node.Label, token)
+	if err != nil {
+		var refused *NodeError
+		if errors.Is(err, errNoAnswer) ||
+			errors.As(err, &refused) && (refused.Code == codes.Unimplemented || refused.Code == codes.PermissionDenied) {
+			return loadByStatement(ctx, p, node, token)
+		}
+		return nil, err
+	}
+	return FlatLoad(report)
+}
+
+func (p *Pool) handshakeLoad(ctx context.Context, client *flightsql.Client, label, token string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.timeout())
+	defer cancel()
+	var remote peer.Peer
+	stream, err := client.Client.Handshake(outgoing(ctx, token), grpc.Peer(&remote))
+	if err != nil {
+		return nil, nodeError(err)
+	}
+	// io.EOF: the node ended the call already - its status (a refusal to fall back on) is what Recv reads
+	err = stream.Send(&flight.HandshakeRequest{Payload: []byte("node-load")})
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, nodeError(err)
+	}
+	_ = stream.CloseSend()
+	answer, err := stream.Recv()
+	if errors.Is(err, io.EOF) {
+		return nil, errNoAnswer // a node that does not know the payload ends the exchange without a word
+	}
+	if err != nil {
+		return nil, nodeError(err)
+	}
+	// the call ends at the node's end of the stream, which is when gRPC fills in the peer
+	_, _ = stream.Recv()
+	p.handshake(label, &remote)
+	return answer.GetPayload(), nil
+}
+
+// loadByStatement reads the report as `platform.node_load`'s one row - a statement, so a session on the node.
+func loadByStatement(ctx context.Context, nodes Caller, node fleet.Node, token string) (map[string]any, error) {
+	result, err := nodes.Query(ctx, node, token, stmtLoad)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Rows) != 1 {
+		return nil, errNoLoad
+	}
+	return result.Records()[0], nil
+}
+
+// errNoAnswer: the node ended the Handshake without answering `node-load` (an acl before spec 079).
+var errNoAnswer = errors.New("the node does not answer node-load")
+
+// errNoLoad: the node answered, but not with one report.
+var errNoLoad = errors.New("the node answered no load report")
+
+// FlatLoad turns the node's report (`acl_node_load()`'s JSON) into the row `platform.node_load` answers: the same column
+// names, a count as an int64, `sessions_idle_since` a time as arrow-go prints a TIMESTAMP (UTC), a map as an object (the
+// view's is a list of key / value pairs; the page reads both).
+func FlatLoad(report []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(strings.NewReader(string(report)))
+	decoder.UseNumber()
+	var doc map[string]any
+	if err := decoder.Decode(&doc); err != nil || doc == nil {
+		return nil, errNoLoad
+	}
+	part := func(name string) map[string]any {
+		m, _ := doc[name].(map[string]any)
+		return m
+	}
+	config, sessions, memory, admit := part("config"), part("sessions"), part("memory"), part("admit")
+	idle := any(nil)
+	if n, ok := jsonInt(sessions["idle_since"]).(int64); ok {
+		// as arrow-go's GetOneForMarshal prints a TIMESTAMP without a time zone (the view's column)
+		idle = time.Unix(n, 0).UTC().Format("2006-01-02T15:04:05.999999999")
+	}
+	groups := map[string]any{}
+	if byGroup, ok := sessions["by_group"].(map[string]any); ok {
+		for name, v := range byGroup {
+			entry, _ := v.(map[string]any)
+			groups[name] = map[string]any{"live": jsonInt(entry["live"]), "max": jsonInt(entry["max"])}
+		}
+	}
+	doors := map[string]any{}
+	if byDoor, ok := sessions["by_door"].(map[string]any); ok {
+		for door, v := range byDoor {
+			doors[door] = jsonInt(v)
+		}
+	}
+	return map[string]any{
+		"draining":               doc["draining"],
+		"observe":                doc["observe"],
+		"group":                  doc["group"],
+		"group_known":            doc["group_known"],
+		"group_default":          doc["group_default"],
+		"config_target":          jsonInt(config["target"]),
+		"config_applied":         jsonInt(config["applied"]),
+		"sessions_live":          jsonInt(sessions["live"]),
+		"sessions_max":           jsonInt(sessions["max"]),
+		"sessions_by_door":       doors,
+		"sessions_by_group":      groups,
+		"sessions_idle_since":    idle,
+		"memory_used":            jsonInt(memory["used"]),
+		"memory_working":         jsonInt(memory["working"]),
+		"memory_limit":           jsonInt(memory["limit"]),
+		"temp_used":              jsonInt(memory["temp_used"]),
+		"temp_limit":             jsonInt(memory["temp_limit"]),
+		"memory_critical":        memory["critical"],
+		"admit_new_session":      admit["new_session"],
+		"admit_new_quack_client": admit["new_quack_client"],
+		"admit_new_stream":       admit["new_stream"],
+	}, nil
+}
+
+// jsonInt is a JSON number as an int64 (a column's BIGINT), null and anything else as nil.
+func jsonInt(v any) any {
+	n, ok := v.(json.Number)
+	if !ok {
+		return nil
+	}
+	if i, err := n.Int64(); err == nil {
+		return i
+	}
+	return nil
 }
 
 func (p *Pool) read(ctx context.Context, client *flightsql.Client, token string, ticket *flight.Ticket,

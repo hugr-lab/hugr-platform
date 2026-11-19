@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -651,5 +652,62 @@ func TestRightsAskAServingNodeFirst(t *testing.T) {
 	only := newHarness(t, observeInfo, draining)
 	if code, _, _ := only.do(t, "GET", APIPrefix+"me", opsToken, ""); code != 200 || only.nodes.calls[0].label != "hugr-node-etl-a" {
 		t.Errorf("every node drains: the draining one is asked: %d %v", code, only.nodes.calls)
+	}
+}
+
+// loadingNodes is a Caller that also reads the load report without a statement, as the Pool does (spec 012).
+type loadingNodes struct {
+	*fakeNodes
+	loads []string
+	err   error
+}
+
+func (l *loadingNodes) Load(_ context.Context, node fleet.Node, token string) (map[string]any, error) {
+	l.loads = append(l.loads, node.Label+" "+token)
+	if l.err != nil {
+		return nil, l.err
+	}
+	return map[string]any{"sessions_live": int64(5), "memory_working": int64(40960)}, nil
+}
+
+func TestNodePageReadsTheLoadWithoutAStatement(t *testing.T) {
+	h := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
+	nodes := &loadingNodes{fakeNodes: h.nodes}
+	h.server.Nodes = nodes
+	code, out, _ := h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a", opsToken, "")
+	load, _ := out["load"].(map[string]any)
+	if code != http.StatusOK || load["sessions_live"] != float64(5) || load["memory_working"] != float64(40960) {
+		t.Fatalf("the report: %d %v", code, out)
+	}
+	if len(nodes.loads) != 1 || nodes.loads[0] != "hugr-node-etl-a "+opsToken || h.nodes.statements(stmtLoad) != 0 {
+		t.Errorf("read once with the person's token, no statement: %q, %d", nodes.loads, h.nodes.statements(stmtLoad))
+	}
+	nodes.err = &NodeError{Code: codes.Unauthenticated, Message: "acl: the bearer token did not verify"}
+	_, out, _ = h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a", opsToken, "")
+	if out["loadError"] != "acl: the bearer token did not verify" || out["load"] != nil {
+		t.Errorf("the node's refusal, as its message: %v", out)
+	}
+	nodes.err = errNoLoad
+	_, out, _ = h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a", opsToken, "")
+	if out["loadError"] != "the node answered no load report" {
+		t.Errorf("no report: %v", out)
+	}
+}
+
+func TestCandidatesAskABusyNodeFirst(t *testing.T) {
+	// spec 012: a statement's per-call session ends, which moves an idle node's idle_since - the console's reads go to a
+	// node with a live session first, an idle one next, a draining one last
+	idle := node("hugr-node-etl-a", "etl")
+	idle.Lease.Summary.Sessions = 0
+	busy := node("hugr-node-etl-b", "etl")
+	draining := node("hugr-node-etl-c", "etl")
+	draining.Lease.Summary.Draining = true
+	view := fleet.NewView([]fleet.Node{draining, idle, busy})
+	for seed := uint64(0); seed < 20; seed++ {
+		got := candidates(view, testNow, rand.New(rand.NewPCG(seed, seed)))
+		if len(got) != 3 || got[0].Label != "hugr-node-etl-b" || got[1].Label != "hugr-node-etl-a" ||
+			got[2].Label != "hugr-node-etl-c" {
+			t.Fatalf("seed %d: %v, %v, %v", seed, got[0].Label, got[1].Label, got[2].Label)
+		}
 	}
 }

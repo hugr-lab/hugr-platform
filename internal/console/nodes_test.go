@@ -40,6 +40,52 @@ type fakeDoor struct {
 	seen     []string          // "<method> <token> <cookie>"
 	closed   []string
 	issued   int
+	// load is how the door answers the Handshake `node-load`: "" the report, "off" its endpoint off, "point" a person
+	// who reads the view by a point grant alone (no observe)
+	load string
+}
+
+// loadReport is a node's `acl_node_load()` as duckdb-acl writes it (spec 079, 096, 175).
+const loadReport = `{"draining":false,"observe":"token","group":"etl","group_known":true,"group_default":false,` +
+	`"label":"hugr-node-etl-a","config":{"target":7,"applied":6},` +
+	`"sessions":{"live":0,"max":1000,"by_door":{"flight":0,"quack":0},"by_group":{"etl":{"live":0,"max":0}},` +
+	`"idle_since":1763546400},` +
+	`"memory":{"used":62914560,"working":40960,"limit":null,"temp_used":0,"temp_limit":null,"critical":false},` +
+	`"admit":{"new_session":true,"new_quack_client":true,"new_stream":true}}`
+
+// doorService is the door's Flight service: Flight SQL's, and its own Handshake.
+type doorService struct {
+	flight.FlightServer
+	door *fakeDoor
+}
+
+func (s doorService) Handshake(stream flight.FlightService_HandshakeServer) error {
+	md, _ := metadata.FromIncomingContext(stream.Context())
+	token := strings.TrimPrefix(strings.Join(md.Get("authorization"), ""), "Bearer ")
+	d := s.door
+	d.mu.Lock()
+	d.seen = append(d.seen, "handshake "+token+" "+strings.Join(md.Get("cookie"), "; "))
+	mode := d.load
+	d.mu.Unlock()
+	request, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	if string(request.GetPayload()) != "node-load" {
+		return nil // the drivers' payload-less handshake: a no-op
+	}
+	switch {
+	case mode == "silent":
+		return nil // an acl before spec 079: the payload is not one it knows, the exchange ends with nothing
+	case mode == "off":
+		return status.Error(codes.Unimplemented, "acl: the load report is off (acl_metrics_endpoint)")
+	case token == "refused":
+		return status.Error(codes.Unauthenticated, "acl: the bearer token did not verify")
+	case mode == "point":
+		return status.Error(codes.PermissionDenied, "acl: reading the load report needs the observe scope")
+	}
+	// the Handshake seats no session: no cookie is set
+	return stream.Send(&flight.HandshakeResponse{Payload: []byte(loadReport)})
 }
 
 func (d *fakeDoor) authorize(ctx context.Context, method string) (string, error) {
@@ -97,6 +143,11 @@ func (d *fakeDoor) GetFlightInfoStatement(ctx context.Context, cmd flightsql.Sta
 		Schema: flight.SerializeSchema(answerSchema, memory.DefaultAllocator)}, nil
 }
 
+var loadSchema = arrow.NewSchema([]arrow.Field{
+	{Name: "draining", Type: arrow.FixedWidthTypes.Boolean},
+	{Name: "sessions_live", Type: arrow.PrimitiveTypes.Int64},
+}, nil)
+
 var answerSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "id", Type: arrow.BinaryTypes.String},
 	{Name: "idle_seconds", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
@@ -107,6 +158,16 @@ func (d *fakeDoor) DoGetStatement(ctx context.Context, ticket flightsql.Statemen
 	<-chan flight.StreamChunk, error) {
 	if _, err := d.authorize(ctx, "get"); err != nil {
 		return nil, nil, err
+	}
+	if string(ticket.GetStatementHandle()) == stmtLoad {
+		b := array.NewRecordBuilder(memory.DefaultAllocator, loadSchema)
+		defer b.Release()
+		b.Field(0).(*array.BooleanBuilder).Append(false)
+		b.Field(1).(*array.Int64Builder).Append(3)
+		ch := make(chan flight.StreamChunk, 1)
+		ch <- flight.StreamChunk{Data: b.NewRecordBatch()}
+		close(ch)
+		return loadSchema, ch, nil
 	}
 	b := array.NewRecordBuilder(memory.DefaultAllocator, answerSchema)
 	defer b.Release()
@@ -165,7 +226,7 @@ func startDoor(t *testing.T) (*fakeDoor, fleet.Node, *x509.CertPool) {
 	door := &fakeDoor{sessions: map[string]string{}}
 	server := flight.NewServerWithMiddleware(nil,
 		grpc.Creds(credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{cert}})))
-	server.RegisterFlightService(flightsql.NewFlightServer(door))
+	server.RegisterFlightService(doorService{FlightServer: flightsql.NewFlightServer(door), door: door})
 	if err := server.Init("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
@@ -270,5 +331,102 @@ func TestPrune(t *testing.T) {
 	pool.Prune(func(string) bool { return false })
 	if len(pool.channels) != 0 {
 		t.Errorf("a gone node's channel is closed: %d", len(pool.channels))
+	}
+}
+
+func TestPoolLoadWithoutSession(t *testing.T) {
+	door, n, roots := startDoor(t)
+	pool := &Pool{Namespace: "hugr", Roots: func(context.Context) (*x509.CertPool, error) { return roots, nil }}
+	ctx := context.Background()
+
+	load, err := pool.Load(ctx, n, "alice-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	door.mu.Lock()
+	seen, issued := append([]string{}, door.seen...), door.issued
+	door.mu.Unlock()
+	// spec 012: one Handshake with the person's bearer and no cookie, no statement - so no session on the node, whose
+	// end would move its idle_since
+	if len(seen) != 1 || seen[0] != "handshake alice-token " || issued != 0 {
+		t.Fatalf("the report without a session: %q, %d sessions", seen, issued)
+	}
+	want := map[string]any{"draining": false, "observe": "token", "group": "etl", "group_known": true,
+		"group_default": false, "config_target": int64(7), "config_applied": int64(6), "sessions_live": int64(0),
+		"sessions_max": int64(1000), "sessions_idle_since": "2025-11-19T10:00:00", "memory_used": int64(62914560),
+		"memory_working": int64(40960), "memory_limit": nil, "temp_used": int64(0), "temp_limit": nil,
+		"memory_critical": false, "admit_new_session": true, "admit_new_quack_client": true, "admit_new_stream": true}
+	for k, v := range want {
+		if load[k] != v {
+			t.Errorf("%s: %#v, want %#v", k, load[k], v)
+		}
+	}
+	if doors, ok := load["sessions_by_door"].(map[string]any); !ok || doors["flight"] != int64(0) || len(doors) != 2 {
+		t.Errorf("the sessions per door, an object: %#v", load["sessions_by_door"])
+	}
+	groups, _ := load["sessions_by_group"].(map[string]any)
+	if g, ok := groups["etl"].(map[string]any); !ok || g["live"] != int64(0) || g["max"] != int64(0) {
+		t.Errorf("the sessions per group: %#v", load["sessions_by_group"])
+	}
+	if _, kept := load["label"]; kept || len(load) != 21 {
+		t.Errorf("only the view's columns: %d %v", len(load), load)
+	}
+	if _, ok := pool.CertificateExpiry(n.Label); !ok {
+		t.Error("the Handshake shows the doors' certificate too")
+	}
+
+	// a node without the endpoint (an older bootstrap), a person who holds only a point grant on the view, and a node
+	// that does not know the payload: the statement, as before
+	for _, mode := range []string{"off", "point", "silent"} {
+		door.mu.Lock()
+		door.load, door.seen = mode, nil
+		door.mu.Unlock()
+		load, err := pool.Load(ctx, n, "alice-token")
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if load["sessions_live"] != int64(3) || load["draining"] != false {
+			t.Errorf("%s: the view's row: %v", mode, load)
+		}
+		door.mu.Lock()
+		seen := append([]string{}, door.seen...)
+		door.mu.Unlock()
+		if len(seen) != 3 || seen[1] != "info alice-token " || seen[2] != "get alice-token " {
+			t.Errorf("%s: the Handshake, then the statement: %q", mode, seen)
+		}
+	}
+
+	// a token the node does not verify is its answer, not a reason to try the statement
+	door.mu.Lock()
+	door.load, door.seen = "", nil
+	door.mu.Unlock()
+	_, err = pool.Load(ctx, n, "refused")
+	var refused *NodeError
+	if !errors.As(err, &refused) || refused.Code != codes.Unauthenticated {
+		t.Errorf("a refused token: %v", err)
+	}
+	door.mu.Lock()
+	if len(door.seen) != 1 {
+		t.Errorf("no statement after a refused token: %q", door.seen)
+	}
+	door.mu.Unlock()
+
+	noDoor := n
+	noDoor.FlightPort = 0
+	if _, err := pool.Load(ctx, noDoor, "alice-token"); !errors.Is(err, errUnreachable) {
+		t.Errorf("no Flight door: %v", err)
+	}
+}
+
+func TestFlatLoadRefusesNoReport(t *testing.T) {
+	for _, report := range []string{"", "null", "[1]", "not json"} {
+		if _, err := FlatLoad([]byte(report)); !errors.Is(err, errNoLoad) {
+			t.Errorf("%q: %v", report, err)
+		}
+	}
+	load, err := FlatLoad([]byte(`{"sessions":{"live":2,"idle_since":null}}`))
+	if err != nil || load["sessions_idle_since"] != nil || load["sessions_live"] != int64(2) ||
+		load["memory_used"] != nil {
+		t.Errorf("a live node's report, an older node's without memory: %v %v", load, err)
 	}
 }

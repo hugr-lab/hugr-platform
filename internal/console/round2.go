@@ -125,12 +125,11 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, _ string, p *perso
 	answer(w, map[string]any{"text": text, "previous": previous, "lines": lines})
 }
 
-// MemoryAnswer is the engine's memory on the node: duckdb's own numbers, read with the person's token.
+// MemoryAnswer is the engine's memory on the node by use (`duckdb_memory()`), read with the person's token when the
+// person asks for it: its totals, limits and spill come with the load report (spec 012), which opens no session.
 type MemoryAnswer struct {
-	Tags   Part   `json:"tags"`
-	Spill  *int64 `json:"spillBytes"`
-	Limits Part   `json:"limits"`
-	Error  string `json:"error,omitempty"`
+	Tags  Part   `json:"tags"`
+	Error string `json:"error,omitempty"`
 }
 
 func (s *Server) memory(w http.ResponseWriter, r *http.Request, token string, _ *person) {
@@ -139,23 +138,9 @@ func (s *Server) memory(w http.ResponseWriter, r *http.Request, token string, _ 
 		return
 	}
 	tags, answered := s.tryPart(r.Context(), *n, token, stmtMemory)
-	out := MemoryAnswer{Tags: tags, Limits: unanswered}
+	out := MemoryAnswer{Tags: tags}
 	if !answered {
 		out.Error = unanswered.Error
-		answer(w, out)
-		return
-	}
-	out.Limits = s.part(r.Context(), *n, token, stmtLimits)
-	if spill := s.part(r.Context(), *n, token, stmtSpill); spill.Error == "" {
-		var total int64
-		for _, row := range spill.Rows {
-			if v, ok := row["size"].(int64); ok {
-				total += v
-			}
-		}
-		out.Spill = &total
-	} else {
-		out.Error = spill.Error
 	}
 	answer(w, out)
 }
