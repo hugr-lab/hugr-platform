@@ -157,16 +157,20 @@ last decision with its reason. The plan's check counts an auto group at its `max
 
   It answers the next replicas, a reason and the state to keep. In order:
   - **The bounds.** A max just lowered is applied.
-  - **The plan.** While the plan refuses the group, what it asked past what runs goes back, and it does not grow, is
-    not raised to its min, and is not woken. It may still shrink. Otherwise a min just raised is applied.
+  - **The plan.** While the plan refuses the group, what it asked past what runs goes back, never below its floor,
+    which it asks the way a manual group asks its replicas. A revert below the floor would be raised at the next
+    look, admitted and refused again: a flap (the re-review). The group does not grow, is not raised to its min and
+    is not woken, but it may still shrink. When the plan admits the group, a min just raised is applied. `Running` is
+    the plan's own direct read.
   - **A waiting client.** A client waiting at 0 nodes wakes the group (stage 2).
-  - **A step in progress.** Nothing happens while the pods differ from the replicas asked. The look right after a
-    shrink may read the status before its own write, and so skip the cooldown; the pods still listed hold it, or two
-    pods would go for one idle node (the review).
-  - **The cooldown.** Nothing happens within it.
-  - **Growth.** One more node when every placeable node has been past a threshold for `for`. An unreported pod holds
-    the growth: it is a node on its way, or one that does not come up, and then more of the same help nothing. It
-    never holds the shrink, since a scale-down takes an unready pod first.
+  - **The cooldown.** Nothing happens within it. The change's time is written in the same patch as the replicas, as
+    the annotation `platform.hugr.io/scaled-at`. A look that reads the new replicas therefore reads the cooldown too,
+    even when the status patch after it is lost to a leader's end or the cache is behind. Otherwise two pods would go
+    for one idle node (the reviews).
+  - **Growth.** One more node when every placeable node has been past a threshold for `for`. A pod not created yet,
+    or not reported, holds the growth: it is a node on its way, or one that does not come up (a surge pod the
+    cluster cannot schedule, a quota), and more of the same would help nothing. It never holds the shrink, since a
+    scale-down takes an unready pod first, and a rollout's surge pod freezes nothing.
   - **Shrinking.** One fewer node when a node has been idle past `idle`.
 - **The floor.**
   - The policy's default group never goes below 1. It is the default when the platform's `firstPolicy.defaultGroup`

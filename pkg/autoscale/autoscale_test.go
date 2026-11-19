@@ -103,7 +103,7 @@ func TestGrowth(t *testing.T) {
 		t.Fatalf("every node past the memory threshold for `for`: one more: %+v", d)
 	}
 	// the new pod is not created yet (3 asked, 2 pods), then created and not reported: no second step
-	notYet := look(3, hot("a"), hot("b")).with(under(time.Hour))
+	notYet := look(3, hot("a"), hot("b")).with(under(time.Hour)).with(func(in *Input) { in.Running = 3 })
 	if d := Decide(scaling, notYet); d.Replicas != 3 {
 		t.Errorf("the step is still being made: %+v", d)
 	}
@@ -186,12 +186,16 @@ func TestShrink(t *testing.T) {
 	}
 }
 
-// TestNoSecondShrinkBeforeTheFirst (the review): the look right after a shrink can read the old status - no cooldown
-// - while the pod is still listed; the step in progress (more pods than asked) holds it, or two pods would go for
-// one idle node
-func TestNoSecondShrinkBeforeTheFirst(t *testing.T) {
-	if d := Decide(scaling, look(1, busy("a"), idle("b", time.Hour))); d.Replicas != 1 || d.Reason != "" {
-		t.Errorf("a second shrink while the first is being made: %+v", d)
+// TestARolloutHoldsNothingButGrowth (the re-review): during a rollout the surge pod makes the pods one more than the
+// replicas, and a surge pod the cluster cannot schedule stays so - an idle node still stops, only growth waits
+func TestARolloutHoldsNothingButGrowth(t *testing.T) {
+	surge := look(2, busy("a"), idle("b", time.Hour)).with(func(in *Input) { in.Pods, in.Unreported = 3, 1 })
+	if d := Decide(scaling, surge); d.Replicas != 1 {
+		t.Errorf("an idle node during a rollout: %+v", d)
+	}
+	hotSurge := look(2, hot("a"), hot("b")).with(func(in *Input) { in.Pods, in.Unreported = 3, 1 }).with(under(time.Hour))
+	if d := Decide(scaling, hotSurge); d.Replicas != 2 {
+		t.Errorf("growth past a pod on its way: %+v", d)
 	}
 }
 
@@ -214,6 +218,13 @@ func TestRefusedByThePlan(t *testing.T) {
 		with(under(time.Hour))
 	if d := Decide(scaling, refused); d.Replicas != 2 || !strings.Contains(d.Reason, "plan") {
 		t.Errorf("a refused growth goes back to what runs: %+v", d)
+	}
+	// ...never below its floor (a new group nothing runs yet keeps asking its one node, refused, no flap)...
+	newGroup := look(1).with(func(in *Input) { in.Running, in.MayGrow = 0, false })
+	minOne := scaling
+	minOne.Min = 1
+	if d := Decide(minOne, newGroup); d.Replicas != 1 || d.Reason != "" {
+		t.Errorf("a refused group's floor is kept: %+v", d)
 	}
 	// ...it never grows, and keeps no pressure clock...
 	atRunning := look(2, hot("a"), hot("b")).with(func(in *Input) { in.MayGrow = false }).with(under(time.Hour))

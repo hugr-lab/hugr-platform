@@ -97,7 +97,7 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// the plan, again: two changes may each pass the webhook alone and not fit together
-	refusal, err := r.checkPlan(ctx, &platform, &group)
+	refusal, running, err := r.checkPlan(ctx, &platform, &group)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -135,7 +135,7 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
-	if err := r.aggregate(ctx, &platform, &group, status); err != nil {
+	if err := r.aggregate(ctx, &platform, &group, running, status); err != nil {
 		return ctrl.Result{}, err
 	}
 	if applyErr != nil {
@@ -168,15 +168,16 @@ func (r *GroupReconciler) withImage(ctx context.Context, platform *v1alpha1.Hugr
 	return with
 }
 
-// checkPlan answers the group's refusal ("" when it fits).
-func (r *GroupReconciler) checkPlan(ctx context.Context, platform *v1alpha1.HugrPlatform, group *v1alpha1.HugrNodeGroup) (string, error) {
+// checkPlan answers the group's refusal ("" when it fits) and what its Deployment runs, as the plan read it.
+func (r *GroupReconciler) checkPlan(ctx context.Context, platform *v1alpha1.HugrPlatform,
+	group *v1alpha1.HugrNodeGroup) (string, int32, error) {
 	var groups v1alpha1.HugrNodeGroupList
 	if err := r.List(ctx, &groups, client.InNamespace(group.Namespace)); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	var deployments appsv1.DeploymentList
 	if err := r.reader().List(ctx, &deployments, client.InNamespace(group.Namespace), client.HasLabels{build.LabelGroup}); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	running := map[string]int32{}
 	for _, d := range deployments.Items {
@@ -206,7 +207,7 @@ func (r *GroupReconciler) checkPlan(ctx context.Context, platform *v1alpha1.Hugr
 		demands = append(demands, plan.Group{Name: g.Name, Size: g.Spec.Size, Replicas: g.Spec.Replicas,
 			Running: running[g.Name], Created: g.CreationTimestamp.Time})
 	}
-	return PlanOf(platform).Admit(demands)[group.Name], nil
+	return PlanOf(platform).Admit(demands)[group.Name], running[group.Name], nil
 }
 
 func (r *GroupReconciler) reader() client.Reader {
@@ -264,10 +265,10 @@ func (r *GroupReconciler) apply(ctx context.Context, group *v1alpha1.HugrNodeGro
 }
 
 // aggregate the group's status from its Deployment and its nodes' Leases, and write each pod's deletion cost.
+// running is what the group's Deployment is asked to run, as the plan read it (directly - the cache may lag).
 func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.HugrPlatform, group *v1alpha1.HugrNodeGroup,
-	status *v1alpha1.HugrNodeGroupStatus) error {
+	running int32, status *v1alpha1.HugrNodeGroupStatus) error {
 	var deployment appsv1.Deployment
-	var running int32 // what the Deployment is asked to run
 	err := r.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: build.Name(group)}, &deployment)
 	switch {
 	case apierrors.IsNotFound(err):
@@ -276,9 +277,6 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		return err
 	default:
 		status.Replicas, status.ReadyReplicas = deployment.Status.Replicas, deployment.Status.ReadyReplicas
-		if deployment.Spec.Replicas != nil {
-			running = *deployment.Spec.Replicas
-		}
 	}
 
 	var pods corev1.PodList
@@ -401,6 +399,9 @@ func DeletionCost(state NodeState, idle time.Duration, now time.Time) int64 {
 	return bucket
 }
 
+// AnnotationScaledAt is when the autoscaler last changed the group's replicas, written with them (spec 011).
+const AnnotationScaledAt = "platform.hugr.io/scaled-at"
+
 // WakeOnDemand: the front's demand wakes a group at 0 (spec 011 stage 2). Until then an auto group keeps one node,
 // whatever its min - nothing would start it again.
 const WakeOnDemand = false
@@ -461,6 +462,11 @@ func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNod
 			kept.LastChange = status.Scaling.Last.At.Time
 		}
 	}
+	// the change's time rides on the same write as the replicas: a look that reads the new replicas reads it too,
+	// whatever the status says yet (a status patch lost to a leader's end, a cache behind)
+	if at, err := time.Parse(time.RFC3339, group.Annotations[AnnotationScaledAt]); err == nil && at.After(kept.LastChange) {
+		kept.LastChange = at
+	}
 	in.State = kept
 	decision := autoscale.Decide(scaling, in)
 	if status.Scaling == nil {
@@ -477,9 +483,15 @@ func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNod
 	// the group as read, or nothing: a person's change since (mode back to manual, a new max) is not written over
 	patch := client.MergeFromWithOptions(group.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	from := group.Spec.Replicas
+	annotations := group.Annotations
 	group.Spec.Replicas = decision.Replicas
+	group.Annotations = map[string]string{}
+	for k, v := range annotations {
+		group.Annotations[k] = v
+	}
+	group.Annotations[AnnotationScaledAt] = now.UTC().Format(time.RFC3339)
 	if err := r.Patch(ctx, group, patch); err != nil {
-		group.Spec.Replicas = from
+		group.Spec.Replicas, group.Annotations = from, annotations
 		logger.Info("autoscale not written, next look", "group", group.Name, "error", err.Error())
 		return
 	}

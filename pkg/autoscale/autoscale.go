@@ -62,8 +62,8 @@ type State struct {
 type Input struct {
 	// Replicas the group asks; Running what its Deployment runs now (the plan keeps it when it refuses a growth).
 	Replicas, Running int32
-	// Pods are the group's pods that run (not going, not ended); Unreported those of them with no Lease yet - a
-	// node on its way, or one that does not come up.
+	// Pods are the group's pods that run (not going, not ended; a rollout's surge pod included); Unreported those of
+	// them with no Lease yet - a node on its way, or one that does not come up.
 	Pods, Unreported int
 	// Nodes are the reported pods.
 	Nodes []Node
@@ -107,10 +107,12 @@ func Decide(s Scaling, in Input) Decision {
 		return change(s.Max, fmt.Sprintf("above the maximum of %d", s.Max))
 	}
 	if !in.MayGrow {
-		// the plan refuses the group: what it asked past what runs goes back, and it may only shrink
+		// the plan refuses the group: what it asked past what runs goes back - never below its floor, which it asks
+		// like a manual group asks its replicas (a revert below it would be raised again at the next look, admitted,
+		// and refused: a flap) - and it may only shrink
 		next.State.PressureSince = time.Time{}
-		if replicas > in.Running {
-			return change(in.Running, fmt.Sprintf("the plan admits no growth past the %d that run", in.Running))
+		if keep := max(in.Running, min(floor, replicas)); replicas > keep {
+			return change(keep, fmt.Sprintf("the plan admits no growth past the %d that run", in.Running))
 		}
 	} else if replicas < floor {
 		return change(floor, fmt.Sprintf("below the minimum of %d", floor))
@@ -119,11 +121,6 @@ func Decide(s Scaling, in Input) Decision {
 	if in.MayGrow && in.Demand && replicas == 0 {
 		return change(max(1, floor), "a client waits for a node of the group")
 	}
-	// the last step is still being made (pods created or going): its effect is not seen yet
-	if in.Pods != int(replicas) {
-		return next
-	}
-
 	var placeable []Node
 	for _, n := range in.Nodes {
 		if !n.Lost && !n.Draining {
@@ -151,9 +148,12 @@ func Decide(s Scaling, in Input) Decision {
 	if !in.State.LastChange.IsZero() && now.Sub(in.State.LastChange) < s.Cooldown {
 		return next
 	}
-	// a pod not reported yet is a node on its way - or one that does not come up: no more nodes until it is here
-	// (a shrink still goes: a scale-down takes an unready pod first)
-	if pressure != "" && in.Unreported == 0 && replicas < s.Max && now.Sub(next.State.PressureSince) >= s.For {
+	// a pod not created or not reported yet is a node on its way - or one that does not come up (a surge pod a
+	// rollout cannot schedule, a quota): no more nodes until it is here. A shrink still goes: a scale-down takes an
+	// unready pod first, and the cooldown - kept in the same write as the replicas - holds a second step until the
+	// first is made
+	coming := in.Unreported > 0 || in.Pods < int(replicas)
+	if pressure != "" && !coming && replicas < s.Max && now.Sub(next.State.PressureSince) >= s.For {
 		return change(replicas+1, fmt.Sprintf("every node under load for %s (%s)", s.For, pressure))
 	}
 

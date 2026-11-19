@@ -422,3 +422,47 @@ func TestAutoscaleShrinksAnIdleNode(t *testing.T) {
 		t.Errorf("a manual group is the operator's number: %d %+v", bi.Spec.Replicas, bi.Status.Scaling)
 	}
 }
+
+// TestCooldownRidesOnTheReplicasWrite (the re-review): the status patch that records the last change may be lost (a
+// leader's end between the two writes) - the look after must still keep the cooldown, from the change's time written
+// with the replicas, or a second idle node goes at once
+func TestCooldownRidesOnTheReplicasWrite(t *testing.T) {
+	g := group("etl", 3, t0)
+	g.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 1, Max: 3}
+	objs := []client.Object{g}
+	for i, name := range []string{"hugr-node-etl-a", "hugr-node-etl-b", "hugr-node-etl-c"} {
+		objs = append(objs, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "hugr", Labels: build.SelectorLabels(g)}})
+		summary := nodeproto.Summary{SessionsMax: 1000, MemoryUsed: 0.1, TempUsed: -1, SeatsUsed: -1,
+			IdleSince: t0.Add(-time.Hour).Unix()}
+		if i == 0 {
+			summary.Sessions, summary.IdleSince = 2, 0
+		}
+		l := lease(t0, 600, summary) // renewed through the test's minutes
+		l.Name, l.Namespace, l.Labels = name, "hugr", map[string]string{build.LabelGroup: "etl"}
+		objs = append(objs, l)
+	}
+	w := newWorld(t, objs...)
+	w.now = t0.Add(10 * time.Second)
+	if got := w.reconcile(t, "etl"); got.Spec.Replicas != 2 || got.Annotations[AnnotationScaledAt] == "" {
+		t.Fatalf("the first idle node goes, its time with it: %d %v", got.Spec.Replicas, got.Annotations)
+	}
+	// the status that said so is gone; the pod the step took is gone too
+	ctx := context.Background()
+	var current v1alpha1.HugrNodeGroup
+	_ = w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "etl"}, &current)
+	current.Status.Scaling = nil
+	if err := w.client.Status().Update(ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	var taken corev1.Pod
+	_ = w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-b"}, &taken)
+	_ = w.client.Delete(ctx, &taken)
+	w.now = t0.Add(20 * time.Second)
+	if got := w.reconcile(t, "etl"); got.Spec.Replicas != 2 {
+		t.Errorf("a second idle node within the cooldown, its status lost: %d", got.Spec.Replicas)
+	}
+	w.now = t0.Add(3 * time.Minute)
+	if got := w.reconcile(t, "etl"); got.Spec.Replicas != 1 {
+		t.Errorf("past the cooldown the next idle node goes: %d", got.Spec.Replicas)
+	}
+}
