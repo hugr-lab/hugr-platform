@@ -1,7 +1,8 @@
 # Spec 011: a node group scales itself - from its load, down to zero
 
 - **Status**: accepted (the owner, 2026-11-16); stage 1 built (the operator's decision, 2026-11-19), stage 2 built
-  (the front's demand, 2026-11-19), stage 3 (the console's dialog) to come
+  (the front's demand, 2026-11-19), stage 3 built (the scale-down by drain, 2026-11-19), stage 4 (the console's
+  dialog) to come
 - **Date**: 2026-11-16
 - **Author**: Claude, from the owner's decisions of 2026-11-16 (in the release, not after it)
 - **Follows**: spec 001 (the operator, the heartbeat, the Lease, the pod-deletion cost), spec 002 (the front's seating,
@@ -41,6 +42,10 @@ spec:
     mode: auto           # manual (the default) | auto
     min: 0               # 0..max; the policy's default group keeps at least 1 whatever min says
     max: 4               # <= the plan's maxNodes counted over every group at its max
+    scaleDown:           # stage 3: a node drained when the load, on one node fewer, is below `load` for `for`
+      load: 60           #   percent
+      for: 5m
+      idle: 5m           #   the drained node goes once it has had no session this long
     idle: 30m            # a node with no session for this long is drained and stopped (while above min)
     scaleUp:             # a new node when, on every placeable node, for `for` (a share in percent, 1..100):
       memoryUsed: 80     #   duckdb's working memory reaches this share of its memory_limit (the main signal), or
@@ -291,6 +296,76 @@ last decision with its reason. The plan's check counts an auto group at its `max
   - The demo (kind): b at 0 waits until the demand the refused statement left has expired, is switched to auto with
     min 0, and stays at 0 with nobody waiting. analyst_b's statement through the front is then held, b's node starts
     for it (woken after the statement began), and the statement is answered there (the checker's `-timeout`).
+
+### Built (stage 3, 2026-11-19): the scale-down drains a node
+
+The owner, 2026-11-19: the front spreads new connections over a group's nodes, so under steady traffic no node is ever
+idle and a group that grew for a peak never shrinks back. Packing connections onto fewer nodes is not always good.
+Instead, the group's load decides which node goes: that node is drained for a long time, and resumed if the load grows
+back.
+
+- **The group's load.** It is taken over what serves new connections: the placeable nodes and the drained one. A node
+  drained for another reason (an operator's `DRAIN NODE`, its resource group gone) is no capacity and is never picked
+  (the review). The load is the worst of their working memory and spill (the mean share; a group's nodes share one
+  size), sessions (their sum against the sum of the limits) and quack seats (the mean share). It is taken as if
+  carried by one node fewer: `load × N / (N−1)`. A node under pressure, a waiting stream included, or a client
+  waiting is never underload.
+- **The drained node.**
+  - When that load has stayed below `scaleDown.load` (60%) for `scaleDown.for` (5 min), with the group above its
+    floor and settled (no step in progress, no node coming), one node is drained. It is the one with the fewest
+    sessions, and of two the youngest by first heartbeat. It is kept in `status.scaling.surplus`.
+  - The controller marks its pod (`platform.hugr.io/scale-down: drain`). Its heartbeat's answer then says
+    `{"drain": "scale-down"}`, and the node drains itself (hugr-node spec 045, duckdb-acl spec 066). It takes no new
+    connection: the front seats elsewhere, because a draining node is not placeable. Its sessions keep working until
+    they end by themselves.
+- **The load back.** It is resumed by any of these:
+  - the load, on one node fewer, 10 points past `scaleDown.load`;
+  - every other node under pressure for `for`, which is what growth would act on;
+  - a client waiting;
+  - no other node taking connections;
+  - the group at its floor, where the drained node would never go.
+  
+  A blip on one node (a stream waiting for a moment) only holds a new pick. It used to resume the drained node, and a
+  blip every few minutes kept the group from ever shrinking (the re-review).
+  
+  The mark comes off, the heartbeat answers 204, and the node resumes itself. Growth waits while the resumed node
+  still says it drains, at most `ResumeWait` (2 min), so no node is added for capacity the group already has. Between
+  the two thresholds nothing changes: what is drained stays so, and nothing new is drained.
+- **The drained node goes** only once it has said it drains (its Lease's `draining`) and has had no session since
+  then for `scaleDown.idle` (5 min). That is shorter than `idle` (30 min), which stays for a group's last node. Its
+  idle time never counts from before the drain (the review). From then on its deletion cost is -2. While a shrink can take it,
+  or one asked has not reached the Deployment yet, it stays the drained node until its pod is gone, whatever the
+  load, so the scale-down takes it and not a busy one. Where it cannot go (the floor raised, a shrink held by a
+  rollout or a waiting client), or while no other node takes connections or a client waits, the resume rules apply.
+  A container restart of the drained node reads as a resume by hand: it is dropped and serves, and another node is
+  picked later. The usual
+  guards hold: the floor, the cooldown, the Deployment's replicas, and a rollout. Another step (a plain idle shrink, a
+  max lowered) keeps it drained.
+- **A node that does not drain** within `AckWait` of its mark is dropped and not picked again while it lives. That is
+  a build before hugr-node spec 045. So is a node an operator `RESUME NODE`s after it drained. `AckWait` and
+  `ResumeWait` are at least 2 min and 3 heartbeats plus a look, because a node acts on its answer a heartbeat after it
+  and says so in the next (the re-review).
+- The drained node and its times are kept in `status.scaling`. If a status write was lost, the drained node is read
+  back from its pod's mark, with a full `AckWait` from that look.
+- The webhook refuses a `scaleDown.load` at or past the lowest `scaleUp` share, which would drain into pressure.
+- A manual group keeps no drained node: the mark comes off its pods.
+- Whether the node obeyed shows in its heartbeat: its Lease says `draining`. A node of a build before hugr-node spec
+  045 ignores the answer and keeps taking connections. It is dropped after `AckWait` and goes later only by the plain
+  idle rule.
+- The demo's end-to-end scale-down waits for a hugr-node release with spec 045 in the umbrella chart, because the demo
+  runs the released node. Until then the node's side is proven by hugr-node's own bootstrap e2e (its step 14b) and
+  the operator's side by the tests below.
+- **Tests:**
+  - `pkg/autoscale`:
+    - the underload's clock, then the fewest sessions drained;
+    - kept while the load fits, gone once idle past `scaleDown.idle` (and kept until its pod is gone);
+    - the load back resumes it, and pressure resumes it before any growth;
+    - between the thresholds it stays;
+    - nothing at the floor, with one node, or with a node coming;
+    - a gone node forgotten;
+    - of two empty nodes the younger.
+  - Controller: the drained node's pod is marked, others not; drained and idle, it costs -2 and the group shrinks.
+  - nodeapi: a marked pod's heartbeat is answered `{"drain":"scale-down"}`, unmarked 204.
 
 - The console answers the group's `scaling` (mode, min, max, `last`). A person's `replicas` on an auto group is
   refused with 409 `auto_scaled`; the dialog for min / max / idle is stage 3.

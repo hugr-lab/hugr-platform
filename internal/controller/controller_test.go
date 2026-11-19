@@ -640,3 +640,75 @@ func TestDemandAnswerAndFloor(t *testing.T) {
 		t.Errorf("the default moved, etl keeps its floor: %q", got.Status.Scaling.DefaultGroup)
 	}
 }
+
+// TestScaleDownMarksTheDrainedNode (the owner, 2026-11-19): a group whose load fits in one node fewer for 5 min marks
+// the node with the fewest sessions on its pod (its heartbeat then drains it); that node, idle 5 min, costs -2 and goes
+func TestScaleDownMarksTheDrainedNode(t *testing.T) {
+	g := group("etl", 3, t0)
+	g.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 1, Max: 3}
+	objs := []client.Object{g}
+	for name, sessions := range map[string]int64{"hugr-node-etl-a": 40, "hugr-node-etl-b": 2, "hugr-node-etl-c": 20} {
+		objs = append(objs, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "hugr", Labels: build.SelectorLabels(g)}})
+		l := lease(t0, 3600, nodeproto.Summary{Sessions: sessions, SessionsMax: 1000, MemoryUsed: 0.2, TempUsed: -1, SeatsUsed: -1})
+		l.Name, l.Namespace, l.Labels = name, "hugr", map[string]string{build.LabelGroup: "etl"}
+		objs = append(objs, l)
+	}
+	w := newWorld(t, objs...)
+	w.now = t0.Add(5 * time.Second)
+	w.reconcile(t, "etl") // builds the Deployment
+	got := w.reconcile(t, "etl")
+	if got.Status.Scaling.UnderloadSince == nil || got.Status.Scaling.Surplus != "" {
+		t.Fatalf("the underload starts, nothing drained yet: %+v", got.Status.Scaling)
+	}
+	w.now = t0.Add(5*time.Minute + 10*time.Second)
+	got = w.reconcile(t, "etl")
+	if got.Status.Scaling.Surplus != "hugr-node-etl-b" || got.Spec.Replicas != 3 {
+		t.Fatalf("b, the fewest sessions, drained, nothing stopped: %+v %d", got.Status.Scaling, got.Spec.Replicas)
+	}
+	pod := func(name string) corev1.Pod {
+		var p corev1.Pod
+		_ = w.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: name}, &p)
+		return p
+	}
+	if b := pod("hugr-node-etl-b"); b.Annotations[nodeproto.AnnotationScaleDown] != nodeproto.ScaleDownDrain {
+		t.Errorf("b's pod is not marked: %v", b.Annotations)
+	}
+	if a := pod("hugr-node-etl-a"); a.Annotations[nodeproto.AnnotationScaleDown] != "" {
+		t.Errorf("a's pod is marked: %v", a.Annotations)
+	}
+	// b drains (its heartbeat says so), its sessions end; idle 5 min it costs -2 and goes
+	var beat coordinationv1.Lease
+	_ = w.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-b"}, &beat)
+	beat.Annotations = nodeproto.Summary{Draining: true, SessionsMax: 1000, MemoryUsed: 0.05, TempUsed: -1, SeatsUsed: -1,
+		IdleSince: w.now.Unix()}.Annotations()
+	_ = w.client.Update(context.Background(), &beat)
+	w.now = w.now.Add(5 * time.Second)
+	w.reconcile(t, "etl") // the look that sees it drain: its idle time counts from here
+	w.now = w.now.Add(5*time.Minute + 10*time.Second)
+	w.reconcile(t, "etl") // the cost follows the idle time
+	got = w.reconcile(t, "etl")
+	if got.Spec.Replicas != 2 || !strings.Contains(got.Status.Scaling.Last.Reason, "drained for the scale-down") {
+		t.Errorf("the drained node, idle, does not go: %d %+v", got.Spec.Replicas, got.Status.Scaling.Last)
+	}
+	if b := pod("hugr-node-etl-b"); b.Annotations[AnnotationDeletionCost] != "-2" {
+		t.Errorf("the drained idle node costs %q, want -2", b.Annotations[AnnotationDeletionCost])
+	}
+}
+
+// TestKeptStateReadsTheMarkBack (the review): a status write lost to a leader's end leaves the drained node only on its
+// pod's mark - read back, so the next look keeps it and does not drain another
+func TestKeptStateReadsTheMarkBack(t *testing.T) {
+	g := group("etl", 3, t0)
+	marked := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-b", CreationTimestamp: metav1.NewTime(t0),
+		Annotations: map[string]string{nodeproto.AnnotationScaleDown: nodeproto.ScaleDownDrain}}}
+	other := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-a"}}
+	kept := keptState(g, &v1alpha1.HugrNodeGroupStatus{}, []corev1.Pod{other, marked}, t0.Add(time.Hour))
+	if kept.Surplus != "hugr-node-etl-b" || !kept.MarkedAt.Equal(t0.Add(time.Hour)) {
+		t.Errorf("the drained node from its pod's mark: %+v", kept)
+	}
+	withStatus := keptState(g, &v1alpha1.HugrNodeGroupStatus{Scaling: &v1alpha1.ScalingStatus{Surplus: "hugr-node-etl-c"}},
+		[]corev1.Pod{marked}, t0)
+	if withStatus.Surplus != "hugr-node-etl-c" {
+		t.Errorf("the status is the word when it has one: %+v", withStatus)
+	}
+}

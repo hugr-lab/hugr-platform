@@ -159,6 +159,12 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the orchestrator cannot keep the report now", http.StatusServiceUnavailable)
 		return
 	}
+	// spec 011: the node the autoscaler drains for a scale-down hears it here (hugr-node spec 045)
+	if node.Pod.Annotations[nodeproto.AnnotationScaleDown] == nodeproto.ScaleDownDrain {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(nodeproto.HeartbeatAnswer{Drain: "scale-down"})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
