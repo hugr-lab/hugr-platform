@@ -320,23 +320,31 @@ back.
     they end by themselves.
 - **The load back.** It is resumed by any of these:
   - the load, on one node fewer, 10 points past `scaleDown.load`;
-  - any node under pressure;
+  - every other node under pressure for `for`, which is what growth would act on;
   - a client waiting;
-  - no other node taking connections.
+  - no other node taking connections;
+  - the group at its floor, where the drained node would never go.
+  
+  A blip on one node (a stream waiting for a moment) only holds a new pick. It used to resume the drained node, and a
+  blip every few minutes kept the group from ever shrinking (the re-review).
   
   The mark comes off, the heartbeat answers 204, and the node resumes itself. Growth waits while the resumed node
   still says it drains, at most `ResumeWait` (2 min), so no node is added for capacity the group already has. Between
   the two thresholds nothing changes: what is drained stays so, and nothing new is drained.
 - **The drained node goes** only once it has said it drains (its Lease's `draining`) and has had no session since
   then for `scaleDown.idle` (5 min). That is shorter than `idle` (30 min), which stays for a group's last node. Its
-  idle time never counts from before the drain (the review). From then on its deletion cost is -2, and it stays the
-  drained node until its pod is gone, whatever the load, so the scale-down takes it and not a busy one. The usual
+  idle time never counts from before the drain (the review). From then on its deletion cost is -2. While a shrink can take it,
+  or one asked has not reached the Deployment yet, it stays the drained node until its pod is gone, whatever the
+  load, so the scale-down takes it and not a busy one. Where it cannot go (the floor raised, a shrink held by a
+  rollout or a waiting client), the resume rules apply. The usual
   guards hold: the floor, the cooldown, the Deployment's replicas, and a rollout. Another step (a plain idle shrink, a
   max lowered) keeps it drained.
-- **A node that does not drain** within `AckWait` (2 min) of its mark is dropped and not picked again. That is a build
-  before hugr-node spec 045, or an operator's `RESUME NODE` on it.
-- The drained node and its times are kept in `status.scaling`, and the drained node is read back from its pod's mark
-  if a status write was lost.
+- **A node that does not drain** within `AckWait` of its mark is dropped and not picked again while it lives. That is
+  a build before hugr-node spec 045. So is a node an operator `RESUME NODE`s after it drained. `AckWait` and
+  `ResumeWait` are at least 2 min and 3 heartbeats plus a look, because a node acts on its answer a heartbeat after it
+  and says so in the next (the re-review).
+- The drained node and its times are kept in `status.scaling`. If a status write was lost, the drained node is read
+  back from its pod's mark, with a full `AckWait` from that look.
 - The webhook refuses a `scaleDown.load` at or past the lowest `scaleUp` share, which would drain into pressure.
 - A manual group keeps no drained node: the mark comes off its pods.
 - Whether the node obeyed shows in its heartbeat: its Lease says `draining`. A node of a build before hugr-node spec

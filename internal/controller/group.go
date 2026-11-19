@@ -297,6 +297,7 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 	var scaling *autoscale.Scaling
 	if group.Auto() {
 		s := ScalingOf(group.Spec.Scaling)
+		s.Heartbeat = time.Duration(platform.EffectiveHeartbeatSeconds()) * time.Second
 		scaling = &s
 	}
 	alive, unreported := 0, 0
@@ -329,7 +330,7 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 			idle = scaling.Idle
 		}
 		cost := DeletionCost(state, idle, r.now())
-		if scaling != nil && autoscale.SurplusGoes(nodeOf(state), keptState(group, status, pods.Items), scaling.SurplusIdle,
+		if scaling != nil && autoscale.SurplusGoes(nodeOf(state), keptState(group, status, pods.Items, r.now()), scaling.SurplusIdle,
 			r.now()) && cost > -2 {
 			cost = -2 // drained for the scale-down and idle since: it goes first (after a lost one)
 		}
@@ -488,7 +489,8 @@ func podReady(pod *corev1.Pod) bool {
 
 // keptState is what the autoscaler kept between its looks: the status, the change's time written with the replicas,
 // and - a status write lost to a leader's end - the drained node read back from its pod's mark (the review).
-func keptState(group *v1alpha1.HugrNodeGroup, status *v1alpha1.HugrNodeGroupStatus, pods []corev1.Pod) autoscale.State {
+func keptState(group *v1alpha1.HugrNodeGroup, status *v1alpha1.HugrNodeGroupStatus, pods []corev1.Pod,
+	now time.Time) autoscale.State {
 	var kept autoscale.State
 	at := func(t *metav1.Time) time.Time {
 		if t == nil {
@@ -515,7 +517,7 @@ func keptState(group *v1alpha1.HugrNodeGroup, status *v1alpha1.HugrNodeGroupStat
 			if pods[i].DeletionTimestamp == nil && pods[i].Annotations[nodeproto.AnnotationScaleDown] == nodeproto.ScaleDownDrain {
 				kept.Surplus = pods[i].Name
 				if kept.MarkedAt.IsZero() {
-					kept.MarkedAt = pods[i].CreationTimestamp.Time // unknown: its wait for the drain counts as past
+					kept.MarkedAt = now // unknown: a full wait for its word from now (the re-review)
 				}
 			}
 		}
@@ -681,7 +683,7 @@ func nodeOf(state NodeState) autoscale.Node {
 func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNodeGroup, scaling autoscale.Scaling,
 	in autoscale.Input, status *v1alpha1.HugrNodeGroupStatus, pods []corev1.Pod) {
 	now := in.Now
-	in.State = keptState(group, status, pods)
+	in.State = keptState(group, status, pods, now)
 	decision := autoscale.Decide(scaling, in)
 	if status.Scaling == nil {
 		status.Scaling = &v1alpha1.ScalingStatus{}

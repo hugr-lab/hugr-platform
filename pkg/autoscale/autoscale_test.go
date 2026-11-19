@@ -452,8 +452,17 @@ func TestScaleDownWaitsForTheNodesWord(t *testing.T) {
 	flip := look(3, light("a", 1), drained, streams).with(func(in *Input) {
 		in.State = State{Surplus: "b", MarkedAt: now.Add(-time.Hour), DrainedSince: now.Add(-time.Hour)}
 	})
-	if d := Decide(scaling, flip); d.State.Surplus != "" {
-		t.Errorf("streams waiting: the drained node stays drained: %+v", d.State)
+	if d := Decide(scaling, flip); d.State.Surplus != "b" {
+		t.Errorf("a blip on one node (a stream waiting) resumes the drained node - the re-review: %+v", d.State)
+	}
+	// every other node under pressure for `for`: what growth would act on resumes it
+	hotA, hotC := hot("a"), hot("c")
+	pressedAll := look(3, hotA, drained, hotC).with(func(in *Input) {
+		in.State = State{Surplus: "b", MarkedAt: now.Add(-time.Hour), DrainedSince: now.Add(-time.Hour),
+			PressureSince: now.Add(-time.Hour)}
+	})
+	if d := Decide(scaling, pressedAll); d.State.Surplus != "" || d.State.Resuming != "b" || d.Replicas != 3 {
+		t.Errorf("every other node under pressure: resumed, no node added yet: %+v", d)
 	}
 	if d := Decide(scaling, look(3, light("a", 1), light("b", 1), streams).with(func(in *Input) {
 		in.State.UnderloadSince = now.Add(-time.Hour)
@@ -476,5 +485,58 @@ func TestGrowthWaitsForTheResumedNode(t *testing.T) {
 	in.State.ResumingSince = now.Add(-ResumeWait)
 	if d := Decide(scaling, in); d.Replicas != 4 {
 		t.Errorf("past ResumeWait the group grows: %+v", d)
+	}
+}
+
+// TestTheGoingNodeIsResumedWhereItCannotGo (the re-review): a drained idle node is kept only while a shrink can take
+// it - at the floor, or with the shrink held, the resume rules apply
+func TestTheGoingNodeIsResumedWhereItCannotGo(t *testing.T) {
+	b := light("b", 0)
+	b.Draining, b.IdleSince = true, now.Add(-time.Hour)
+	st := State{Surplus: "b", MarkedAt: now.Add(-2 * time.Hour), DrainedSince: now.Add(-time.Hour)}
+	withMin := scaling
+	withMin.Min = 2
+	atFloor := look(2, light("a", 5), b).with(func(in *Input) { in.State = st })
+	if d := Decide(withMin, atFloor); d.State.Surplus != "" || d.State.Resuming != "b" {
+		t.Errorf("at the floor the drained node never goes: resume it: %+v", d.State)
+	}
+	// a stuck rollout (a surge pod) holds the shrink: the drained node is not kept forever - the others under
+	// pressure resume it
+	hotA := hot("a")
+	held := look(2, hotA, b).with(func(in *Input) {
+		in.State = st
+		in.State.PressureSince = now.Add(-time.Hour)
+		in.Pods, in.Unreported = 3, 1
+	})
+	if d := Decide(scaling, held); d.State.Surplus != "" {
+		t.Errorf("a held shrink keeps the drained node from the resume rules: %+v", d.State)
+	}
+	// a shrink asked and not yet made (more pods than replicas): kept
+	pending := look(1, light("a", 5), b).with(func(in *Input) { in.State, in.Pods, in.Running = st, 2, 2 })
+	if d := Decide(scaling, pending); d.State.Surplus != "b" {
+		t.Errorf("the drained node, its shrink pending, is resumed: %+v", d.State)
+	}
+}
+
+func TestTheNodesWordWaitsForItsHeartbeat(t *testing.T) {
+	slow := scaling
+	slow.Heartbeat = time.Minute // a node acts a heartbeat after its answer, says so the next
+	marked := light("b", 3)
+	in := look(3, light("a", 40), marked, light("c", 20)).with(func(in *Input) {
+		in.State = State{Surplus: "b", MarkedAt: now.Add(-150 * time.Second)}
+	})
+	if d := Decide(slow, in); d.State.Surplus != "b" || d.State.Ignored != "" {
+		t.Errorf("a node of a 60 s heartbeat ignored before it could answer: %+v", d.State)
+	}
+	in.State.MarkedAt = now.Add(-4 * time.Minute)
+	if d := Decide(slow, in); d.State.Ignored != "b" {
+		t.Errorf("past 3 heartbeats and a look: ignored: %+v", d.State)
+	}
+	// a RESUME NODE by hand after it drained: not ours any more
+	resumed := look(3, light("a", 40), light("b", 3), light("c", 20)).with(func(in *Input) {
+		in.State = State{Surplus: "b", MarkedAt: now.Add(-time.Hour), DrainedSince: now.Add(-30 * time.Minute)}
+	})
+	if d := Decide(scaling, resumed); d.State.Surplus != "" || d.State.Ignored != "b" {
+		t.Errorf("a drained node resumed by hand stays the drained one: %+v", d.State)
 	}
 }

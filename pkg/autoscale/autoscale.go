@@ -26,10 +26,12 @@ const (
 	// ResumeMargin: the drained node is resumed once the load, on one node fewer, is this far past the scale-down's
 	ResumeMargin = 0.1
 	// AckWait: a node marked for the scale-down that does not say it drains within this (a build before hugr-node
-	// spec 045, a RESUME NODE by hand) is no longer the drained node, and is not picked again
-	AckWait = 2 * time.Minute
-	// ResumeWait: growth waits at most this long for a resumed node to say it takes connections again
+	// spec 045, a RESUME NODE by hand) is no longer the drained node, and is not picked again; ResumeWait: growth
+	// waits at most this long for a resumed node to say it takes connections again. Both are at least 3 heartbeats
+	// and a look (a node acts on its answer a heartbeat after it, and says so in the next)
+	AckWait    = 2 * time.Minute
 	ResumeWait = 2 * time.Minute
+	statusLook = 5 * time.Second
 )
 
 // Scaling is a group's scaling, its defaults filled in.
@@ -48,6 +50,13 @@ type Scaling struct {
 	ScaleDownLoad float64
 	ScaleDownFor  time.Duration
 	SurplusIdle   time.Duration
+	// Heartbeat: the nodes' heartbeat interval - what a node's answer to the scale-down takes to show
+	Heartbeat time.Duration
+}
+
+// wait for a node's word: at least d, and 3 heartbeats and a look
+func (s Scaling) wait(d time.Duration) time.Duration {
+	return max(d, 3*s.Heartbeat+statusLook)
 }
 
 // Node is one node of the group as its Lease says. A share is 0..1, or below 0 when the node did not report it.
@@ -179,7 +188,7 @@ func Decide(s Scaling, in Input) Decision {
 	} else if next.State.PressureSince.IsZero() {
 		next.State.PressureSince = now
 	}
-	resuming := s.scaleDown(in, floor, &next.State)
+	resuming := s.scaleDown(in, floor, pressure != "" && now.Sub(next.State.PressureSince) >= s.For, &next.State)
 	if !in.State.LastChange.IsZero() && now.Sub(in.State.LastChange) < s.Cooldown {
 		return next
 	}
@@ -232,7 +241,7 @@ func Decide(s Scaling, in Input) Decision {
 // ScaleDownFor - no node under pressure, no client waiting - one placeable node is drained: the fewest sessions, then
 // the youngest. It is resumed when no other node takes connections, a client waits, a node is under pressure, or the
 // load is back ResumeMargin past; a node that does not say it drains within AckWait is dropped and not picked again.
-func (s Scaling) scaleDown(in Input, floor int32, state *State) (resuming bool) {
+func (s Scaling) scaleDown(in Input, floor int32, grows bool, state *State) (resuming bool) {
 	now := in.Now
 	var live []Node
 	for _, n := range in.Nodes {
@@ -253,9 +262,12 @@ func (s Scaling) scaleDown(in Input, floor int32, state *State) (resuming bool) 
 	}
 	// a resume in progress: the node still says it drains (ResumeWait at most)
 	if state.Resuming != "" {
-		if n, ok := find(state.Resuming); !ok || !n.Draining || now.Sub(state.ResumingSince) >= ResumeWait {
+		if n, ok := find(state.Resuming); !ok || !n.Draining || now.Sub(state.ResumingSince) >= s.wait(ResumeWait) {
 			state.Resuming, state.ResumingSince = "", time.Time{}
 		}
+	}
+	if _, ok := find(state.Ignored); !ok {
+		state.Ignored = "" // gone: nothing to skip
 	}
 	if state.Surplus != "" {
 		n, ok := find(state.Surplus)
@@ -264,12 +276,20 @@ func (s Scaling) scaleDown(in Input, floor int32, state *State) (resuming bool) 
 			clearSurplus() // gone: the shrink took it, or it was lost
 		case n.Draining && state.DrainedSince.IsZero():
 			state.DrainedSince = now // it drains: its idle time counts from now
-		case !n.Draining && state.DrainedSince.IsZero() && now.Sub(state.MarkedAt) >= AckWait:
-			state.Ignored = n.Name // it does not drain (an older build, a RESUME NODE): not ours to wait for
+		case !n.Draining && !state.DrainedSince.IsZero():
+			state.Ignored = n.Name // it drained and takes connections again: a RESUME NODE by hand
+			clearSurplus()
+		case !n.Draining && now.Sub(state.MarkedAt) >= s.wait(AckWait):
+			state.Ignored = n.Name // it does not drain (an older build): not ours to wait for
 			clearSurplus()
 		}
-		if ok && SurplusGoes(n, *state, s.SurplusIdle, now) {
-			return state.Resuming != "" // on its way out: kept until its pod is gone, whatever the load
+		// on its way out: kept until its pod is gone - while a shrink can take it, or one already asked has not reached
+		// the Deployment yet; otherwise (the floor raised, a shrink held by a rollout or a waiting client) the resume
+		// rules below apply (the re-review)
+		shrinkable := in.Replicas > floor && in.Pods <= int(in.Running) && !(in.Demand && in.Replicas == 1)
+		if ok && state.Surplus != "" && SurplusGoes(n, *state, s.SurplusIdle, now) &&
+			(shrinkable || in.Running > in.Replicas) {
+			return state.Resuming != ""
 		}
 	}
 	var serving []Node
@@ -289,8 +309,10 @@ func (s Scaling) scaleDown(in Input, floor int32, state *State) (resuming bool) 
 	if len(serving) >= 2 {
 		onFewer = load * float64(len(serving)) / float64(len(serving)-1)
 	}
-	if state.Surplus != "" &&
-		(others == 0 || in.Demand || pressured || known && onFewer >= s.ScaleDownLoad+ResumeMargin) {
+	// resumed by what growth would act on (every other node under pressure for `for`), not a blip on one node - that
+	// only holds a new pick (the review); and at the floor, where it would never go
+	if state.Surplus != "" && (others == 0 || in.Demand || grows || in.Replicas <= floor ||
+		known && onFewer >= s.ScaleDownLoad+ResumeMargin) {
 		state.Resuming, state.ResumingSince = state.Surplus, now // the load came back: it takes connections again
 		clearSurplus()
 		return true

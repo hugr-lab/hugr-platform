@@ -702,12 +702,12 @@ func TestKeptStateReadsTheMarkBack(t *testing.T) {
 	marked := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-b", CreationTimestamp: metav1.NewTime(t0),
 		Annotations: map[string]string{nodeproto.AnnotationScaleDown: nodeproto.ScaleDownDrain}}}
 	other := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-a"}}
-	kept := keptState(g, &v1alpha1.HugrNodeGroupStatus{}, []corev1.Pod{other, marked})
-	if kept.Surplus != "hugr-node-etl-b" || kept.MarkedAt.IsZero() {
+	kept := keptState(g, &v1alpha1.HugrNodeGroupStatus{}, []corev1.Pod{other, marked}, t0.Add(time.Hour))
+	if kept.Surplus != "hugr-node-etl-b" || !kept.MarkedAt.Equal(t0.Add(time.Hour)) {
 		t.Errorf("the drained node from its pod's mark: %+v", kept)
 	}
 	withStatus := keptState(g, &v1alpha1.HugrNodeGroupStatus{Scaling: &v1alpha1.ScalingStatus{Surplus: "hugr-node-etl-c"}},
-		[]corev1.Pod{marked})
+		[]corev1.Pod{marked}, t0)
 	if withStatus.Surplus != "hugr-node-etl-c" {
 		t.Errorf("the status is the word when it has one: %+v", withStatus)
 	}
