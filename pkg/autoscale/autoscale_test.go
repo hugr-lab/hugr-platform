@@ -540,3 +540,18 @@ func TestTheNodesWordWaitsForItsHeartbeat(t *testing.T) {
 		t.Errorf("a drained node resumed by hand stays the drained one: %+v", d.State)
 	}
 }
+
+// TestTheGoingNodeServesWhenNoneElseDoes (the last pass): the drained idle node is not kept going while no other node
+// takes connections - two nodes lost - or a client waits: it is resumed
+func TestTheGoingNodeServesWhenNoneElseDoes(t *testing.T) {
+	b := light("b", 0)
+	b.Draining, b.IdleSince = true, now.Add(-time.Hour)
+	lostA, lostC := light("a", 3), light("c", 3)
+	lostA.Lost, lostC.Lost = true, true
+	st := State{Surplus: "b", MarkedAt: now.Add(-2 * time.Hour), DrainedSince: now.Add(-time.Hour),
+		LastChange: now.Add(-time.Minute)}
+	in := look(3, lostA, b, lostC).with(func(in *Input) { in.State, in.Demand = st, true })
+	if d := Decide(scaling, in); d.State.Surplus != "" || d.State.Resuming != "b" {
+		t.Errorf("no other node serves and a client waits: the drained node stays going: %+v", d.State)
+	}
+}

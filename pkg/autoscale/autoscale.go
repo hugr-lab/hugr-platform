@@ -287,8 +287,14 @@ func (s Scaling) scaleDown(in Input, floor int32, grows bool, state *State) (res
 		// the Deployment yet; otherwise (the floor raised, a shrink held by a rollout or a waiting client) the resume
 		// rules below apply (the re-review)
 		shrinkable := in.Replicas > floor && in.Pods <= int(in.Running) && !(in.Demand && in.Replicas == 1)
+		serves := 0 // another node takes connections: without one (lost nodes) or with a client waiting, it is resumed
+		for _, o := range live {
+			if !o.Draining && o.Name != state.Surplus {
+				serves++
+			}
+		}
 		if ok && state.Surplus != "" && SurplusGoes(n, *state, s.SurplusIdle, now) &&
-			(shrinkable || in.Running > in.Replicas) {
+			(shrinkable || in.Running > in.Replicas) && serves > 0 && !in.Demand {
 			return state.Resuming != ""
 		}
 	}

@@ -336,7 +336,9 @@ back.
   idle time never counts from before the drain (the review). From then on its deletion cost is -2. While a shrink can take it,
   or one asked has not reached the Deployment yet, it stays the drained node until its pod is gone, whatever the
   load, so the scale-down takes it and not a busy one. Where it cannot go (the floor raised, a shrink held by a
-  rollout or a waiting client), the resume rules apply. The usual
+  rollout or a waiting client), or while no other node takes connections or a client waits, the resume rules apply.
+  A container restart of the drained node reads as a resume by hand: it is dropped and serves, and another node is
+  picked later. The usual
   guards hold: the floor, the cooldown, the Deployment's replicas, and a rollout. Another step (a plain idle shrink, a
   max lowered) keeps it drained.
 - **A node that does not drain** within `AckWait` of its mark is dropped and not picked again while it lives. That is
