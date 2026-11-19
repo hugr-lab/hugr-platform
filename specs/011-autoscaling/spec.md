@@ -237,19 +237,29 @@ last decision with its reason. The plan's check counts an auto group at its `max
     `resourceNames`. A ValidatingAdmissionPolicy keeps it to its demand Leases: a name `hugr-demand-*` with the
     demand label, never the operator's leader Lease nor a node's (the review). It is
     `config/policy/front-leases.yaml`, and the chart ships it wherever the cluster has the API (Kubernetes 1.30+),
-    not as an option.
+    not as an option. At start the front checks the policy is in force: a dry-run of a node's Lease must be refused,
+    and the log says so when it is not (an older cluster, a chart rendered without the API).
 - **The operator.**
   - The group's reconcile reads the demand Lease of the group's resource group; a renewed one is the decision's
     demand.
   - A group at 0 is woken to `max(1, min)` at once (no `for`, no cooldown).
   - The last node of a min-0 group stops only with no live demand.
-  - It answers "starting" only while a node is on its way for the demand: asked for and not here yet, or not
-    reported, with the plan admitting the group. It never answers for a group whose node runs and is not placeable
-    (at capacity, past the critical level, at its max), so that client hears "no node" in 15 s and is not held 5 min
-    (the review).
+  - It answers "starting" only while a node is on its way for the demand, with the plan admitting the group. A node
+    is on its way when none of the group's nodes admits (Ready, admitting, neither lost nor draining) and a pod is
+    either not here yet, not reported, or younger than 5 minutes and not admitting. A node that reported may need its
+    readiness and a heartbeat more before it admits (the re-review).
+  - It never answers for a group whose nodes run and admit nobody (at capacity, past the critical level, at its
+    max), so that client hears "no node" in 15 s and is not held 5 min (the review).
+  - The front counts the answer's 15 s from the last time it saw "starting", too.
   - A group clears only its own answer, so two groups serving one resource group do not undo each other's.
+  - Every look also drops a "starting" that is no longer anybody's (the re-review): one naming this group on another
+    resource group's demand, or while it is not auto or is going; and one on its own resource group's demand naming
+    a group that is gone, not auto, or serving another resource group. A deleted group drops its own.
+  - The answer of a new demand is dropped by its first write the API takes, not only by its first try.
   - The policy's default group keeps its floor of 1. The resource group it served as the default is kept in
-    `status.scaling.defaultGroup`, and one heartbeat during a catalog hiccup says not-default. A default group at 0
+    `status.scaling.defaultGroup`, because one heartbeat during a catalog hiccup says not-default. It is dropped once
+    `firstPolicy.defaultGroup` names another group. A default moved only in the policy keeps the old group's floor:
+    one idle node, safe. A default group at 0
     would leave no node to name any group to wake. Known: a policy with no default group whose every auto group
     allows min 0 can reach 0 everywhere, and then nothing names a group to wake. The first policy (hugr-node spec
     015) writes a default group.

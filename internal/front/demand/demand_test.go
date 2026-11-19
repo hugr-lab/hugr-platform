@@ -6,9 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"errors"
+
 	coordinationv1 "k8s.io/api/coordination/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
@@ -234,5 +239,41 @@ func TestOneHoldPerConnection(t *testing.T) {
 	}
 	if took := time.Since(again); took > 500*time.Millisecond {
 		t.Errorf("a second hold past the connection's deadline: %v", took)
+	}
+}
+
+// TestAnOldAnswerIsDroppedAfterAFailedWrite (the re-review): the write that drops an old answer is the demand's first
+// one the API takes, not merely its first try
+func TestAnOldAnswerIsDroppedAfterAFailedWrite(t *testing.T) {
+	d, c := demandOf()
+	seconds := int32(nodeproto.DemandSeconds)
+	old := metav1.NewMicroTime(time.Now().Add(-time.Hour))
+	_, err := c.CoordinationV1().Leases("hugr").Create(context.Background(), &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeproto.DemandLeaseName("etl"), Namespace: "hugr",
+			Labels:      map[string]string{nodeproto.LabelDemand: "true"},
+			Annotations: map[string]string{nodeproto.AnnotationDemandGroup: "etl", nodeproto.AnnotationStarting: "etl"}},
+		Spec: coordinationv1.LeaseSpec{RenewTime: &old, LeaseDurationSeconds: &seconds}}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	c.PrependReactor("patch", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if !failed {
+			failed = true
+			return true, nil, apierrors.NewInternalError(errors.New("the API server's hiccup"))
+		}
+		return false, nil, nil
+	})
+	f := fleet.New()
+	f.Set(fleet.NewView(nil))
+	start := time.Now()
+	if n := d.Wait(context.Background(), f, 50*time.Millisecond, []string{"etl"}, soon(), pick("etl")); n != nil {
+		t.Fatal("a node from nowhere")
+	}
+	if took := time.Since(start); took > 4*time.Second {
+		t.Errorf("held %v by an old answer after a failed write", took)
+	}
+	if ok, starting := lease(t, c, "etl"); !ok || starting != "" {
+		t.Errorf("the old answer stays: %q", starting)
 	}
 }

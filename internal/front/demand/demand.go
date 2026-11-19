@@ -52,6 +52,8 @@ type hold struct {
 	stop     context.CancelFunc
 	written  time.Time // the first write of this demand that the API took (zero: none yet)
 	starting bool      // the operator's answer, as the last read saw it
+	answered time.Time // when a read last saw the answer: the operator clears it once the node reported, and the
+	// front gives the node its answer's time from then to become placeable (the review)
 }
 
 func (d *Demand) now() time.Time {
@@ -114,7 +116,9 @@ func (d *Demand) renew(ctx context.Context, group string, h *hold) {
 	for first := true; ; first = false {
 		var lease *coordinationv1.Lease
 		if first || d.now().Sub(wrote) >= nodeproto.DemandRenew {
-			if lease = d.write(ctx, group, first); lease != nil {
+			// until a write is taken, the demand is new: an old answer on an expired Lease is dropped by whichever
+			// write the API takes first (the review: a failed first write left it)
+			if lease = d.write(ctx, group, wrote.IsZero()); lease != nil {
 				wrote = d.now()
 			}
 		} else {
@@ -127,6 +131,9 @@ func (d *Demand) renew(ctx context.Context, group string, h *hold) {
 				h.written = wrote
 			}
 			h.starting = lease.Annotations[nodeproto.AnnotationStarting] != ""
+			if h.starting {
+				h.answered = d.now()
+			}
 		}
 		d.mu.Unlock()
 		select {
@@ -174,9 +181,9 @@ func (d *Demand) write(ctx context.Context, group string, first bool) *coordinat
 	return lease
 }
 
-// state of the groups' demand: whether the operator says a node starts for one of them, and when the first of them
-// was written (zero: none yet).
-func (d *Demand) state(groups []string) (starting bool, written time.Time) {
+// state of the groups' demand: whether the operator says a node starts for one of them, and since when the client
+// has waited for an answer - the first of them written, or the last time an answer was seen (zero: none written).
+func (d *Demand) state(groups []string) (starting bool, since time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, g := range groups {
@@ -185,11 +192,16 @@ func (d *Demand) state(groups []string) (starting bool, written time.Time) {
 			continue
 		}
 		starting = starting || h.starting
-		if !h.written.IsZero() && (written.IsZero() || h.written.Before(written)) {
-			written = h.written
+		if !h.written.IsZero() && (since.IsZero() || h.written.Before(since)) {
+			since = h.written
 		}
 	}
-	return starting, written
+	for _, g := range groups {
+		if h := d.held[g]; h != nil && h.answered.After(since) {
+			since = h.answered
+		}
+	}
+	return starting, since
 }
 
 // Wait for a node `pick` chooses: noNodeWait as always, and - when the groups are ones a node named (a verified
@@ -213,10 +225,10 @@ func (d *Demand) Wait(ctx context.Context, f *fleet.Fleet, noNodeWait time.Durat
 	}
 	answer, poll := or(d.Answer, AnswerWait), or(d.Poll, 2*time.Second)
 	for {
-		starting, written := d.state(groups)
-		// the operator's time to answer counts from the demand's first write: a write the API did not take yet
-		// leaves it its renew's time more
-		since := written
+		// the operator's time to answer counts from the demand's first write, or from its last answer (the node it
+		// started reported, and may take a heartbeat more to admit); a write the API did not take yet leaves it
+		// its renew's time more
+		starting, since := d.state(groups)
 		if since.IsZero() {
 			since = start.Add(nodeproto.DemandRenew)
 		}

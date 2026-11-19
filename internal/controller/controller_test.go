@@ -553,14 +553,47 @@ func TestDemandAnswerAndFloor(t *testing.T) {
 		t.Errorf("a full group at its max answered %q: its client would be held for nothing", got)
 	}
 
-	// two groups of one resource group: the other's answer stays
+	// a new node that reported and does not admit yet (its readiness, a heartbeat more) is still on its way: the held
+	// client keeps waiting for it (the review)
+	waking := group("etl", 1, t0)
+	waking.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 1}
+	young := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-a", Namespace: "hugr",
+		Labels: build.SelectorLabels(waking), CreationTimestamp: metav1.NewTime(t0)}}
+	first := lease(t0, 600, nodeproto.Summary{SessionsMax: 1000, MemoryUsed: 0.1, TempUsed: -1, SeatsUsed: -1})
+	first.Name, first.Namespace, first.Labels = "hugr-node-etl-a", "hugr", map[string]string{build.LabelGroup: "etl"}
+	y := newWorld(t, waking, young, first, demand(""))
+	y.now = t0.Add(20 * time.Second)
+	y.reconcile(t, "etl")
+	if got := answer(y); got != "etl" {
+		t.Errorf("a young node not admitting yet is not on its way: %q", got)
+	}
+
+	// two groups of one resource group: the other's answer stays...
 	other := group("etl", 0, t0)
 	other.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 1}
-	o := newWorld(t, other, demand("etl-blue"))
+	blue := group("etl-blue", 1, t0)
+	blue.Spec.ResourceGroup = "etl"
+	blue.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 1}
+	o := newWorld(t, other, blue, demand("etl-blue"))
 	o.now = t0.Add(5 * time.Second)
 	o.reconcile(t, "etl")
 	if got := answer(o); got != "etl-blue" {
 		t.Errorf("another group's answer was replaced or cleared: %q", got)
+	}
+	// ...but not an answer of a group that is gone - or no longer auto: no node comes from it (the review)
+	gone := newWorld(t, other.DeepCopy(), demand("etl-gone"))
+	gone.now = t0.Add(5 * time.Second)
+	gone.reconcile(t, "etl")
+	if got := answer(gone); got == "etl-gone" {
+		t.Error("a gone group's answer stays")
+	}
+	manualBlue := blue.DeepCopy()
+	manualBlue.Spec.Scaling = nil
+	m := newWorld(t, manualBlue, demand("etl-blue"))
+	m.now = t0.Add(5 * time.Second)
+	m.reconcile(t, "etl-blue")
+	if got := answer(m); got != "" {
+		t.Errorf("a group switched to manual keeps its answer: %q", got)
 	}
 
 	// the default group, once known as such, keeps one node when a heartbeat no longer says so

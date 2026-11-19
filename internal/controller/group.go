@@ -82,7 +82,8 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if group.DeletionTimestamp != nil {
-		return ctrl.Result{}, nil // going: the garbage collector takes its objects, nothing is applied again
+		r.tidyAnswers(ctx, &group) // its "starting" goes with it (stage 2)
+		return ctrl.Result{}, nil  // going: the garbage collector takes its objects, nothing is applied again
 	}
 	status := group.Status.DeepCopy()
 	status.ObservedGeneration = group.Generation
@@ -299,6 +300,9 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		scaling = &s
 	}
 	alive, unreported := 0, 0
+	// a node on its way for a held client (stage 2): none admits yet, and a pod is not reported or young and not
+	// admitting - a node that reported may need its readiness and a heartbeat more to admit (the review)
+	admitting, coming := false, false
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
@@ -308,10 +312,16 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		lease, ok := byPod[pod.Name]
 		if !ok {
 			unreported++
+			coming = true
 			continue // not reported yet: neither lost nor counted
 		}
 		state := NodeStateOf(pod.Name, lease, r.now())
 		nodes = append(nodes, state)
+		if !state.Lost && !state.Summary.Draining && state.Summary.AdmitSession && podReady(pod) {
+			admitting = true
+		} else if r.now().Sub(pod.CreationTimestamp.Time) < StartWindow {
+			coming = true
+		}
 		var idle time.Duration
 		if scaling != nil {
 			idle = scaling.Idle
@@ -342,6 +352,8 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		switch {
 		case in.Default:
 			status.Scaling.DefaultGroup = rg
+		case defaultGroup != "" && defaultGroup != rg:
+			status.Scaling.DefaultGroup = "" // the platform names another group the default
 		case status.Scaling.DefaultGroup == rg:
 			in.Default = true
 		}
@@ -353,14 +365,18 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		in.Demand = hasDemand && nodeproto.DemandLive(&wanted, in.Now)
 		r.autoscale(ctx, group, *scaling, in, status)
 		if hasDemand {
-			// "starting" while a node is on its way for it - asked for and not here yet, or not reported - never for
-			// a group whose nodes run but are not placeable for the client (at capacity, past the critical level):
-			// that client should hear "no node" soon, not be held (the review)
-			onItsWay := group.Spec.Replicas > 0 && (alive < int(group.Spec.Replicas) || unreported > 0)
+			// "starting" while a node is on its way for it - asked for and not here yet, not reported, or young and
+			// not admitting yet - never for a group whose nodes run and admit nobody (at capacity, past the critical
+			// level): that client should hear "no node" soon, not be held (the review)
+			onItsWay := group.Spec.Replicas > 0 && !admitting && (alive < int(group.Spec.Replicas) || coming)
 			r.answerDemand(ctx, group, &wanted, in.Demand && in.MayGrow && onItsWay)
 		}
+		r.tidyAnswers(ctx, group)
 	case status.Scaling != nil:
 		status.Scaling.PressureSince = nil // a manual group keeps its last change, never a pressure clock
+		r.tidyAnswers(ctx, group)
+	default:
+		r.tidyAnswers(ctx, group)
 	}
 	fleet := Aggregate(nodes)
 	status.Profile = fleet.Profile
@@ -424,6 +440,59 @@ func DeletionCost(state NodeState, idle time.Duration, now time.Time) int64 {
 		bucket *= 2
 	}
 	return bucket
+}
+
+// StartWindow is how long a new node's pod counts as on its way: its readiness and a heartbeat that admits.
+const StartWindow = 5 * time.Minute
+
+// podReady: the pod's Ready condition is true (the EndpointSlice the front seats by follows it).
+func podReady(pod *corev1.Pod) bool {
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// tidyAnswers drops a "starting" that is no longer anybody's (the review): one that names this group on another
+// resource group's demand or while it is not auto; and, on its own resource group's demand, one that names a group
+// that is gone, not auto, or serves another resource group - a client would otherwise be held for nothing for as long
+// as new clients keep the demand alive.
+func (r *GroupReconciler) tidyAnswers(ctx context.Context, group *v1alpha1.HugrNodeGroup) {
+	var demands coordinationv1.LeaseList
+	if err := r.List(ctx, &demands, client.InNamespace(group.Namespace),
+		client.MatchingLabels{nodeproto.LabelDemand: "true"}); err != nil {
+		return
+	}
+	mine := group.EffectiveResourceGroup()
+	for i := range demands.Items {
+		lease := &demands.Items[i]
+		named := lease.Annotations[nodeproto.AnnotationStarting]
+		if named == "" {
+			continue
+		}
+		stale := false
+		switch {
+		case named == group.Name:
+			stale = group.DeletionTimestamp != nil || !group.Auto() ||
+				lease.Annotations[nodeproto.AnnotationDemandGroup] != mine
+		case lease.Annotations[nodeproto.AnnotationDemandGroup] == mine:
+			var answerer v1alpha1.HugrNodeGroup
+			err := r.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: named}, &answerer)
+			stale = apierrors.IsNotFound(err) || err == nil && (!answerer.Auto() || answerer.DeletionTimestamp != nil ||
+				answerer.EffectiveResourceGroup() != mine)
+		}
+		if !stale {
+			continue
+		}
+		patch := client.MergeFrom(lease.DeepCopy())
+		delete(lease.Annotations, nodeproto.AnnotationStarting)
+		if err := r.Patch(ctx, lease, patch); err != nil {
+			log.FromContext(ctx).Info("a stale demand answer not dropped, next look", "lease", lease.Name,
+				"error", err.Error())
+		}
+	}
 }
 
 // answerDemand says on the front's demand Lease whether a node of the group starts for it (spec 011 stage 2): the

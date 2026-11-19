@@ -9,12 +9,15 @@ import (
 	"crypto/x509"
 	"errors"
 	"flag"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -104,6 +107,7 @@ func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, in
 	nodes := fleet.New()
 	watcher := watch.New(client, namespace, nodes, heartbeat)
 	go watcher.Run(run)
+	checkLeasePolicy(run, client, namespace, log)
 	holder := os.Getenv("POD_NAME")
 	if holder == "" {
 		holder, _ = os.Hostname()
@@ -203,5 +207,22 @@ func follow(ctx context.Context, nodes *fleet.Fleet, flight *flightproxy.Proxy) 
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// checkLeasePolicy: the front's Role may create and patch every Lease of the namespace; the admission policy
+// front-leases (spec 011 stage 2) keeps it to its demand Leases. A cluster without it (before Kubernetes 1.30, a chart
+// rendered without the API) is said once at start - a dry-run of a node's Lease must be refused.
+func checkLeasePolicy(ctx context.Context, client kubernetes.Interface, namespace string, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	probe := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-front-policy-probe", Namespace: namespace}}
+	_, err := client.CoordinationV1().Leases(namespace).Create(ctx, probe, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+	switch {
+	case err == nil:
+		log.Error("the admission policy that keeps the front to its demand Leases is not in force: the front's Role " +
+			"reaches every Lease of the namespace (the operator's leader Lease, the nodes')")
+	case !strings.Contains(err.Error(), "demand Leases only"):
+		log.Warn("the front's Lease policy could not be checked", "error", err.Error())
 	}
 }
