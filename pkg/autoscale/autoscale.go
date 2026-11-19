@@ -25,6 +25,11 @@ const (
 	DefaultSurplusIdle   = 5 * time.Minute
 	// ResumeMargin: the drained node is resumed once the load, on one node fewer, is this far past the scale-down's
 	ResumeMargin = 0.1
+	// AckWait: a node marked for the scale-down that does not say it drains within this (a build before hugr-node
+	// spec 045, a RESUME NODE by hand) is no longer the drained node, and is not picked again
+	AckWait = 2 * time.Minute
+	// ResumeWait: growth waits at most this long for a resumed node to say it takes connections again
+	ResumeWait = 2 * time.Minute
 )
 
 // Scaling is a group's scaling, its defaults filled in.
@@ -74,6 +79,14 @@ type State struct {
 	UnderloadSince time.Time
 	// Surplus: the node drained for the scale-down ("" none): it takes no new connection, and goes once idle.
 	Surplus string
+	// MarkedAt: when it was picked; DrainedSince: when it first said it drains (zero: not yet) - its idle time counts
+	// from then, never from before the mark
+	MarkedAt, DrainedSince time.Time
+	// Resuming: the node resumed from the scale-down while it still says it drains (growth waits for it), since when
+	Resuming      string
+	ResumingSince time.Time
+	// Ignored: a node that did not drain when marked - not picked again
+	Ignored string
 }
 
 // Input is one look at a group.
@@ -108,7 +121,10 @@ func Decide(s Scaling, in Input) Decision {
 	replicas, now := in.Replicas, in.Now
 	next := Decision{Replicas: replicas, State: in.State}
 	change := func(to int32, reason string) Decision {
-		return Decision{Replicas: to, Reason: reason, State: State{LastChange: now}}
+		// a step keeps the scale-down's state (the drained node stays drained) - the pressure clock restarts
+		st := next.State
+		st.LastChange, st.PressureSince, st.UnderloadSince = now, time.Time{}, time.Time{}
+		return Decision{Replicas: to, Reason: reason, State: st}
 	}
 	floor := s.Min
 	isDefault := in.Default
@@ -163,7 +179,7 @@ func Decide(s Scaling, in Input) Decision {
 	} else if next.State.PressureSince.IsZero() {
 		next.State.PressureSince = now
 	}
-	s.scaleDown(in, floor, pressure != "", &next.State)
+	resuming := s.scaleDown(in, floor, &next.State)
 	if !in.State.LastChange.IsZero() && now.Sub(in.State.LastChange) < s.Cooldown {
 		return next
 	}
@@ -178,8 +194,8 @@ func Decide(s Scaling, in Input) Decision {
 	// unready pod first, and the cooldown - kept in the same write as the replicas - holds a second step until the
 	// first is made
 	coming := in.Unreported > 0 || in.Pods < int(replicas)
-	// a node drained for the scale-down is resumed first: it is capacity the group has, no node is added this look
-	resuming := in.State.Surplus != "" && next.State.Surplus == ""
+	// a node drained for the scale-down is resumed first: it is capacity the group has, no node is added while it
+	// still says it drains (ResumeWait at most)
 	if pressure != "" && !coming && !resuming && replicas < s.Max && now.Sub(next.State.PressureSince) >= s.For {
 		return change(replicas+1, fmt.Sprintf("every node under load for %s (%s)", s.For, pressure))
 	}
@@ -192,13 +208,11 @@ func Decide(s Scaling, in Input) Decision {
 	if replicas > floor && !(in.Demand && replicas == 1) && in.Pods <= int(in.Running) {
 		// the node drained for the scale-down goes first, once its sessions have ended
 		for _, n := range in.Nodes {
-			if n.Name == next.State.Surplus && IdlePast(n, s.SurplusIdle, now) {
-				d := change(replicas-1, fmt.Sprintf("%s, drained for the scale-down, has had no session for %s",
-					n.Name, now.Sub(n.IdleSince).Truncate(time.Second)))
-				// kept until its pod is gone: its deletion cost (-2) is what makes the scale-down take it, not a busy
-				// one, until the ReplicaSet has
-				d.State.Surplus = n.Name
-				return d
+			if SurplusGoes(n, next.State, s.SurplusIdle, now) {
+				// kept as the drained node until its pod is gone: its deletion cost (-2) is what makes the scale-down
+				// take it, not a busy one (change keeps it)
+				return change(replicas-1, fmt.Sprintf("%s, drained for the scale-down, has had no session for %s",
+					n.Name, now.Sub(drainedIdleSince(n, next.State)).Truncate(time.Second)))
 			}
 		}
 		for _, n := range in.Nodes {
@@ -211,54 +225,116 @@ func Decide(s Scaling, in Input) Decision {
 	return next
 }
 
-// scaleDown keeps the scale-down's state (the owner, 2026-11-19): a group whose load, on one node fewer, has stayed
-// below ScaleDownLoad for ScaleDownFor drains one node - the fewest sessions, then the youngest - which then takes no
-// new connection and goes once idle; the load back (ResumeMargin past it, or a node under pressure) resumes it before
-// any node is added. The group's load is the worst of its live nodes' working memory, spill, sessions and seats.
-func (s Scaling) scaleDown(in Input, floor int32, pressure bool, state *State) {
-	clear := func() { state.Surplus, state.UnderloadSince = "", time.Time{} }
+// scaleDown keeps the scale-down's state (the owner, 2026-11-19) and says whether growth waits for a resumed node.
+// What serves new connections is the placeable nodes and the drained one (capacity the group has) - never a node
+// drained for another reason (an operator's DRAIN NODE, its resource group gone): that is no capacity, and is never
+// picked (the review). When the load of what serves, on one node fewer, has stayed below ScaleDownLoad for
+// ScaleDownFor - no node under pressure, no client waiting - one placeable node is drained: the fewest sessions, then
+// the youngest. It is resumed when no other node takes connections, a client waits, a node is under pressure, or the
+// load is back ResumeMargin past; a node that does not say it drains within AckWait is dropped and not picked again.
+func (s Scaling) scaleDown(in Input, floor int32, state *State) (resuming bool) {
+	now := in.Now
 	var live []Node
 	for _, n := range in.Nodes {
 		if !n.Lost {
 			live = append(live, n)
 		}
 	}
-	found := false
+	find := func(name string) (Node, bool) {
+		for _, n := range live {
+			if n.Name == name {
+				return n, true
+			}
+		}
+		return Node{}, false
+	}
+	clearSurplus := func() {
+		state.Surplus, state.MarkedAt, state.DrainedSince, state.UnderloadSince = "", time.Time{}, time.Time{}, time.Time{}
+	}
+	// a resume in progress: the node still says it drains (ResumeWait at most)
+	if state.Resuming != "" {
+		if n, ok := find(state.Resuming); !ok || !n.Draining || now.Sub(state.ResumingSince) >= ResumeWait {
+			state.Resuming, state.ResumingSince = "", time.Time{}
+		}
+	}
+	if state.Surplus != "" {
+		n, ok := find(state.Surplus)
+		switch {
+		case !ok:
+			clearSurplus() // gone: the shrink took it, or it was lost
+		case n.Draining && state.DrainedSince.IsZero():
+			state.DrainedSince = now // it drains: its idle time counts from now
+		case !n.Draining && state.DrainedSince.IsZero() && now.Sub(state.MarkedAt) >= AckWait:
+			state.Ignored = n.Name // it does not drain (an older build, a RESUME NODE): not ours to wait for
+			clearSurplus()
+		}
+		if ok && SurplusGoes(n, *state, s.SurplusIdle, now) {
+			return state.Resuming != "" // on its way out: kept until its pod is gone, whatever the load
+		}
+	}
+	var serving []Node
+	others, pressured := 0, false
 	for _, n := range live {
-		found = found || n.Name == state.Surplus
+		if n.Draining && n.Name != state.Surplus {
+			continue // drained for another reason: no capacity
+		}
+		serving = append(serving, n)
+		if !n.Draining && n.Name != state.Surplus {
+			others++
+			pressured = pressured || s.pressure(n) != ""
+		}
 	}
-	if state.Surplus != "" && !found {
-		clear() // gone: the shrink took it, or it was lost
+	load, known := groupLoad(serving)
+	onFewer := 2.0 // with one node serving, none fewer
+	if len(serving) >= 2 {
+		onFewer = load * float64(len(serving)) / float64(len(serving)-1)
 	}
-	load, known := groupLoad(live)
-	if !known || len(live) < 2 || in.Replicas <= floor {
-		clear()
-		return
+	if state.Surplus != "" &&
+		(others == 0 || in.Demand || pressured || known && onFewer >= s.ScaleDownLoad+ResumeMargin) {
+		state.Resuming, state.ResumingSince = state.Surplus, now // the load came back: it takes connections again
+		clearSurplus()
+		return true
 	}
-	onFewer := load * float64(len(live)) / float64(len(live)-1)
-	switch {
-	case pressure || onFewer >= s.ScaleDownLoad+ResumeMargin:
-		clear() // the load came back: the drained node takes connections again
-		return
-	case onFewer >= s.ScaleDownLoad:
-		state.UnderloadSince = time.Time{} // between the two: what is drained stays, nothing new is
-		return
+	if !known || len(serving) < 2 || in.Replicas <= floor || pressured || in.Demand || onFewer >= s.ScaleDownLoad {
+		state.UnderloadSince = time.Time{} // nothing new is drained; what is drained stays (between the thresholds)
+		return state.Resuming != ""
 	}
 	if state.UnderloadSince.IsZero() {
-		state.UnderloadSince = in.Now
+		state.UnderloadSince = now
 	}
 	settled := in.Running == in.Replicas && in.Pods == int(in.Replicas) && in.Unreported == 0
-	if state.Surplus != "" || !settled || in.Now.Sub(state.UnderloadSince) < s.ScaleDownFor {
-		return
+	if state.Surplus != "" || !settled || now.Sub(state.UnderloadSince) < s.ScaleDownFor {
+		return state.Resuming != ""
 	}
 	var pick *Node
-	for i := range live {
-		n := &live[i]
+	for i := range serving {
+		n := &serving[i]
+		if n.Draining || n.Name == state.Ignored {
+			continue
+		}
 		if pick == nil || n.Sessions < pick.Sessions || n.Sessions == pick.Sessions && n.Started.After(pick.Started) {
 			pick = n
 		}
 	}
-	state.Surplus = pick.Name
+	if pick != nil {
+		state.Surplus, state.MarkedAt, state.DrainedSince = pick.Name, now, time.Time{}
+	}
+	return state.Resuming != ""
+}
+
+// drainedIdleSince: the drained node's idle time counts from its drain, never from before it.
+func drainedIdleSince(n Node, st State) time.Time {
+	if n.IdleSince.After(st.DrainedSince) {
+		return n.IdleSince
+	}
+	return st.DrainedSince
+}
+
+// SurplusGoes says whether the node drained for the scale-down goes: it said it drains, and has had no session for
+// idle since then (the pod-deletion cost's -2 too).
+func SurplusGoes(n Node, st State, idle time.Duration, now time.Time) bool {
+	return n.Name == st.Surplus && st.Surplus != "" && !n.Lost && n.Draining && !st.DrainedSince.IsZero() &&
+		n.Sessions == 0 && !n.IdleSince.IsZero() && now.Sub(drainedIdleSince(n, st)) >= idle
 }
 
 // groupLoad is the worst share of the nodes' load: working memory and spill (the mean share - a group's nodes share

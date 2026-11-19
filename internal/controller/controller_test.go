@@ -682,6 +682,8 @@ func TestScaleDownMarksTheDrainedNode(t *testing.T) {
 	beat.Annotations = nodeproto.Summary{Draining: true, SessionsMax: 1000, MemoryUsed: 0.05, TempUsed: -1, SeatsUsed: -1,
 		IdleSince: w.now.Unix()}.Annotations()
 	_ = w.client.Update(context.Background(), &beat)
+	w.now = w.now.Add(5 * time.Second)
+	w.reconcile(t, "etl") // the look that sees it drain: its idle time counts from here
 	w.now = w.now.Add(5*time.Minute + 10*time.Second)
 	w.reconcile(t, "etl") // the cost follows the idle time
 	got = w.reconcile(t, "etl")
@@ -690,5 +692,23 @@ func TestScaleDownMarksTheDrainedNode(t *testing.T) {
 	}
 	if b := pod("hugr-node-etl-b"); b.Annotations[AnnotationDeletionCost] != "-2" {
 		t.Errorf("the drained idle node costs %q, want -2", b.Annotations[AnnotationDeletionCost])
+	}
+}
+
+// TestKeptStateReadsTheMarkBack (the review): a status write lost to a leader's end leaves the drained node only on its
+// pod's mark - read back, so the next look keeps it and does not drain another
+func TestKeptStateReadsTheMarkBack(t *testing.T) {
+	g := group("etl", 3, t0)
+	marked := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-b", CreationTimestamp: metav1.NewTime(t0),
+		Annotations: map[string]string{nodeproto.AnnotationScaleDown: nodeproto.ScaleDownDrain}}}
+	other := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-a"}}
+	kept := keptState(g, &v1alpha1.HugrNodeGroupStatus{}, []corev1.Pod{other, marked})
+	if kept.Surplus != "hugr-node-etl-b" || kept.MarkedAt.IsZero() {
+		t.Errorf("the drained node from its pod's mark: %+v", kept)
+	}
+	withStatus := keptState(g, &v1alpha1.HugrNodeGroupStatus{Scaling: &v1alpha1.ScalingStatus{Surplus: "hugr-node-etl-c"}},
+		[]corev1.Pod{marked})
+	if withStatus.Surplus != "hugr-node-etl-c" {
+		t.Errorf("the status is the word when it has one: %+v", withStatus)
 	}
 }

@@ -130,6 +130,19 @@ func CheckScaling(scaling *v1alpha1.ScalingSpec) error {
 	if scaling.Cooldown != nil && scaling.Cooldown.Duration < MinCooldown {
 		return fmt.Errorf("scaling.cooldown is at least %s", MinCooldown)
 	}
+	// the scale-down drains to a size its load fits: below every share that grows the group, or it would drain into
+	// pressure - grow, drain, remove, grow (the review)
+	share := func(p, fallback int32) int32 {
+		if p > 0 {
+			return p
+		}
+		return fallback
+	}
+	up := min(share(scaling.ScaleUp.MemoryUsed, 80), share(scaling.ScaleUp.TempUsed, 80),
+		share(scaling.ScaleUp.SessionsUsed, 90), share(scaling.ScaleUp.SeatsUsed, 90))
+	if down := share(scaling.ScaleDown.Load, 60); down >= up {
+		return fmt.Errorf("scaling.scaleDown.load (%d%%) must be below every scaleUp share (the lowest is %d%%)", down, up)
+	}
 	return nil
 }
 

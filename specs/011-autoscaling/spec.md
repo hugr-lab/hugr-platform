@@ -304,9 +304,12 @@ idle and a group that grew for a peak never shrinks back. Packing connections on
 Instead, the group's load decides which node goes: that node is drained for a long time, and resumed if the load grows
 back.
 
-- **The group's load.** The worst of its live nodes' working memory and spill (the mean share; a group's nodes share
-  one size), sessions (their sum against the sum of the limits) and quack seats (the mean share). It is taken as if
-  carried by one node fewer: `load × N / (N−1)`.
+- **The group's load.** It is taken over what serves new connections: the placeable nodes and the drained one. A node
+  drained for another reason (an operator's `DRAIN NODE`, its resource group gone) is no capacity and is never picked
+  (the review). The load is the worst of their working memory and spill (the mean share; a group's nodes share one
+  size), sessions (their sum against the sum of the limits) and quack seats (the mean share). It is taken as if
+  carried by one node fewer: `load × N / (N−1)`. A node under pressure, a waiting stream included, or a client
+  waiting is never underload.
 - **The drained node.**
   - When that load has stayed below `scaleDown.load` (60%) for `scaleDown.for` (5 min), with the group above its
     floor and settled (no step in progress, no node coming), one node is drained. It is the one with the fewest
@@ -315,17 +318,30 @@ back.
     `{"drain": "scale-down"}`, and the node drains itself (hugr-node spec 045, duckdb-acl spec 066). It takes no new
     connection: the front seats elsewhere, because a draining node is not placeable. Its sessions keep working until
     they end by themselves.
-- **The load back.** The load, on one node fewer, 10 points past `scaleDown.load`, or a node under pressure, resumes
-  it. The mark comes off, the heartbeat answers 204, and the node resumes itself. That happens before any node is
-  added, in a look of its own. Between the two thresholds nothing changes: what is drained stays so, and nothing new
-  is drained.
-- **The drained node goes** once it has had no session for `scaleDown.idle` (5 min) rather than `idle` (30 min, which
-  stays for a group's last node). Its deletion cost is -2 from then on, and it stays the drained node until its pod is
-  gone, so the scale-down takes it and not a busy one. The usual guards hold: the floor, the cooldown, the
-  Deployment's replicas, and a rollout.
+- **The load back.** It is resumed by any of these:
+  - the load, on one node fewer, 10 points past `scaleDown.load`;
+  - any node under pressure;
+  - a client waiting;
+  - no other node taking connections.
+  
+  The mark comes off, the heartbeat answers 204, and the node resumes itself. Growth waits while the resumed node
+  still says it drains, at most `ResumeWait` (2 min), so no node is added for capacity the group already has. Between
+  the two thresholds nothing changes: what is drained stays so, and nothing new is drained.
+- **The drained node goes** only once it has said it drains (its Lease's `draining`) and has had no session since
+  then for `scaleDown.idle` (5 min). That is shorter than `idle` (30 min), which stays for a group's last node. Its
+  idle time never counts from before the drain (the review). From then on its deletion cost is -2, and it stays the
+  drained node until its pod is gone, whatever the load, so the scale-down takes it and not a busy one. The usual
+  guards hold: the floor, the cooldown, the Deployment's replicas, and a rollout. Another step (a plain idle shrink, a
+  max lowered) keeps it drained.
+- **A node that does not drain** within `AckWait` (2 min) of its mark is dropped and not picked again. That is a build
+  before hugr-node spec 045, or an operator's `RESUME NODE` on it.
+- The drained node and its times are kept in `status.scaling`, and the drained node is read back from its pod's mark
+  if a status write was lost.
+- The webhook refuses a `scaleDown.load` at or past the lowest `scaleUp` share, which would drain into pressure.
 - A manual group keeps no drained node: the mark comes off its pods.
 - Whether the node obeyed shows in its heartbeat: its Lease says `draining`. A node of a build before hugr-node spec
-  045 ignores the answer and keeps taking connections. That is harmless: it goes later, by the plain idle rule.
+  045 ignores the answer and keeps taking connections. It is dropped after `AckWait` and goes later only by the plain
+  idle rule.
 - The demo's end-to-end scale-down waits for a hugr-node release with spec 045 in the umbrella chart, because the demo
   runs the released node. Until then the node's side is proven by hugr-node's own bootstrap e2e (its step 14b) and
   the operator's side by the tests below.

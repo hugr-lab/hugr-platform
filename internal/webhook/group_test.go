@@ -211,4 +211,16 @@ func TestWebhookCountsAnAutoGroupAtItsMax(t *testing.T) {
 	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), quick); err == nil || !strings.Contains(err.Error(), "cooldown") {
 		t.Errorf("a cooldown shorter than a step takes to be seen: %v", err)
 	}
+	// the scale-down below every share that grows the group
+	high := auto("etl", 1, 0, 2)
+	high.Spec.Scaling.ScaleDown.Load = 85
+	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), high); err == nil || !strings.Contains(err.Error(), "scaleDown.load") {
+		t.Errorf("a scale-down past the scale-up's memory share: %v", err)
+	}
+	tight := auto("etl", 1, 0, 2)
+	tight.Spec.Scaling.ScaleDown.Load = 50
+	tight.Spec.Scaling.ScaleUp.SessionsUsed = 50
+	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), tight); err == nil {
+		t.Error("a scale-down at a scale-up share")
+	}
 }

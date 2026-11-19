@@ -312,20 +312,27 @@ func TestScaleDownDrainsANode(t *testing.T) {
 	if d.State.Surplus != "b" || d.Replicas != 3 {
 		t.Fatalf("after ScaleDownFor the node with the fewest sessions is drained, nothing stops yet: %+v", d)
 	}
-	// it stays drained while the load fits; its sessions end; it goes after SurplusIdle
+	// it says it drains (its idle time counts from then, not from before the mark); its sessions end; it goes after
+	// SurplusIdle from its drain
 	b := light("b", 0)
 	at := now.Add(DefaultScaleDownFor + time.Minute)
 	b.Draining, b.IdleSince = true, at.Add(-4*time.Minute)
 	in = look(3, light("a", 40), b, light("c", 20))
 	in.State, in.Now = d.State, at
-	if d := Decide(scaling, in); d.State.Surplus != "b" || d.Replicas != 3 {
-		t.Errorf("drained, idle 4 min: it stays: %+v", d)
+	d = Decide(scaling, in)
+	if d.State.Surplus != "b" || d.Replicas != 3 || !d.State.DrainedSince.Equal(at) {
+		t.Fatalf("it drains: its drain noted, it stays: %+v", d)
 	}
-	b.IdleSince = in.Now.Add(-DefaultSurplusIdle)
-	in = look(3, light("a", 40), b, light("c", 20)).with(func(x *Input) { x.State, x.Now = d.State, in.Now })
+	later := at.Add(DefaultSurplusIdle)
+	in = look(3, light("a", 40), b, light("c", 20)).with(func(x *Input) { x.State, x.Now = d.State, later })
 	d2 := Decide(scaling, in)
 	if d2.Replicas != 2 || !strings.Contains(d2.Reason, "b, drained for the scale-down") || d2.State.Surplus != "b" {
-		t.Errorf("drained and idle past SurplusIdle: it goes, kept as the drained one until its pod is gone: %+v", d2)
+		t.Errorf("drained and idle past SurplusIdle since its drain: it goes, kept as the drained one: %+v", d2)
+	}
+	// the next look, its pod still listed: kept, whatever the load
+	after := look(2, light("a", 40), b, light("c", 20)).with(func(x *Input) { x.State, x.Now, x.Pods = d2.State, later.Add(5*time.Second), 3 })
+	if d3 := Decide(scaling, after); d3.State.Surplus != "b" {
+		t.Errorf("the drained node is forgotten before its pod is gone: %+v", d3.State)
 	}
 }
 
@@ -381,5 +388,93 @@ func TestScaleDownHoldsAtTheFloorAndUnsettled(t *testing.T) {
 	pair := look(3, light("a", 0), young, light("c", 9)).with(func(in *Input) { in.State.UnderloadSince = now.Add(-time.Hour) })
 	if d := Decide(scaling, pair); d.State.Surplus != "b" {
 		t.Errorf("of two empty nodes the younger is drained: %+v", d.State)
+	}
+}
+
+// TestScaleDownNeverLeavesNoNode (the review): a node drained for another reason (an operator's DRAIN NODE) is no
+// capacity and never picked; the last node taking connections is never drained; a waiting client resumes the drained one
+func TestScaleDownNeverLeavesNoNode(t *testing.T) {
+	ordered := light("a", 10)
+	ordered.Draining = true // the operator's
+	in := look(2, ordered, light("b", 3)).with(func(in *Input) { in.State.UnderloadSince = now.Add(-time.Hour) })
+	if d := Decide(scaling, in); d.State.Surplus != "" {
+		t.Errorf("the last node taking connections is drained: %+v", d.State)
+	}
+	three := look(3, ordered, light("b", 3), light("c", 3)).with(func(in *Input) { in.State.UnderloadSince = now.Add(-time.Hour) })
+	if d := Decide(scaling, three); d.State.Surplus == "a" {
+		t.Errorf("a node the operator drains is picked: %+v", d.State)
+	}
+	// drained b, and a client waits (no node placeable for it): b is resumed
+	b := light("b", 3)
+	b.Draining = true
+	waiting := look(3, light("a", 3), b, light("c", 3)).with(func(in *Input) {
+		in.State = State{Surplus: "b", MarkedAt: now.Add(-time.Hour), DrainedSince: now.Add(-time.Hour)}
+		in.Demand = true
+	})
+	if d := Decide(scaling, waiting); d.State.Surplus != "" || d.State.Resuming != "b" {
+		t.Errorf("a waiting client does not resume the drained node: %+v", d.State)
+	}
+	// the only other node gone to the operator's drain: b resumed
+	alone := look(2, ordered, b).with(func(in *Input) {
+		in.State = State{Surplus: "b", MarkedAt: now.Add(-time.Hour), DrainedSince: now.Add(-time.Hour)}
+	})
+	if d := Decide(scaling, alone); d.State.Surplus != "" {
+		t.Errorf("no node takes connections and the drained one stays drained: %+v", d.State)
+	}
+}
+
+// TestScaleDownWaitsForTheNodesWord (the review): the drained node goes only once it said it drains; a node that does
+// not within AckWait (an older build) is dropped and not picked again; a streams-waiting node is load, not underload
+func TestScaleDownWaitsForTheNodesWord(t *testing.T) {
+	old := light("b", 0)
+	old.IdleSince = now.Add(-10 * time.Minute) // idle before the mark (under the plain idle), never says it drains
+	marked := State{Surplus: "b", MarkedAt: now.Add(-time.Minute), UnderloadSince: now.Add(-time.Hour)}
+	in := look(3, light("a", 40), old, light("c", 20)).with(func(in *Input) { in.State = marked })
+	if d := Decide(scaling, in); d.Replicas != 3 || d.State.Surplus != "b" {
+		t.Errorf("a marked node that has not said it drains goes: %+v", d)
+	}
+	marked.MarkedAt = now.Add(-AckWait)
+	in.State = marked
+	d := Decide(scaling, in)
+	if d.State.Surplus != "" || d.State.Ignored != "b" || d.Replicas != 3 {
+		t.Fatalf("a node that never drained is dropped: %+v", d)
+	}
+	in.State = d.State
+	in.State.UnderloadSince = now.Add(-time.Hour)
+	if d := Decide(scaling, in); d.State.Surplus == "b" {
+		t.Errorf("the node that did not drain is picked again: %+v", d.State)
+	}
+	// a stream waiting on a node is pressure: no underload, a drained node resumed
+	streams := light("c", 1)
+	streams.StreamsWaiting = 1
+	drained := light("b", 1)
+	drained.Draining = true
+	flip := look(3, light("a", 1), drained, streams).with(func(in *Input) {
+		in.State = State{Surplus: "b", MarkedAt: now.Add(-time.Hour), DrainedSince: now.Add(-time.Hour)}
+	})
+	if d := Decide(scaling, flip); d.State.Surplus != "" {
+		t.Errorf("streams waiting: the drained node stays drained: %+v", d.State)
+	}
+	if d := Decide(scaling, look(3, light("a", 1), light("b", 1), streams).with(func(in *Input) {
+		in.State.UnderloadSince = now.Add(-time.Hour)
+	})); d.State.Surplus != "" || !d.State.UnderloadSince.IsZero() {
+		t.Errorf("streams waiting count as underload: %+v", d.State)
+	}
+}
+
+// TestGrowthWaitsForTheResumedNode (the review): a node resumed from the scale-down that still says it drains holds
+// the growth, ResumeWait at most
+func TestGrowthWaitsForTheResumedNode(t *testing.T) {
+	b := hot("b")
+	b.Draining = true
+	in := look(3, hot("a"), b, hot("c")).with(under(time.Hour)).with(func(in *Input) {
+		in.State.Resuming, in.State.ResumingSince = "b", now.Add(-time.Minute)
+	})
+	if d := Decide(scaling, in); d.Replicas != 3 {
+		t.Errorf("growth while the resumed node still drains: %+v", d)
+	}
+	in.State.ResumingSince = now.Add(-ResumeWait)
+	if d := Decide(scaling, in); d.Replicas != 4 {
+		t.Errorf("past ResumeWait the group grows: %+v", d)
 	}
 }

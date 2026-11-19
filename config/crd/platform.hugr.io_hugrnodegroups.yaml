@@ -401,6 +401,10 @@ spec:
                       DefaultGroup is the resource group this group served as the policy's default: kept so (a floor of 1) while it
                       serves that one, whatever a heartbeat says.
                     type: string
+                  ignored:
+                    description: 'Ignored is a node that did not drain when marked:
+                      not picked again.'
+                    type: string
                   last:
                     description: Last is the last change of replicas the autoscaler
                       made.
@@ -427,9 +431,24 @@ spec:
                       a threshold since then.'
                     format: date-time
                     type: string
+                  resuming:
+                    description: Resuming is the node resumed from the scale-down
+                      while it still says it drains (growth waits for it).
+                    type: string
+                  resumingSince:
+                    format: date-time
+                    type: string
                   surplus:
                     description: 'Surplus is the node drained for the scale-down:
                       it takes no new connection, and goes once idle.'
+                    type: string
+                  surplusDrainedSince:
+                    format: date-time
+                    type: string
+                  surplusMarkedAt:
+                    description: 'SurplusMarkedAt / SurplusDrainedSince: when it was
+                      picked, and when it first said it drains.'
+                    format: date-time
                     type: string
                   underloadSince:
                     description: 'UnderloadSince: the group''s load has fitted in

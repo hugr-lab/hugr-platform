@@ -250,6 +250,19 @@ type ScalingStatus struct {
 	// Surplus is the node drained for the scale-down: it takes no new connection, and goes once idle.
 	// +optional
 	Surplus string `json:"surplus,omitempty"`
+	// SurplusMarkedAt / SurplusDrainedSince: when it was picked, and when it first said it drains.
+	// +optional
+	SurplusMarkedAt *metav1.Time `json:"surplusMarkedAt,omitempty"`
+	// +optional
+	SurplusDrainedSince *metav1.Time `json:"surplusDrainedSince,omitempty"`
+	// Resuming is the node resumed from the scale-down while it still says it drains (growth waits for it).
+	// +optional
+	Resuming string `json:"resuming,omitempty"`
+	// +optional
+	ResumingSince *metav1.Time `json:"resumingSince,omitempty"`
+	// Ignored is a node that did not drain when marked: not picked again.
+	// +optional
+	Ignored string `json:"ignored,omitempty"`
 }
 
 // ScalingDecision is one change of a group's size, and why.

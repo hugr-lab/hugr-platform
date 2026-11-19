@@ -327,11 +327,13 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		var idle time.Duration
 		if scaling != nil {
 			idle = scaling.Idle
-			if status.Scaling != nil && pod.Name == status.Scaling.Surplus {
-				idle = scaling.SurplusIdle // drained for the scale-down: it goes sooner, and first
-			}
 		}
-		if err := r.writeDeletionCost(ctx, pod, DeletionCost(state, idle, r.now())); err != nil {
+		cost := DeletionCost(state, idle, r.now())
+		if scaling != nil && autoscale.SurplusGoes(nodeOf(state), keptState(group, status, pods.Items), scaling.SurplusIdle,
+			r.now()) && cost > -2 {
+			cost = -2 // drained for the scale-down and idle since: it goes first (after a lost one)
+		}
+		if err := r.writeDeletionCost(ctx, pod, cost); err != nil {
 			return err
 		}
 	}
@@ -370,7 +372,7 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 			Name: nodeproto.DemandLeaseName(group.EffectiveResourceGroup())}
 		hasDemand := r.Get(ctx, demandKey, &wanted) == nil
 		in.Demand = hasDemand && nodeproto.DemandLive(&wanted, in.Now)
-		r.autoscale(ctx, group, *scaling, in, status)
+		r.autoscale(ctx, group, *scaling, in, status, pods.Items)
 		r.markScaleDown(ctx, pods.Items, status.Scaling.Surplus)
 		if hasDemand {
 			// "starting" while a node is on its way for it - asked for and not here yet, not reported, or young and
@@ -383,6 +385,8 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 	case status.Scaling != nil:
 		// a manual group keeps its last change, never a pressure clock nor a node drained for a scale-down
 		status.Scaling.PressureSince, status.Scaling.UnderloadSince, status.Scaling.Surplus = nil, nil, ""
+		status.Scaling.SurplusMarkedAt, status.Scaling.SurplusDrainedSince = nil, nil
+		status.Scaling.Resuming, status.Scaling.ResumingSince, status.Scaling.Ignored = "", nil, ""
 		r.markScaleDown(ctx, pods.Items, "")
 		r.tidyAnswers(ctx, group)
 	default:
@@ -480,6 +484,50 @@ func podReady(pod *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// keptState is what the autoscaler kept between its looks: the status, the change's time written with the replicas,
+// and - a status write lost to a leader's end - the drained node read back from its pod's mark (the review).
+func keptState(group *v1alpha1.HugrNodeGroup, status *v1alpha1.HugrNodeGroupStatus, pods []corev1.Pod) autoscale.State {
+	var kept autoscale.State
+	at := func(t *metav1.Time) time.Time {
+		if t == nil {
+			return time.Time{}
+		}
+		return t.Time
+	}
+	if sc := status.Scaling; sc != nil {
+		kept.PressureSince, kept.UnderloadSince = at(sc.PressureSince), at(sc.UnderloadSince)
+		if sc.Last != nil {
+			kept.LastChange = sc.Last.At.Time
+		}
+		kept.Surplus, kept.Resuming, kept.Ignored = sc.Surplus, sc.Resuming, sc.Ignored
+		kept.MarkedAt, kept.DrainedSince, kept.ResumingSince = at(sc.SurplusMarkedAt), at(sc.SurplusDrainedSince),
+			at(sc.ResumingSince)
+	}
+	// the change's time rides on the same write as the replicas: a look that reads the new replicas reads it too,
+	// whatever the status says yet (a status patch lost to a leader's end, a cache behind)
+	if t, err := time.Parse(time.RFC3339, group.Annotations[AnnotationScaledAt]); err == nil && t.After(kept.LastChange) {
+		kept.LastChange = t
+	}
+	if kept.Surplus == "" {
+		for i := range pods {
+			if pods[i].DeletionTimestamp == nil && pods[i].Annotations[nodeproto.AnnotationScaleDown] == nodeproto.ScaleDownDrain {
+				kept.Surplus = pods[i].Name
+				if kept.MarkedAt.IsZero() {
+					kept.MarkedAt = pods[i].CreationTimestamp.Time // unknown: its wait for the drain counts as past
+				}
+			}
+		}
+	}
+	return kept
+}
+
+func timeOf(t time.Time) *metav1.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &metav1.Time{Time: t}
 }
 
 // markScaleDown puts the scale-down's mark on the drained node's pod and takes it off every other: the heartbeat's
@@ -631,27 +679,9 @@ func nodeOf(state NodeState) autoscale.Node {
 // follows at the reconcile that write triggers - and what the autoscaler keeps in the status. A write that fails (a
 // group changed meanwhile: the optimistic lock) is left to the next look; the rest of the status is written anyway.
 func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNodeGroup, scaling autoscale.Scaling,
-	in autoscale.Input, status *v1alpha1.HugrNodeGroupStatus) {
+	in autoscale.Input, status *v1alpha1.HugrNodeGroupStatus, pods []corev1.Pod) {
 	now := in.Now
-	var kept autoscale.State
-	if status.Scaling != nil {
-		if status.Scaling.PressureSince != nil {
-			kept.PressureSince = status.Scaling.PressureSince.Time
-		}
-		if status.Scaling.Last != nil {
-			kept.LastChange = status.Scaling.Last.At.Time
-		}
-		if status.Scaling.UnderloadSince != nil {
-			kept.UnderloadSince = status.Scaling.UnderloadSince.Time
-		}
-		kept.Surplus = status.Scaling.Surplus
-	}
-	// the change's time rides on the same write as the replicas: a look that reads the new replicas reads it too,
-	// whatever the status says yet (a status patch lost to a leader's end, a cache behind)
-	if at, err := time.Parse(time.RFC3339, group.Annotations[AnnotationScaledAt]); err == nil && at.After(kept.LastChange) {
-		kept.LastChange = at
-	}
-	in.State = kept
+	in.State = keptState(group, status, pods)
 	decision := autoscale.Decide(scaling, in)
 	if status.Scaling == nil {
 		status.Scaling = &v1alpha1.ScalingStatus{}
@@ -667,7 +697,10 @@ func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNod
 		log.FromContext(ctx).Info("autoscale: scale-down drain", "group", group.Name, "from", status.Scaling.Surplus,
 			"to", decision.State.Surplus)
 	}
-	status.Scaling.Surplus = decision.State.Surplus
+	st := decision.State
+	status.Scaling.Surplus, status.Scaling.Resuming, status.Scaling.Ignored = st.Surplus, st.Resuming, st.Ignored
+	status.Scaling.SurplusMarkedAt, status.Scaling.SurplusDrainedSince = timeOf(st.MarkedAt), timeOf(st.DrainedSince)
+	status.Scaling.ResumingSince = timeOf(st.ResumingSince)
 	if decision.Replicas == group.Spec.Replicas {
 		return
 	}
