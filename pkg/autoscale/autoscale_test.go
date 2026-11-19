@@ -186,16 +186,22 @@ func TestShrink(t *testing.T) {
 	}
 }
 
-// TestARolloutHoldsNothingButGrowth (the re-review): during a rollout the surge pod makes the pods one more than the
-// replicas, and a surge pod the cluster cannot schedule stays so - an idle node still stops, only growth waits
-func TestARolloutHoldsNothingButGrowth(t *testing.T) {
+// TestARolloutHoldsTheShrink (the re-review): during a rollout the surge pod makes the pods one more than the
+// Deployment is asked, and a scale-down then lands on either ReplicaSet - the deletion cost ranks only within one, so
+// a busy old pod could go for the idle new one; the shrink waits for the rollout, growth for the pod on its way
+func TestARolloutHoldsTheShrink(t *testing.T) {
 	surge := look(2, busy("a"), idle("b", time.Hour)).with(func(in *Input) { in.Pods, in.Unreported = 3, 1 })
-	if d := Decide(scaling, surge); d.Replicas != 1 {
-		t.Errorf("an idle node during a rollout: %+v", d)
+	if d := Decide(scaling, surge); d.Replicas != 2 {
+		t.Errorf("a shrink during a rollout: %+v", d)
 	}
 	hotSurge := look(2, hot("a"), hot("b")).with(func(in *Input) { in.Pods, in.Unreported = 3, 1 }).with(under(time.Hour))
 	if d := Decide(scaling, hotSurge); d.Replicas != 2 {
 		t.Errorf("growth past a pod on its way: %+v", d)
+	}
+	// a ReplicaSet behind the Deployment (it says 2, 3 pods still run): the same
+	behind := look(2, busy("a"), idle("b", time.Hour), busy("c")).with(func(in *Input) { in.Pods = 3 })
+	if d := Decide(scaling, behind); d.Replicas != 2 {
+		t.Errorf("a second shrink before the ReplicaSet took the first: %+v", d)
 	}
 }
 
@@ -206,6 +212,7 @@ func TestAnUnreportedPodHoldsOnlyGrowth(t *testing.T) {
 	if d := Decide(scaling, stuck); d.Replicas != 3 {
 		t.Errorf("growth past a pod that does not come up: %+v", d)
 	}
+	// within what the Deployment is asked (no surge): the shrink goes - the scale-down takes the unready pod first
 	idleStuck := look(3, busy("a"), idle("b", time.Hour)).with(func(in *Input) { in.Pods, in.Unreported = 3, 1 })
 	if d := Decide(scaling, idleStuck); d.Replicas != 2 {
 		t.Errorf("a shrink held by a pod that does not come up: %+v", d)

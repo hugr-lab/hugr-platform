@@ -164,8 +164,11 @@ func Decide(s Scaling, in Input) Decision {
 	}
 
 	// shrinking: a node idle past `idle` stops while above the floor - never a busy one, never the last with a client
-	// waiting
-	if replicas > floor && !(in.Demand && replicas == 1) {
+	// waiting. More pods than the Deployment is asked - a rollout's surge pod, a ReplicaSet behind - hold it: mid-rollout
+	// a scale-down is split between the ReplicaSets, and the deletion cost ranks only within one, so a busy pod of the
+	// old one could go while the idle node stays (the re-review); a stuck rollout then holds the shrink - visible, and
+	// better than stopping busy nodes
+	if replicas > floor && !(in.Demand && replicas == 1) && in.Pods <= int(in.Running) {
 		for _, n := range in.Nodes {
 			if IdlePast(n, s.Idle, now) {
 				return change(replicas-1, fmt.Sprintf("%s has had no session for %s", n.Name,

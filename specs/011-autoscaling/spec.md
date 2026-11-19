@@ -170,12 +170,17 @@ last decision with its reason. The plan's check counts an auto group at its `max
   - **The Deployment behind.** Nothing happens while the Deployment is not yet asked the replicas last written: its
     apply fails, or the look is the one that applies them (`Running` read before the apply). Its effect is not seen
     yet, and a second shrink would remove a busy node for the same idle one (the re-review). A surge pod, a pod that
-    does not schedule or a quota changes nothing the Deployment is asked, so none of them freezes the group.
+    does not schedule or a quota changes nothing the Deployment is asked, so none of them freezes the group (a surge pod
+    holds only the shrink, below).
   - **Growth.** One more node when every placeable node has been past a threshold for `for`. A pod not created yet,
     or not reported, holds the growth: it is a node on its way, or one that does not come up (a surge pod the
-    cluster cannot schedule, a quota), and more of the same would help nothing. It never holds the shrink, since a
-    scale-down takes an unready pod first, and a rollout's surge pod freezes nothing.
-  - **Shrinking.** One fewer node when a node has been idle past `idle`.
+    cluster cannot schedule, a quota), and more of the same would help nothing. Within what the Deployment is asked it
+    never holds the shrink, since a scale-down takes an unready pod first.
+  - **Shrinking.** One fewer node when a node has been idle past `idle`. A shrink waits while there are more pods
+    than the Deployment is asked: a rollout's surge pod, or a ReplicaSet behind. A Deployment scaled down
+    mid-rollout splits the decrease between its ReplicaSets, and the deletion cost ranks pods only within one, so a
+    busy old pod could go while the idle node stays (the re-review). A stuck rollout holds the shrink too; that is
+    visible, and better than stopping busy nodes.
 - **The floor.**
   - The policy's default group never goes below 1. It is the default when the platform's `firstPolicy.defaultGroup`
     names its resource group, or when a node's Lease says `group-default`. A single heartbeat during a catalog hiccup
