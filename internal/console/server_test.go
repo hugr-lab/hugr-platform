@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -690,5 +691,23 @@ func TestNodePageReadsTheLoadWithoutAStatement(t *testing.T) {
 	_, out, _ = h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a", opsToken, "")
 	if out["loadError"] != "the node answered no load report" {
 		t.Errorf("no report: %v", out)
+	}
+}
+
+func TestCandidatesAskABusyNodeFirst(t *testing.T) {
+	// spec 012: a statement's per-call session ends, which moves an idle node's idle_since - the console's reads go to a
+	// node with a live session first, an idle one next, a draining one last
+	idle := node("hugr-node-etl-a", "etl")
+	idle.Lease.Summary.Sessions = 0
+	busy := node("hugr-node-etl-b", "etl")
+	draining := node("hugr-node-etl-c", "etl")
+	draining.Lease.Summary.Draining = true
+	view := fleet.NewView([]fleet.Node{draining, idle, busy})
+	for seed := uint64(0); seed < 20; seed++ {
+		got := candidates(view, testNow, rand.New(rand.NewPCG(seed, seed)))
+		if len(got) != 3 || got[0].Label != "hugr-node-etl-b" || got[1].Label != "hugr-node-etl-a" ||
+			got[2].Label != "hugr-node-etl-c" {
+			t.Fatalf("seed %d: %v, %v, %v", seed, got[0].Label, got[1].Label, got[2].Label)
+		}
 	}
 }

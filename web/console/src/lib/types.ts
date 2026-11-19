@@ -205,8 +205,6 @@ export interface PodPage {
 
 export interface MemoryPage {
   tags: Part
-  spillBytes: number | null
-  limits: Part
   error?: string
 }
 

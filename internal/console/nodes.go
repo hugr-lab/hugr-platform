@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -180,7 +181,8 @@ func (p *Pool) Load(ctx context.Context, node fleet.Node, token string) (map[str
 	report, err := p.handshakeLoad(ctx, client, node.Label, token)
 	if err != nil {
 		var refused *NodeError
-		if errors.As(err, &refused) && (refused.Code == codes.Unimplemented || refused.Code == codes.PermissionDenied) {
+		if errors.Is(err, errNoAnswer) ||
+			errors.As(err, &refused) && (refused.Code == codes.Unimplemented || refused.Code == codes.PermissionDenied) {
 			return loadByStatement(ctx, p, node, token)
 		}
 		return nil, err
@@ -201,6 +203,9 @@ func (p *Pool) handshakeLoad(ctx context.Context, client *flightsql.Client, labe
 	}
 	_ = stream.CloseSend()
 	answer, err := stream.Recv()
+	if errors.Is(err, io.EOF) {
+		return nil, errNoAnswer // a node that does not know the payload ends the exchange without a word
+	}
 	if err != nil {
 		return nil, nodeError(err)
 	}
@@ -222,11 +227,15 @@ func loadByStatement(ctx context.Context, nodes Caller, node fleet.Node, token s
 	return result.Records()[0], nil
 }
 
+// errNoAnswer: the node ended the Handshake without answering `node-load` (an acl before spec 079).
+var errNoAnswer = errors.New("the node does not answer node-load")
+
 // errNoLoad: the node answered, but not with one report.
 var errNoLoad = errors.New("the node answered no load report")
 
 // FlatLoad turns the node's report (`acl_node_load()`'s JSON) into the row `platform.node_load` answers: the same column
-// names, a count as an int64, `sessions_idle_since` a time as Arrow prints a TIMESTAMP (UTC), a map as an object.
+// names, a count as an int64, `sessions_idle_since` a time as arrow-go prints a TIMESTAMP (UTC), a map as an object (the
+// view's is a list of key / value pairs; the page reads both).
 func FlatLoad(report []byte) (map[string]any, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(report)))
 	decoder.UseNumber()
@@ -241,7 +250,8 @@ func FlatLoad(report []byte) (map[string]any, error) {
 	config, sessions, memory, admit := part("config"), part("sessions"), part("memory"), part("admit")
 	idle := any(nil)
 	if n, ok := jsonInt(sessions["idle_since"]).(int64); ok {
-		idle = time.Unix(n, 0).UTC().Format("2006-01-02 15:04:05")
+		// as arrow-go's GetOneForMarshal prints a TIMESTAMP without a time zone (the view's column)
+		idle = time.Unix(n, 0).UTC().Format("2006-01-02T15:04:05.999999999")
 	}
 	groups := map[string]any{}
 	if byGroup, ok := sessions["by_group"].(map[string]any); ok {

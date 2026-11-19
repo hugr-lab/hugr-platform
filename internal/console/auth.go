@@ -112,19 +112,26 @@ func answering(view *fleet.View, now time.Time) []*fleet.Node {
 
 // candidates are the answering nodes in the order a statement of the person's goes to them: a draining node seats only
 // the call of a person who may resume it (duckdb-acl spec 066's addendum), so it is asked last - everyone else is
-// answered by a node that serves, and an operator still is when all of them drain.
+// answered by a node that serves, and an operator still is when all of them drain. Among the serving, a node with a
+// live session (its Lease says) comes first: a statement's per-call session ends, and on an idle node that end moves
+// its idle_since - the console's rights or policy read would keep an idle node from stopping (spec 012); a busy one
+// has no idle time to move.
 func candidates(view *fleet.View, now time.Time, rnd *rand.Rand) []*fleet.Node {
-	var serving, draining []*fleet.Node
+	var busy, idle, draining []*fleet.Node
 	for _, n := range answering(view, now) {
-		if n.Lease != nil && n.Lease.Summary.Draining {
+		switch {
+		case n.Lease != nil && n.Lease.Summary.Draining:
 			draining = append(draining, n)
-		} else {
-			serving = append(serving, n)
+		case n.Lease != nil && n.Lease.Summary.Sessions > 0:
+			busy = append(busy, n)
+		default:
+			idle = append(idle, n)
 		}
 	}
-	rnd.Shuffle(len(serving), func(i, j int) { serving[i], serving[j] = serving[j], serving[i] })
-	rnd.Shuffle(len(draining), func(i, j int) { draining[i], draining[j] = draining[j], draining[i] })
-	return append(serving, draining...)
+	for _, nodes := range [][]*fleet.Node{busy, idle, draining} {
+		rnd.Shuffle(len(nodes), func(i, j int) { nodes[i], nodes[j] = nodes[j], nodes[i] })
+	}
+	return append(append(busy, idle...), draining...)
 }
 
 // askRights asks `platform.console_info()` with the token on an answering node. A node of another resource group

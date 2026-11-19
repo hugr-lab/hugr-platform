@@ -274,4 +274,11 @@ status=0
 l="$(leaked)"
 [ -z "$l" ] || fail "a token or a password reached $l"
 [ "$status" -eq 0 ] || fail "Playwright"
+# spec 012: the node page read the load report over the Flight Handshake, which opens no session - the node counts
+# each such read (acl.door.observe, surface node_load; the statement path counts none)
+echo "SELECT acl_audit_flush();" >&3
+echo "SELECT 'observe_reads=' || coalesce(sum(value), 0)::BIGINT AS observe FROM acl_metrics() WHERE name = 'acl.door.observe' AND attributes LIKE '%\"surface\":\"node_load\"%' AND attributes LIKE '%\"result\":\"allowed\"%';" >&3
+for _ in $(seq 50); do grep -q 'observe_reads=' "$WORK/node.log" && break; sleep 0.2; done
+reads="$(grep -o 'observe_reads=[0-9]*' "$WORK/node.log" | tail -1 | cut -d= -f2)"
+[ "${reads:-0}" -gt 0 ] || fail "the console never read the load report over the Handshake (observe_reads=${reads:-none})"
 echo "PASS: the console end to end"

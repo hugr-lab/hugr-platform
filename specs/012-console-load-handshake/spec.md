@@ -24,13 +24,15 @@ node page open, the node's `idle_since` kept moving, and an auto group would nev
   - `FlatLoad` turns the JSON into the row `platform.node_load` answers, with the same column names (`sessions_live`,
     `admit_new_session`, `memory_working`, `sessions_idle_since`, ...).
   - A count becomes an int64.
-  - `sessions_idle_since` becomes a time printed as Arrow prints a TIMESTAMP (UTC). Unix seconds would be the other
-    reading.
-  - A map becomes an object.
-  - Only the view's columns are kept. The page reads one shape either way.
+  - `sessions_idle_since` becomes a time printed as arrow-go prints a TIMESTAMP without a time zone
+    (`2026-11-19T10:00:00`, UTC).
+  - A map becomes an object. The view's map arrives as a list of key / value pairs, and the page reads both
+    (`entries`).
+  - Only the view's columns are kept.
 - **The statement where the Handshake does not answer.**
   - `Unimplemented`: the node does not serve the report. That is a bootstrap before hugr-node spec 043, or a
     standalone node.
+  - The node ends the Handshake without a word: an acl before spec 079 does not know the payload.
   - `PermissionDenied`: the person reads the view by a point grant alone, without `observe`.
   - Either way the pool runs the statement as before; for those readers the node still sees a session's end.
   - Any other refusal is the node's answer, given to the person as its message. A token that does not verify is one.
@@ -42,14 +44,23 @@ node page open, the node's `idle_since` kept moving, and an auto group would nev
   report's `memory_*` (duckdb-acl spec 175) instead: working memory against the limit, the buffer pool (cache
   included), the spill against its limit, and the critical level.
   - The breakdown by use (`duckdb_memory()`'s tags) is read only on the person's "By use", and the page says it is a
-    statement.
+    statement. Its route (`nodes/{label}/memory`) now reads only that; the limits and the spill come with the report.
+  - "By use" belongs to the node it was asked on, so another node's page never reads its memory first.
+- **The console's other reads prefer a busy node.** The person's rights (`console_info`, cached for a minute) and the
+  policy pages run statements on some answering node. Those statements now go first to a node whose Lease shows a
+  live session, since such a node has no idle time to move. An idle node is asked next, and a draining one last.
   - A report without memory figures (a node before spec 175) says so.
 
 ## Security
 
-Nothing new is reachable. The node judges the bearer as it judges a statement's: verified offline, then `observe`
-(a bundle, passthrough, or an unrestricted manage). The console keeps no token. The report holds no principal and no
-statement text.
+The node judges the bearer as it judges a statement's: verified offline, then `observe` (a bundle, passthrough, or an
+unrestricted manage). The console keeps no token. The report holds no principal and no statement text.
+
+Three differences from the statement path, all the node's surface as it already is, which the same token could reach
+directly:
+- the Handshake honours no `DENY VIEW platform.node_load` on an `observe` holder;
+- it does not place the reader (`wrong_resource_group`);
+- a point-grant reader's Handshake is a counted `observe` refusal before the statement.
 
 ## Testing
 
@@ -63,8 +74,12 @@ statement text.
 - `internal/console/server_test.go`: the node page reads `Load`, runs no statement, and passes on its refusals.
 - `web/console/src/screens/node/overview.test.tsx`: the engine card comes from the report, and `nodes/{label}/memory`
   is read only after "By use". It fails against the page as it was.
-- `test/console/e2e/run.sh`: against a real duckdb-acl node, serving the report as hugr-node spec 043 makes it, the
-  operator's node page shows the engine's working memory, then the buffer pool by use.
+- `test/console/e2e/run.sh`: against a real duckdb-acl node, serving the report as hugr-node spec 043 makes it:
+  - the operator's node page shows the engine's working memory, then the buffer pool by use;
+  - afterwards the node's `acl.door.observe` counter shows allowed `node_load` reads. The run fails when `Load` always
+    runs the statement.
+- `internal/console/server_test.go` `TestCandidatesAskABusyNodeFirst`: a busy node, then an idle one, then a draining
+  one.
 - duckdb-acl's `test/e2e/flight/auth.sh` (its spec 175): against the real door, a Handshake read leaves `idle_since`
   where it was and a statement moves it.
 - hugr-node's bootstrap e2e: a started node answers the Handshake, but only to a bearer.
@@ -81,4 +96,5 @@ statement text.
 
 - The node page shows the idle time (`sessions_idle_since`) once the autoscaler acts on it (spec 011).
 - Any other page that reads from a node (sessions, events, inventory, the policy) still runs statements. Each one is a
-  look into the node, made when the person asks for it.
+  look into the node, made when the person asks for it. With every node idle, the rights read still moves one node's
+  `idle_since` once a minute while someone uses the console.

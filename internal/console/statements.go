@@ -19,9 +19,6 @@ const (
 	// round 2: what the engine holds - duckdb's own functions, in the policy's meta and environment categories
 	// (the owner's Q7); a sum is the console's, an aggregate would need another category
 	stmtMemory = "SELECT tag, memory_usage_bytes, temporary_storage_bytes FROM duckdb_memory()"
-	stmtSpill  = "SELECT size FROM duckdb_temporary_files()"
-	stmtLimits = "SELECT current_setting('memory_limit') AS memory_limit, " +
-		"current_setting('max_temp_directory_size') AS max_temp_directory_size"
 	// what the node came up with. Its sources are drift's database rows: under a principal duckdb_databases() is the
 	// ACL's metadata surface (the virtual catalogs), so the profile's own views name the physical ones - never a
 	// database's path (an ATTACH string may carry a credential)

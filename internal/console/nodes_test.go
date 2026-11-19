@@ -75,6 +75,8 @@ func (s doorService) Handshake(stream flight.FlightService_HandshakeServer) erro
 		return nil // the drivers' payload-less handshake: a no-op
 	}
 	switch {
+	case mode == "silent":
+		return nil // an acl before spec 079: the payload is not one it knows, the exchange ends with nothing
 	case mode == "off":
 		return status.Error(codes.Unimplemented, "acl: the load report is off (acl_metrics_endpoint)")
 	case token == "refused":
@@ -351,7 +353,7 @@ func TestPoolLoadWithoutSession(t *testing.T) {
 	}
 	want := map[string]any{"draining": false, "observe": "token", "group": "etl", "group_known": true,
 		"group_default": false, "config_target": int64(7), "config_applied": int64(6), "sessions_live": int64(0),
-		"sessions_max": int64(1000), "sessions_idle_since": "2025-11-19 10:00:00", "memory_used": int64(62914560),
+		"sessions_max": int64(1000), "sessions_idle_since": "2025-11-19T10:00:00", "memory_used": int64(62914560),
 		"memory_working": int64(40960), "memory_limit": nil, "temp_used": int64(0), "temp_limit": nil,
 		"memory_critical": false, "admit_new_session": true, "admit_new_quack_client": true, "admit_new_stream": true}
 	for k, v := range want {
@@ -373,9 +375,9 @@ func TestPoolLoadWithoutSession(t *testing.T) {
 		t.Error("the Handshake shows the doors' certificate too")
 	}
 
-	// a node without the endpoint (an older bootstrap), and a person who holds only a point grant on the view: the
-	// statement, as before
-	for _, mode := range []string{"off", "point"} {
+	// a node without the endpoint (an older bootstrap), a person who holds only a point grant on the view, and a node
+	// that does not know the payload: the statement, as before
+	for _, mode := range []string{"off", "point", "silent"} {
 		door.mu.Lock()
 		door.load, door.seen = mode, nil
 		door.mu.Unlock()

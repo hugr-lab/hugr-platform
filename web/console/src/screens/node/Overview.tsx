@@ -14,8 +14,9 @@ export function Overview() {
   const pod = useLoad(() => api.pod(label), [api, label])
   // the engine's memory by use is duckdb_memory(): a statement, whose session's end is the node's activity - read only
   // when asked, so looking at a node leaves its idle time alone (spec 012); the totals come with the load report
-  const [byUse, setByUse] = useState(false)
-  useEffect(() => setByUse(false), [label])
+  // asked for one node: another node's page starts without it, in the same render (never a read of the new node first)
+  const [byUseOf, setByUseOf] = useState<string>()
+  const byUse = byUseOf === label
   const memory = useLoad(() => (byUse ? api.memory(label) : Promise.resolve(undefined)), [api, label, byUse])
   // a new pod has no sample for up to a minute: read it again until it has one (a few times, then the person's Refresh)
   const asked = useRef(0)
@@ -140,10 +141,11 @@ export function Overview() {
                   )}
                   {!byUse && (
                     <div className="flex flex-col gap-2">
-                      <button type="button" className="btn-outline self-start" onClick={() => setByUse(true)}>By use</button>
+                      <button type="button" className="btn-outline self-start" onClick={() => setByUseOf(label)}>By use</button>
                       <p className="text-sm text-ink-muted">Reads <span className="mono">duckdb_memory()</span> - a statement on the node, which counts as its activity.</p>
                     </div>
                   )}
+                  {byUse && memory.error !== undefined && <Problem error={memory.error} />}
                   {byUse && m?.tags.error && <p role="note" className="text-sm">{m.tags.error} - reading the engine's memory takes the policy's meta category.</p>}
                   {byUse && m && !m.tags.error && (
                     <ul className="flex flex-col gap-2 text-sm" aria-label="The buffer pool by use">

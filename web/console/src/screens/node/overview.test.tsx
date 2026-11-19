@@ -26,7 +26,7 @@ const node = {
     admit_new_quack_client: false, admit_new_stream: false, memory_used: 62914560, memory_working: 1048576,
     memory_limit: 104857600, temp_used: 0, temp_limit: null, memory_critical: true },
 }
-const memory = { tags: { rows: [{ tag: 'BASE_TABLE', memory_usage_bytes: 61865984 }] }, spillBytes: 0, limits: { rows: [] } }
+const memory = { tags: { rows: [{ tag: 'BASE_TABLE', memory_usage_bytes: 61865984 }] } }
 
 function show() {
   const asked: string[] = []
