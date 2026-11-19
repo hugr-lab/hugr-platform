@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hugr-lab/hugr-platform/internal/front/demand"
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 	"github.com/hugr-lab/hugr-platform/internal/front/flightproxy"
 	"github.com/hugr-lab/hugr-platform/internal/front/metrics"
@@ -53,7 +54,10 @@ type Proxy struct {
 	Roots *x509.CertPool
 	// NoNodeWait is how long a new connection waits for a placeable node of its group.
 	NoNodeWait time.Duration
-	Log        *slog.Logger
+	// Demand wakes a group with no node (spec 011 stage 2); nil: none, a group with no node is refused after
+	// NoNodeWait.
+	Demand *demand.Demand
+	Log    *slog.Logger
 	// Insecure speaks plain HTTP to the nodes - a test's only.
 	Insecure bool
 
@@ -142,7 +146,7 @@ func (p *Proxy) quack(w http.ResponseWriter, r *http.Request) {
 		// a node the front does not see: any node answers that it does not know the connection, and the client
 		// connects again - the front writes no quack message of its own
 		outcome = "unknown_label"
-		if n = p.choose(r, view.DefaultGroups(time.Now()), nil); n == nil {
+		if n = p.choose(r, view.DefaultGroups(time.Now()), nil, nil); n == nil {
 			p.refuseNoNode(w, nil)
 			return
 		}
@@ -151,9 +155,10 @@ func (p *Proxy) quack(w http.ResponseWriter, r *http.Request) {
 	p.done(header.Type, n, outcome)
 }
 
-// choose a placeable node of the groups, waiting up to NoNodeWait for one.
-func (p *Proxy) choose(r *http.Request, groups []string, tried map[string]bool) *fleet.Node {
-	return p.Fleet.Wait(r.Context(), p.NoNodeWait, func(v *fleet.View) *fleet.Node {
+// choose a placeable node of the groups, waiting up to NoNodeWait for one - and, for groups a node named, while the
+// operator starts one (spec 011 stage 2).
+func (p *Proxy) choose(r *http.Request, groups []string, tried map[string]bool, named []string) *fleet.Node {
+	return p.Demand.Wait(r.Context(), p.Fleet, p.NoNodeWait, named, func(v *fleet.View) *fleet.Node {
 		return v.Choose(fleet.Quack, groups, tried, time.Now(), p.random())
 	})
 }
@@ -205,7 +210,7 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	outcome := "seated"
 	silent := false // the last node tried did not answer
 	for {
-		n := p.choose(r, seat.Groups, seat.Tried)
+		n := p.choose(r, seat.Groups, seat.Tried, seat.NamedGroups())
 		if r.Context().Err() != nil {
 			return // the client went: no node is tried for it
 		}

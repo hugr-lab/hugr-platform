@@ -473,3 +473,49 @@ func TestCooldownRidesOnTheReplicasWrite(t *testing.T) {
 		t.Errorf("past the cooldown the next idle node goes: %d", got.Spec.Replicas)
 	}
 }
+
+// TestDemandWakesAGroupAtZero (spec 011 stage 2): the front's demand Lease for an auto group's resource group starts
+// its node at once and is answered "starting"; an expired one is no demand; and with nobody holding a client the
+// group's last idle node stops, its min being 0
+func TestDemandWakesAGroupAtZero(t *testing.T) {
+	g := group("etl", 0, t0)
+	g.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 2}
+	demand := func(renewed time.Time) *coordinationv1.Lease {
+		l := lease(renewed, nodeproto.DemandSeconds, nodeproto.Summary{})
+		l.Name, l.Namespace = nodeproto.DemandLeaseName("etl"), "hugr"
+		l.Labels = map[string]string{nodeproto.LabelDemand: "true"}
+		l.Annotations = map[string]string{nodeproto.AnnotationDemandGroup: "etl"}
+		return l
+	}
+	stale := newWorld(t, g.DeepCopy(), demand(t0.Add(-time.Minute)))
+	stale.now = t0
+	if got := stale.reconcile(t, "etl"); got.Spec.Replicas != 0 {
+		t.Errorf("an expired demand starts a node: %d", got.Spec.Replicas)
+	}
+
+	w := newWorld(t, g, demand(t0))
+	w.now = t0.Add(5 * time.Second)
+	got := w.reconcile(t, "etl")
+	if got.Spec.Replicas != 1 || !strings.Contains(got.Status.Scaling.Last.Reason, "client waits") {
+		t.Fatalf("a held client wakes the group: %d %+v", got.Spec.Replicas, got.Status.Scaling)
+	}
+	var answered coordinationv1.Lease
+	_ = w.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: nodeproto.DemandLeaseName("etl")}, &answered)
+	if answered.Annotations[nodeproto.AnnotationStarting] != "etl" {
+		t.Errorf("the demand is not answered: %v", answered.Annotations)
+	}
+
+	// later: the node serves, nobody waits, it has been idle past idle - the last node of a min-0 group stops
+	idle := group("bi", 1, t0)
+	idle.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 2}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-bi-a", Namespace: "hugr", Labels: build.SelectorLabels(idle)}}
+	beat := lease(t0, 600, nodeproto.Summary{SessionsMax: 1000, MemoryUsed: 0.1, TempUsed: -1, SeatsUsed: -1,
+		IdleSince: t0.Add(-time.Hour).Unix()})
+	beat.Name, beat.Namespace, beat.Labels = "hugr-node-bi-a", "hugr", map[string]string{build.LabelGroup: "bi"}
+	b := newWorld(t, idle, pod, beat)
+	b.now = t0.Add(10 * time.Second)
+	b.reconcile(t, "bi") // builds the Deployment
+	if got := b.reconcile(t, "bi"); got.Spec.Replicas != 0 {
+		t.Errorf("the last idle node of a min-0 group stays: %d", got.Spec.Replicas)
+	}
+}

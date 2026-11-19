@@ -49,7 +49,10 @@ func FrontRole(platform *v1alpha1.HugrPlatform) *rbacv1.Role {
 	read := []string{"get", "list", "watch"}
 	return &rbacv1.Role{ObjectMeta: frontMeta(platform), Rules: []rbacv1.PolicyRule{
 		{APIGroups: []string{"discovery.k8s.io"}, Resources: []string{"endpointslices"}, Verbs: read},
-		{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: read},
+		// read: the nodes' Leases; create and patch: its demand Leases (spec 011 stage 2) - a Lease's name is the
+		// group's hash, so no resourceNames can narrow it
+		{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"},
+			Verbs: append(read, "create", "patch")},
 	}}
 }
 
@@ -100,7 +103,10 @@ func FrontDeployment(platform *v1alpha1.HugrPlatform, settings Settings) (*appsv
 		Name: FrontComponent, Image: settings.FrontImage, ImagePullPolicy: settings.FrontImagePullPolicy,
 		Command: []string{FrontBinary}, Args: args,
 		Env: []corev1.EnvVar{{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
-			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}}},
+			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
+			// the holder of the demand Leases it writes (spec 011 stage 2)
+			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}}},
 		Ports: []corev1.ContainerPort{
 			{Name: "flight", ContainerPort: flight, Protocol: corev1.ProtocolTCP},
 			{Name: "quack", ContainerPort: quack, Protocol: corev1.ProtocolTCP},

@@ -30,6 +30,7 @@ import (
 	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/internal/upgrade"
 	"github.com/hugr-lab/hugr-platform/pkg/autoscale"
+	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
 	"github.com/hugr-lab/hugr-platform/pkg/plan"
 )
 
@@ -331,7 +332,16 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		for _, n := range nodes {
 			in.Nodes = append(in.Nodes, nodeOf(n))
 		}
+		// stage 2: the front holds a client of the group's resource group with no node to seat it on
+		var wanted coordinationv1.Lease
+		demandKey := types.NamespacedName{Namespace: group.Namespace,
+			Name: nodeproto.DemandLeaseName(group.EffectiveResourceGroup())}
+		hasDemand := r.Get(ctx, demandKey, &wanted) == nil
+		in.Demand = hasDemand && nodeproto.DemandLive(&wanted, in.Now)
 		r.autoscale(ctx, group, *scaling, in, status)
+		if hasDemand {
+			r.answerDemand(ctx, group, &wanted, in.Demand && in.MayGrow && group.Spec.Replicas > 0)
+		}
 	case status.Scaling != nil:
 		status.Scaling.PressureSince = nil // a manual group keeps its last change, never a pressure clock
 	}
@@ -399,12 +409,33 @@ func DeletionCost(state NodeState, idle time.Duration, now time.Time) int64 {
 	return bucket
 }
 
+// answerDemand says on the front's demand Lease whether a node of the group starts for it (spec 011 stage 2): the
+// front holds its client while it does, and answers "no node" once it had time to hear and nobody does.
+func (r *GroupReconciler) answerDemand(ctx context.Context, group *v1alpha1.HugrNodeGroup, lease *coordinationv1.Lease,
+	starting bool) {
+	current := lease.Annotations[nodeproto.AnnotationStarting]
+	if (current != "") == starting {
+		return
+	}
+	patch := client.MergeFrom(lease.DeepCopy())
+	if lease.Annotations == nil {
+		lease.Annotations = map[string]string{}
+	}
+	if starting {
+		lease.Annotations[nodeproto.AnnotationStarting] = group.Name
+	} else {
+		delete(lease.Annotations, nodeproto.AnnotationStarting)
+	}
+	if err := r.Patch(ctx, lease, patch); err != nil {
+		log.FromContext(ctx).Info("demand not answered, next look", "group", group.Name, "error", err.Error())
+	}
+}
+
 // AnnotationScaledAt is when the autoscaler last changed the group's replicas, written with them (spec 011).
 const AnnotationScaledAt = "platform.hugr.io/scaled-at"
 
-// WakeOnDemand: the front's demand wakes a group at 0 (spec 011 stage 2). Until then an auto group keeps one node,
-// whatever its min - nothing would start it again.
-const WakeOnDemand = false
+// WakeOnDemand: the front's demand wakes a group at 0 (spec 011 stage 2), so an auto group may go to its min of 0.
+const WakeOnDemand = true
 
 // ScalingOf a group's scaling, its defaults filled in (spec 011).
 func ScalingOf(spec *v1alpha1.ScalingSpec) autoscale.Scaling {

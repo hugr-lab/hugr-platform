@@ -1,7 +1,7 @@
 # Spec 011: a node group scales itself - from its load, down to zero
 
-- **Status**: accepted (the owner, 2026-11-16); stage 1 built (the operator's decision, 2026-11-19), stage 2 (the
-  front's demand) and stage 3 (the console's dialog) to come
+- **Status**: accepted (the owner, 2026-11-16); stage 1 built (the operator's decision, 2026-11-19), stage 2 built
+  (the front's demand, 2026-11-19), stage 3 (the console's dialog) to come
 - **Date**: 2026-11-16
 - **Author**: Claude, from the owner's decisions of 2026-11-16 (in the release, not after it)
 - **Follows**: spec 001 (the operator, the heartbeat, the Lease, the pod-deletion cost), spec 002 (the front's seating,
@@ -140,7 +140,8 @@ last decision with its reason. The plan's check counts an auto group at its `max
 
 - **The demand Lease starts nodes, nothing more**: a forged one (who may write Leases in the namespace may already do
   more) starts at most `max(1, min)` nodes of an existing auto group, within the plan; it never changes a policy, a
-  placement or a route. The node still decides who it serves (duckdb-acl spec 096).
+  placement or a route. The node still decides who it serves (duckdb-acl spec 096). The front writes demand only for
+  groups a node named to a verified token.
 - **No session is killed by scaling**; a drain keeps established sessions (spec 066).
 - **The plan bounds everything**: the sum of the groups' `max` within `maxNodes` is checked where the group is written.
 
@@ -209,6 +210,47 @@ last decision with its reason. The plan's check counts an auto group at its `max
 - The webhook counts an auto group at `max(max, replicas)`. A growth of its max, or a switch to auto, is a growth for
   the plan. It refuses `min > max` and a cooldown under 30 s: a step's effect, first the Deployment and then its
   ReplicaSet, is seen a few 5 s looks later.
+### Built (stage 2, 2026-11-19): waking a group at 0
+
+- **The demand Lease** (`pkg/nodeproto`, `DemandLeaseName`).
+  - Its name is `hugr-demand-` and the first 16 hex of the resource group's SHA-256, because a resource group is a
+    policy's name and not a Kubernetes one.
+  - Its label `platform.hugr.io/demand`, not the nodes' managed-by, keeps it out of the front's fleet.
+  - It carries the group in its annotation, and the operator's answer `platform.hugr.io/starting: <HugrNodeGroup>`.
+- **The front** (`internal/front/demand`). When no node is placeable for a seat's *named* groups, both doors hold
+  the client. Named groups are those a node's `wrong_resource_group` refusal named, which it does only for a token
+  it verified, so an unauthenticated caller wakes nothing.
+  - It writes the demand Lease at once: created, then merge-patched on its spec only, so the operator's answer stays.
+  - It renews the Lease every 10 s while any of its clients waits for the group, and lets it expire after that
+    (30 s).
+  - It waits `noNodeWait` as before, then for as long as the operator answers "starting", up to `--demand-hold`
+    (5 min) or the client's own end.
+  - When no answer comes within 15 s (the operator looks every 5 s), the client hears "no node" as before. That is a
+    manual group, a refused one, or no group of the platform. It now waits up to 15 s, not `noNodeWait`.
+  - Its Role gains `create` and `patch` on Leases. A name derived from a group cannot be narrowed by `resourceNames`.
+    The front is the data path of every client already, and the worst a forged demand does is below.
+- **The operator.**
+  - The group's reconcile reads the demand Lease of the group's resource group; a renewed one is the decision's
+    demand.
+  - A group at 0 is woken to `max(1, min)` at once (no `for`, no cooldown).
+  - The last node of a min-0 group stops only with no live demand.
+  - It answers "starting" while it holds a node for the demand, the plan admits the group and its replicas are
+    above 0, and clears the answer otherwise.
+  - `WakeOnDemand` is on, so an auto group may go to its min of 0.
+- **Tests.**
+  - `internal/front/demand` (fake clientset, `-race`):
+    - a placeable node writes no demand;
+    - an unanswered demand ends the hold after the answer's wait;
+    - an ungrouped seat writes none;
+    - a client held while "starting" is seated once the node comes up, and the renew keeps the answer;
+    - the client's end ends the hold;
+    - holders share one renewer.
+  - The controller test: a renewed demand wakes an auto group at 0 and is answered, an expired one is not, and a
+    min-0 group's last idle node stops.
+  - The envtest: the front's Role reads the fleet and writes only Leases (create, patch).
+  - The demo (kind): b at 0, switched to auto with min 0. analyst_b's statement through the front is held, b's node
+    starts, and the statement is answered there (the checker's `-timeout`).
+
 - The console answers the group's `scaling` (mode, min, max, `last`). A person's `replicas` on an auto group is
   refused with 409 `auto_scaled`; the dialog for min / max / idle is stage 3.
 

@@ -46,8 +46,10 @@ via_front() {
 			return 1
 	fi
 	# shellcheck disable=SC2046 # the IdP's flags are words
-	bounded 120 "$CHECKER" $(token_flags) -client "$(principal_id "$principal")" -secret-file "$WORK/secrets/principal-$principal" \
-		-node "127.0.0.1:$(cat "$WORK/ports/front")" -server-name hugr-front.hugr.svc -ca "$WORK/ca.crt" -sql "$sql"
+	# VIA_WAIT: a statement held while a node starts for it (spec 011 stage 2) waits longer
+	bounded "$((${VIA_WAIT:-60} + 60))" "$CHECKER" $(token_flags) -client "$(principal_id "$principal")" \
+		-secret-file "$WORK/secrets/principal-$principal" -node "127.0.0.1:$(cat "$WORK/ports/front")" \
+		-server-name hugr-front.hugr.svc -ca "$WORK/ca.crt" -sql "$sql" -timeout "${VIA_WAIT:-60}s"
 }
 # front_pod: one ready front pod that is not going away - the same one for a whole check (its metrics are its own)
 front_pod() {
@@ -231,10 +233,22 @@ check_front() {
 	eventually 120 "b has no node" no_pods b
 	if got="$(via_front analyst-b "SELECT count(*) FROM orders" 2>&1)"; then fail "analyst_b was served with no node of b"; fi
 	grep -q 'hugr: no node of group b can take a new session - retry' <<<"$got" || fail "analyst_b with no node of b: $got"
-	k -n hugr patch hng b --type=merge -p '{"spec":{"replicas":1}}' >/dev/null || fail "group b back to one node"
+	ok "with no node of b, analyst_b is refused after the wait, naming b - never seated on a"
+	# spec 011 stage 2: b scales itself from 0 - analyst_b's statement is held by the front while the operator starts
+	# b's node for it (the front's demand Lease, answered "starting"), then answered there
+	k -n hugr patch hng b --type=merge -p '{"spec":{"scaling":{"mode":"auto","min":0,"max":1}}}' >/dev/null ||
+		fail "group b to auto, min 0"
+	got="$(VIA_WAIT=300 via_front analyst-b "SELECT count(*) FROM orders" 2>&1)" ||
+		fail "analyst_b was not served once b's node started: $got"
+	[ "$got" = "$want" ] || fail "analyst_b read $got once b's node started, on b $want"
+	status_is b '{.spec.replicas}' 1 || fail "b was not scaled to 1: $(status b '{.spec.replicas}')"
+	status b '{.status.scaling.last.reason}' | grep -q 'client waits' ||
+		fail "b's last scaling: $(status b '{.status.scaling.last}')"
+	# back to manual, one node, for the checks after
+	k -n hugr patch hng b --type=merge -p '{"spec":{"scaling":null,"replicas":1}}' >/dev/null || fail "group b back to manual"
 	eventually 300 "group b serves again" group_ready b
 	follow_logs
-	ok "with no node of b, analyst_b is refused after the wait, naming b - never seated on a; b came back"
+	ok "b at 0 nodes, auto with min 0: analyst_b's statement was held while the operator started b's node, then answered on it; b back to manual"
 }
 
 # console_port: the console's Service forwarded (spec 003) - one operator pod, so one pool of node sessions
