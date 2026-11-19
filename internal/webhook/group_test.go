@@ -230,3 +230,25 @@ func TestWebhookCountsAnAutoGroupAtItsMax(t *testing.T) {
 		t.Error("a scale-down at a scale-up share")
 	}
 }
+
+// TestAnOldScalingIsNotFrozen (the re-review): a scaling written before a rule (an idle time past its bounds) is
+// judged only when it changes - the autoscaler's replicas and a restart still pass
+func TestAnOldScalingIsNotFrozen(t *testing.T) {
+	ctx := context.Background()
+	old := group("etl", "large", 1)
+	old.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Max: 2, Idle: &metav1.Duration{Duration: 30 * time.Second}}
+	v := validator(t, group("bi", "large", 1))
+	next := old.DeepCopy()
+	next.Spec.Replicas = 2
+	if _, err := v.ValidateUpdate(ctx, old, next); err != nil {
+		t.Errorf("the autoscaler's step on a group with an old idle time: %v", err)
+	}
+	changed := old.DeepCopy()
+	changed.Spec.Scaling.Max = 3
+	if _, err := v.ValidateUpdate(ctx, old, changed); err == nil {
+		t.Error("a change of the scaling is judged whole: its idle time too")
+	}
+	if _, err := v.ValidateCreate(ctx, old); err == nil {
+		t.Error("a new group with an idle time past its bounds")
+	}
+}

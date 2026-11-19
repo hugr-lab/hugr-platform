@@ -5,7 +5,7 @@ import { Api } from '../lib/api'
 import type { Session } from '../lib/auth'
 import { AppContext } from '../lib/context'
 import type { Config, Fleet as FleetAnswer, Group, Rights } from '../lib/types'
-import { Fleet, minutesOf, scalingProblem } from './Fleet'
+import { Fleet, idleInRange, minutesOf, scalingProblem, secondsOf } from './Fleet'
 
 // jsdom has no showModal: a <dialog> stays closed there, and its content is found with hidden: true'
 
@@ -131,5 +131,33 @@ describe('minutesOf', () => {
     expect(minutesOf('24h0m0s')).toBe(1440)
     expect(minutesOf('1m30s')).toBe(1)
     expect(minutesOf(undefined)).toBe(30)
+  })
+})
+
+describe('an idle time the console cannot write back (the re-review)', () => {
+  it('is shown and must be set before saving auto; a switch to manual leaves it out and sends the group\'s own bounds', async () => {
+    const sent = show([group({ scaling: { mode: 'auto', min: 1, max: 3, idle: '30s' } })])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Scale' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Scale' }))
+    fireEvent.change(screen.getByLabelText('Maximum'), { target: { value: '4' } })
+    expect(screen.getByRole('alert', { hidden: true }).textContent).toContain("idle time (30s) is not 1 to 1440 minutes")
+    expect((screen.getByRole('button', { name: 'Scale between 1 and 4', hidden: true }) as HTMLButtonElement).disabled).toBe(true)
+    // the form's max 4 is abandoned: manual keeps the group's own 1..3
+    fireEvent.click(screen.getByLabelText('Manual'))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to manual', hidden: true }))
+    await waitFor(() => expect(sent).toHaveLength(1))
+    expect(sent[0].body).toEqual({ scaling: { mode: 'manual', min: 1, max: 3 } })
+  })
+
+  it('reads Go\'s durations', () => {
+    expect(secondsOf('1h30m0s')).toBe(5400)
+    expect(secondsOf('30s')).toBe(30)
+    expect(secondsOf('500ms')).toBeCloseTo(0.5)
+    expect(secondsOf('nonsense')).toBeUndefined()
+    expect(idleInRange(undefined)).toBe(true)
+    expect(idleInRange('30m0s')).toBe(true)
+    expect(idleInRange('1m30s')).toBe(true)
+    expect(idleInRange('30s')).toBe(false)
+    expect(idleInRange('48h0m0s')).toBe(false)
   })
 })

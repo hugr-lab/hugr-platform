@@ -198,6 +198,26 @@ export const minutesOf = (d: string | undefined) => {
   return d && m && (m[1] || m[2]) ? Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0) : 30
 }
 
+/** seconds of a Go duration as the server writes it ("1h30m0s", "30s", "500ms"); undefined when it is none */
+export const secondsOf = (d: string | undefined): number | undefined => {
+  if (!d) return undefined
+  const unit: Record<string, number> = { h: 3600, m: 60, s: 1, ms: 1e-3, us: 1e-6, 'µs': 1e-6, ns: 1e-9 }
+  let total = 0
+  const re = /([\d.]+)(h|ms|us|µs|ns|m|s)/g
+  let rest = d
+  for (const m of d.matchAll(re)) {
+    total += Number(m[1]) * unit[m[2]]
+    rest = rest.replace(m[0], '')
+  }
+  return rest === '' ? total : undefined
+}
+
+/** the group's own idle time is one the console can write back: 1 to 1440 minutes (none: the default) */
+export const idleInRange = (d: string | undefined) => {
+  const s = secondsOf(d)
+  return !d || (s !== undefined && s >= 60 && s <= 86400)
+}
+
 /** what an auto group's scaling form allows, or why not */
 export function scalingProblem(f: { min: number; max: number; idle: number }, room: number): string | undefined {
   if (f.max < 1) return 'An auto group runs at most one node or more.'
@@ -223,7 +243,12 @@ function ScaleDialog({ fleet, group, onDone }: { fleet: FleetAnswer; group: Grou
   const [error, setError] = useState<string>()
   const room_ = room(fleet, group)
   const over = replicas > room_
-  const why = mode === 'auto' ? scalingProblem({ min, max, idle }, room_) : undefined
+  // an idle time on the group the console cannot write back (set elsewhere, before its bounds): shown, and the person
+  // sets one (the re-review)
+  const oddIdle = !idleTouched && !idleInRange(group.scaling.idle)
+  const why = mode === 'auto'
+    ? (oddIdle ? `The group's idle time (${group.scaling.idle}) is not 1 to 1440 minutes: set one.` : scalingProblem({ min, max, idle }, room_))
+    : undefined
   const unchanged = mode === 'auto'
     ? auto && min === group.scaling.min && max === group.scaling.max && !idleTouched
     : !auto && replicas === group.replicas
@@ -232,8 +257,10 @@ function ScaleDialog({ fleet, group, onDone }: { fleet: FleetAnswer; group: Grou
     setError(undefined)
     try {
       if (mode === 'auto') await api.setScaling(group.name, { mode: 'auto', min, max, idle: idleSent })
-      // manual keeps the nodes it runs, and its bounds for a switch back
-      else if (auto) await api.setScaling(group.name, { mode: 'manual', min, max, idle: idleSent })
+      // manual keeps the nodes it runs, and the group's own bounds for a switch back - never what the form was left
+      // with in the other mode; an idle time it cannot write back is left out (the re-review)
+      else if (auto) await api.setScaling(group.name, { mode: 'manual', min: group.scaling.min, max: group.scaling.max,
+        idle: idleInRange(group.scaling.idle) ? group.scaling.idle : undefined })
       else await api.scale(group.name, replicas)
       onDone(true)
     } catch (e) {

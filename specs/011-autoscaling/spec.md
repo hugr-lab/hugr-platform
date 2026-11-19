@@ -377,9 +377,14 @@ back.
   defined. Back to manual keeps the nodes the group runs, and its bounds and idle time for a switch back (the dialog
   sends them with the mode; a manual group answers them too). The webhook judges the plan at the max as always, and
   bounds `idle` to 1m–24h, as the API does.
-- **Who owns the fields.** The console's forced apply takes the fields it names from whoever held them. A group a
-  GitOps tool applies (Helm, Argo) then needs `--force-conflicts` there, or its scaling left to the console. This is
-  the same rule as every other field the console writes.
+- **Who owns the fields.** The console's forced apply takes the fields it names from whoever held them, and it names
+  the bounds and the idle time in manual mode too, untouched values included, because they are kept for a switch
+  back. A group a GitOps tool applies (Helm, Argo) then needs `--force-conflicts` there, or its scaling left to the
+  console. This is the same rule as every other field the console writes.
+- **An idle time written before its bounds** (outside 1m–24h, by `kubectl`) is shown in the dialog, and must be set
+  before an auto save. A switch to manual leaves it out and sends the group's own bounds, never the values a form was
+  left with in the other mode. The webhook judges a group's scaling only when it changes, so such an object is not
+  frozen: the autoscaler's replicas and a restart still pass (the re-review). A new group is judged whole.
 - **The answer.** `groups` returns the group's `scaling` with `idle` as written or the default, `last` (from, to, why)
   and `drained` (the node drained for the scale-down).
 - **The dialog.**
@@ -391,7 +396,8 @@ back.
   - It warns when the change takes effect at once: a max below the nodes running stops them now (each drains first,
     then its sessions end after `drainSeconds`), and a min above them starts nodes now.
   - The policy's default group is said to keep one node whatever its minimum (`keepsOne`, from
-    `status.scaling.defaultGroup`).
+    `status.scaling.defaultGroup` or the platform's `firstPolicy.defaultGroup`, so a manual group switched to auto for
+    the first time says so too).
   - The plan's room counts the others as the webhook does: an auto group at `max(max, replicas)`.
   - The fleet shows an auto group's bounds, its last step with the reason, the drained node in its status, and "Starts
     on the first client" at 0. The group page marks the drained node.

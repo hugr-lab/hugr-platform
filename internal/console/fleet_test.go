@@ -269,3 +269,26 @@ func TestFleetOfAScale(t *testing.T) {
 		t.Errorf("the Deployment's failure on the group: %q", etl.Problem)
 	}
 }
+
+func TestScalingOfKeepsOne(t *testing.T) {
+	// the re-review: the policy's default group says it keeps one node - for a manual group too, from the platform's
+	// first policy before the autoscaler has run
+	platform := &v1alpha1.HugrPlatform{Spec: v1alpha1.HugrPlatformSpec{FirstPolicy: &v1alpha1.FirstPolicySpec{DefaultGroup: "etl"}}}
+	manual := &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Name: "etl"}}
+	if got := scalingOf(manual, platform); !got.KeepsOne || got.Mode != "manual" {
+		t.Errorf("the default group, manual: %+v", got)
+	}
+	other := &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Name: "bi"},
+		Status: v1alpha1.HugrNodeGroupStatus{Scaling: &v1alpha1.ScalingStatus{DefaultGroup: "bi"}}}
+	if got := scalingOf(other, platform); !got.KeepsOne {
+		t.Errorf("the default group by the autoscaler's word: %+v", got)
+	}
+	if got := scalingOf(&v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Name: "ml"}}, platform); got.KeepsOne {
+		t.Errorf("another group keeps one: %+v", got)
+	}
+	kept := &v1alpha1.HugrNodeGroup{ObjectMeta: metav1.ObjectMeta{Name: "bi"},
+		Spec: v1alpha1.HugrNodeGroupSpec{Scaling: &v1alpha1.ScalingSpec{Mode: "manual", Min: 1, Max: 3}}}
+	if got := scalingOf(kept, nil); got.Min == nil || *got.Min != 1 || got.Max == nil || *got.Max != 3 {
+		t.Errorf("a manual group answers the bounds it keeps: %+v", got)
+	}
+}

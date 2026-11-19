@@ -105,8 +105,13 @@ type ScalingLastAnswer struct {
 }
 
 // scalingOf a group: its mode, and its bounds and idle time when set - a manual group's kept for a switch back.
-func scalingOf(g *v1alpha1.HugrNodeGroup) ScalingAnswer {
+func scalingOf(g *v1alpha1.HugrNodeGroup, platform *v1alpha1.HugrPlatform) ScalingAnswer {
 	out := ScalingAnswer{Mode: "manual"}
+	// the policy's default group, as the autoscaler knows it (kept in its status) or the platform names it - for a
+	// manual group too: the note matters when it is first switched to auto (the re-review)
+	rg := g.EffectiveResourceGroup()
+	out.KeepsOne = g.Status.Scaling != nil && g.Status.Scaling.DefaultGroup != "" && g.Status.Scaling.DefaultGroup == rg ||
+		platform != nil && platform.Spec.FirstPolicy != nil && platform.Spec.FirstPolicy.DefaultGroup == rg
 	sc := g.Spec.Scaling
 	if sc == nil {
 		return out
@@ -129,7 +134,6 @@ func scalingOf(g *v1alpha1.HugrNodeGroup) ScalingAnswer {
 			out.Last = &ScalingLastAnswer{At: s.Last.At.Time, From: s.Last.From, To: s.Last.To, Reason: s.Last.Reason}
 		}
 		out.Drained = s.Surplus
-		out.KeepsOne = s.DefaultGroup != "" && s.DefaultGroup == g.EffectiveResourceGroup()
 	}
 	return out
 }
@@ -253,7 +257,7 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 			Lost:        append([]string{}, g.Status.Lost...),
 			RestartedAt: g.Spec.RestartedAt,
 			Conditions:  conditions,
-			Scaling:     scalingOf(&g),
+			Scaling:     scalingOf(&g, platform),
 			Identity:    identityOf(platform, &g),
 			Problem:     problems[g.Name],
 			Nodes:       nodes,
