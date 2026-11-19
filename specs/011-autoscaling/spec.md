@@ -42,7 +42,7 @@ spec:
     max: 4               # <= the plan's maxNodes counted over every group at its max
     idle: 30m            # a node with no session for this long is drained and stopped (while above min)
     scaleUp:             # a new node when, on every placeable node, for `for`:
-      memoryUsed: 0.8    #   duckdb's memory in use reaches this share of its memory_limit (the main signal), or
+      memoryUsed: 0.8    #   duckdb's working memory reaches this share of its memory_limit (the main signal), or
       tempUsed: 0.8      #   its spilled data reaches this share of max_temp_directory_size, or
       sessionsUsed: 0.9  #   the live sessions reach this share of the node's acl_max_sessions (duckdb-acl spec 044), or
       seatsUsed: 0.9     #   the quack seats used reach this share (duckdb-acl spec 079), or
@@ -59,21 +59,24 @@ a client of a group at 0 while a node is starting - the client's own timeout dec
 CPU is no signal (the owner): duckdb takes every thread it is given, so a busy node always reads as saturated. Memory
 is, in its two parts (the owner, 2026-11-18):
 
-- **RAM**: the buffer manager's memory in use against `memory_limit`;
+- **RAM**: the buffer manager's **working** memory against `memory_limit` - its memory in use less the cache it drops
+  whenever it needs room (a persistent table's blocks it read, the file cache of remote reads; the owner, 2026-11-19:
+  measured, a node that read a lot sits at its limit with nothing running, and would grow its group for good);
 - **the spill**: what duckdb wrote to `temp_directory` (sorts, hash tables, joins too big for RAM) against
   `max_temp_directory_size`. A query that needs more fails there with RAM to spare - and past the volume's `sizeLimit`
   the kubelet evicts the pod with every session on it.
 
-duckdb-acl's load report gains `memory: {used, limit, temp_used, temp_limit}` (the buffer manager's
-`GetUsedMemory` / `GetMaxMemory` / `GetUsedSwap` / `GetMaxSwap`; `temp_limit` null when no maximum is set - nothing to
-take a share of) beside the seats and the streams, and the Lease's summary carries `memory-used` and `temp-used`. A new
+duckdb-acl's load report (its spec 175) gains `memory: {used, working, limit, temp_used, temp_limit, critical}` (the
+buffer manager's `GetUsedMemory`, that less the `BASE_TABLE` / `EXTERNAL_FILE_CACHE` / `OBJECT_CACHE` tags, `GetMaxMemory`,
+`GetUsedSwap` / `GetMaxSwap`; `temp_limit` null when no maximum is set - nothing to take a share of) beside the seats and
+the streams, and the Lease's summary carries `memory-used` (the working memory's share) and `temp-used`. A new
 node relieves new sessions only: a query already spilling stays where it runs.
 
 **The spill's own volume** (the chart, hugr-node): a node's `temp_directory` is a volume of its own with a `sizeLimit`,
 and the node sets `max_temp_directory_size` below it (90% by default), so duckdb refuses a query before the kubelet
 evicts the pod. The two are one value in the chart, never set apart.
 
-**At a critical level a node takes no new work** (the owner, 2026-11-18): past `memory_used` or `temp_used` of 95% (a
+**At a critical level a node takes no new work** (the owner, 2026-11-18): past the working memory or `temp_used` at 95% (a
 node setting, `acl_node_admit_memory`), the load report says `admit.new_session = false` and `admit.new_stream =
 false` - the front seats a new client on another node of the group, and the queries already running keep what is
 left. A group of one node then holds a new client until a second node is placeable (the growth signal is past its
@@ -108,7 +111,9 @@ capacity on its way: no second step while one is starting.
 ### Shrinking: only an idle node stops
 
 - duckdb-acl adds `sessions.idle_since` to `acl_node_load()`: the time the node's live sessions last fell to 0 (unix
-  seconds), `null` while it has one. hugr-node's heartbeat carries the load report as is, and the Lease's summary gains
+  seconds), `null` while it has one. A reader's own cookie-less session is not counted live, but its end is a session's end: the
+  console reads a node's report through the Flight Handshake `node-load` (no session), not `platform.node_load` over
+  SQL, or every view of a node would move its `idle_since`. hugr-node's heartbeat carries the load report as is, and the Lease's summary gains
   `idle-since`.
 - An auto group above `min` with a node idle longer than `idle` loses one replica: the pod-deletion cost (spec 001)
   already makes the scale-down remove the pod with the fewest sessions; the costs become `-3` for a lost node, `-2` for
