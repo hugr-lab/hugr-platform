@@ -439,16 +439,21 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request, token string, _ *p
 			out.Kubernetes.Pod = &state
 		}
 	}
-	result, err := s.Nodes.Query(r.Context(), *n, token, stmtLoad)
-	switch {
-	case err != nil:
+	load, err := s.load(r.Context(), *n, token)
+	if err != nil {
 		out.LoadError = personMessage(err)
-	case len(result.Rows) == 1:
-		out.Load = result.Records()[0]
-	default:
-		out.LoadError = "the node answered no load report"
+	} else {
+		out.Load = load
 	}
 	answer(w, out)
+}
+
+// load is a node's load report: without a session where the caller can (spec 012), else by the statement.
+func (s *Server) load(ctx context.Context, n fleet.Node, token string) (map[string]any, error) {
+	if reader, ok := s.Nodes.(loadReader); ok {
+		return reader.Load(ctx, n, token)
+	}
+	return loadByStatement(ctx, s.Nodes, n, token)
 }
 
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request, token string, _ *person) {
@@ -526,6 +531,9 @@ func personMessage(err error) string {
 	var refused *NodeError
 	if errors.As(err, &refused) {
 		return refused.Message
+	}
+	if errors.Is(err, errNoLoad) {
+		return errNoLoad.Error()
 	}
 	return "the node does not answer"
 }

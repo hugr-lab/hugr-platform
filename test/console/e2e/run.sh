@@ -155,6 +155,7 @@ ACL ADMIN MAP CLAIM 'platform_admin' FROM CLIENT tresor TO ROLE admin;
 ACL ADMIN MAP CLAIM 'platform_ops' FROM CLIENT tresor TO ROLE ops;
 SET GLOBAL acl_allow_anonymous_admin = false;
 SET GLOBAL acl_node_label = 'hugr-node-etl-a';
+SET GLOBAL acl_metrics_endpoint = true;
 SELECT acl_flight_serve('grpc+tls://127.0.0.1:$NODE_PORT', '$WORK/node.crt', '$WORK/node.key');
 SELECT acl_quack_serve('quack:127.0.0.1:$QUACK_PORT', '$(openssl rand -hex 16)', '$WORK/node.crt', '$WORK/node.key');
 SQL
