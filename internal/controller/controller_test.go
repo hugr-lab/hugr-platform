@@ -561,6 +561,9 @@ func TestDemandAnswerAndFloor(t *testing.T) {
 		Labels: build.SelectorLabels(waking), CreationTimestamp: metav1.NewTime(t0)}}
 	first := lease(t0, 600, nodeproto.Summary{SessionsMax: 1000, MemoryUsed: 0.1, TempUsed: -1, SeatsUsed: -1})
 	first.Name, first.Namespace, first.Labels = "hugr-node-etl-a", "hugr", map[string]string{build.LabelGroup: "etl"}
+	// its pod waited long for a VM and an image: what is young is its first heartbeat, its Lease
+	young.CreationTimestamp = metav1.NewTime(t0.Add(-time.Hour))
+	first.CreationTimestamp = metav1.NewTime(t0)
 	y := newWorld(t, waking, young, first, demand(""))
 	y.now = t0.Add(20 * time.Second)
 	y.reconcile(t, "etl")
@@ -580,7 +583,19 @@ func TestDemandAnswerAndFloor(t *testing.T) {
 	if got := answer(o); got != "etl-blue" {
 		t.Errorf("another group's answer was replaced or cleared: %q", got)
 	}
-	// ...but not an answer of a group that is gone - or no longer auto: no node comes from it (the review)
+	// ...but not an answer of a group that is gone - or no longer auto: no node comes from it (the review); a gone
+	// group's answer on another resource group's demand too (a deleted group's own look never comes)
+	elsewhere := demand("etl-gone")
+	elsewhere.Name = nodeproto.DemandLeaseName("bi")
+	elsewhere.Annotations[nodeproto.AnnotationDemandGroup] = "bi"
+	e := newWorld(t, other.DeepCopy(), elsewhere)
+	e.now = t0.Add(5 * time.Second)
+	e.reconcile(t, "etl")
+	var dropped coordinationv1.Lease
+	_ = e.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: nodeproto.DemandLeaseName("bi")}, &dropped)
+	if got := dropped.Annotations[nodeproto.AnnotationStarting]; got != "" {
+		t.Errorf("a gone group's answer on another resource group's demand stays: %q", got)
+	}
 	gone := newWorld(t, other.DeepCopy(), demand("etl-gone"))
 	gone.now = t0.Add(5 * time.Second)
 	gone.reconcile(t, "etl")
@@ -614,5 +629,14 @@ func TestDemandAnswerAndFloor(t *testing.T) {
 	_ = d.client.Update(context.Background(), &beatNow)
 	if got := d.reconcile(t, "etl"); got.Spec.Replicas != 1 {
 		t.Errorf("the default group's last idle node stopped on one heartbeat: %d", got.Spec.Replicas)
+	}
+	// the policy moves its default to bi (ALTER RESOURCE GROUP bi SET DEFAULT): bi's node says so, and etl's floor goes
+	moved := lease(t0, 600, nodeproto.Summary{Group: "bi", GroupDefault: true, AdmitSession: true})
+	moved.Name, moved.Namespace, moved.Labels = "hugr-node-bi-a", "hugr", map[string]string{build.LabelGroup: "bi"}
+	if err := d.client.Create(context.Background(), moved); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.reconcile(t, "etl"); got.Status.Scaling.DefaultGroup != "" {
+		t.Errorf("the default moved, etl keeps its floor: %q", got.Status.Scaling.DefaultGroup)
 	}
 }

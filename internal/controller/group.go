@@ -319,7 +319,9 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		nodes = append(nodes, state)
 		if !state.Lost && !state.Summary.Draining && state.Summary.AdmitSession && podReady(pod) {
 			admitting = true
-		} else if r.now().Sub(pod.CreationTimestamp.Time) < StartWindow {
+		} else if r.now().Sub(lease.CreationTimestamp.Time) < StartWindow {
+			// young from its first heartbeat (its Lease's creation), not its pod's: a node that waited for a VM
+			// and an image pull is new all the same (the last review)
 			coming = true
 		}
 		var idle time.Duration
@@ -352,8 +354,10 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		switch {
 		case in.Default:
 			status.Scaling.DefaultGroup = rg
-		case defaultGroup != "" && defaultGroup != rg:
-			status.Scaling.DefaultGroup = "" // the platform names another group the default
+		case status.Scaling.DefaultGroup == rg && r.anotherDefault(ctx, group.Namespace, rg):
+			// a node of another resource group says it is the policy's default now (ALTER RESOURCE GROUP …
+			// SET DEFAULT): the floor follows it - never on firstPolicy's word, which is the bootstrap's only
+			status.Scaling.DefaultGroup = ""
 		case status.Scaling.DefaultGroup == rg:
 			in.Default = true
 		}
@@ -442,7 +446,24 @@ func DeletionCost(state NodeState, idle time.Duration, now time.Time) int64 {
 	return bucket
 }
 
-// StartWindow is how long a new node's pod counts as on its way: its readiness and a heartbeat that admits.
+// anotherDefault: a live node of the namespace reports another resource group as the policy's default.
+func (r *GroupReconciler) anotherDefault(ctx context.Context, namespace, rg string) bool {
+	var leases coordinationv1.LeaseList
+	if err := r.List(ctx, &leases, client.InNamespace(namespace), client.HasLabels{build.LabelGroup}); err != nil {
+		return false
+	}
+	now := r.now()
+	for i := range leases.Items {
+		n := NodeStateOf(leases.Items[i].Name, &leases.Items[i], now)
+		if !n.Lost && n.Summary.GroupDefault && n.Summary.Group != "" && n.Summary.Group != rg {
+			return true
+		}
+	}
+	return false
+}
+
+// StartWindow is how long a new node counts as on its way from its first heartbeat: its readiness and a heartbeat
+// that admits.
 const StartWindow = 5 * time.Minute
 
 // podReady: the pod's Ready condition is true (the EndpointSlice the front seats by follows it).
@@ -477,11 +498,15 @@ func (r *GroupReconciler) tidyAnswers(ctx context.Context, group *v1alpha1.HugrN
 		case named == group.Name:
 			stale = group.DeletionTimestamp != nil || !group.Auto() ||
 				lease.Annotations[nodeproto.AnnotationDemandGroup] != mine
-		case lease.Annotations[nodeproto.AnnotationDemandGroup] == mine:
+		default:
+			// another group's answer: dropped once that group is gone - whatever the demand's resource group, a
+			// deleted group's own look never comes (no finalizer) - or, on our resource group's demand, once it is
+			// no longer auto or serves another one
 			var answerer v1alpha1.HugrNodeGroup
 			err := r.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: named}, &answerer)
-			stale = apierrors.IsNotFound(err) || err == nil && (!answerer.Auto() || answerer.DeletionTimestamp != nil ||
-				answerer.EffectiveResourceGroup() != mine)
+			stale = apierrors.IsNotFound(err) || err == nil && answerer.DeletionTimestamp != nil ||
+				err == nil && lease.Annotations[nodeproto.AnnotationDemandGroup] == mine &&
+					(!answerer.Auto() || answerer.EffectiveResourceGroup() != mine)
 		}
 		if !stale {
 			continue

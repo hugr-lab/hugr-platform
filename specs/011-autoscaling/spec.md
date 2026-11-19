@@ -228,7 +228,8 @@ last decision with its reason. The plan's check counts an auto group at its `max
   - It reads the operator's answer once per group every 2 s, however many clients wait. Its API client's limit is
     raised to 50 QPS / 100 burst, which the informers share.
   - It waits `noNodeWait` as before, then for as long as the operator answers "starting", up to `--demand-hold`
-    (5 min) or the client's own end. That bound is one deadline per connection, so a connection re-seated after a
+    (5 min) or the client's own end. On a cluster that adds a VM for the node (cluster-autoscaler: often 3-6 min) a
+    wake can take longer than that: raise `--demand-hold` there. That bound is one deadline per connection, so a connection re-seated after a
     node came up and refused it again is not held anew.
   - When no answer comes within 15 s of the demand's first write (the operator looks every 5 s), the client hears
     "no node" as before. That is a manual group, a refused one, a full one, or no group of the platform. It now waits
@@ -246,20 +247,23 @@ last decision with its reason. The plan's check counts an auto group at its `max
   - The last node of a min-0 group stops only with no live demand.
   - It answers "starting" only while a node is on its way for the demand, with the plan admitting the group. A node
     is on its way when none of the group's nodes admits (Ready, admitting, neither lost nor draining) and a pod is
-    either not here yet, not reported, or younger than 5 minutes and not admitting. A node that reported may need its
+    either not here yet, not reported, or not admitting within 5 minutes of its first heartbeat. The window counts
+    from the node's Lease, not its pod, because a pod that waited for a VM and an image pull is new all the same. A node that reported may need its
     readiness and a heartbeat more before it admits (the re-review).
   - It never answers for a group whose nodes run and admit nobody (at capacity, past the critical level, at its
     max), so that client hears "no node" in 15 s and is not held 5 min (the review).
   - The front counts the answer's 15 s from the last time it saw "starting", too.
   - A group clears only its own answer, so two groups serving one resource group do not undo each other's.
-  - Every look also drops a "starting" that is no longer anybody's (the re-review): one naming this group on another
-    resource group's demand, or while it is not auto or is going; and one on its own resource group's demand naming
-    a group that is gone, not auto, or serving another resource group. A deleted group drops its own.
+  - Every look also drops a "starting" that is no longer anybody's (the re-review):
+    - one naming this group on another resource group's demand, or while it is not auto or is going;
+    - one naming a group that is gone, on any demand: a deleted group has no finalizer, so its own look never
+      comes;
+    - on its own resource group's demand, one naming a group that is not auto or serves another resource group.
   - The answer of a new demand is dropped by its first write the API takes, not only by its first try.
   - The policy's default group keeps its floor of 1. The resource group it served as the default is kept in
-    `status.scaling.defaultGroup`, because one heartbeat during a catalog hiccup says not-default. It is dropped once
-    `firstPolicy.defaultGroup` names another group. A default moved only in the policy keeps the old group's floor:
-    one idle node, safe. A default group at 0
+    `status.scaling.defaultGroup`, because one heartbeat during a catalog hiccup says not-default. It is dropped once a
+    live node of another resource group reports itself the default (`ALTER RESOURCE GROUP … SET DEFAULT`), never on
+    `firstPolicy`'s word, which is the bootstrap's only. A default group at 0
     would leave no node to name any group to wake. Known: a policy with no default group whose every auto group
     allows min 0 can reach 0 everywhere, and then nothing names a group to wake. The first policy (hugr-node spec
     015) writes a default group.
