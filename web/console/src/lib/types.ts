@@ -119,6 +119,8 @@ export interface Group {
     last?: { at: string; from: number; to: number; reason: string }
     /** the node drained for the scale-down: no new connection, it goes once idle */
     drained?: string
+    /** the policy's default group: it keeps one node whatever its min */
+    keepsOne?: boolean
   }
   identity: Identity
   memoryLimitBytes: number

@@ -10,7 +10,6 @@ import (
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
-	"github.com/hugr-lab/hugr-platform/pkg/autoscale"
 )
 
 // FleetAnswer is `GET groups`: the plan and the groups with their nodes, from Kubernetes (spec 003, C1).
@@ -86,11 +85,13 @@ type ConditionAnswer struct {
 
 // ScalingAnswer is how the group scales (spec 011), and the autoscaler's last change.
 type ScalingAnswer struct {
-	Mode string             `json:"mode"` // manual | auto
-	Min  *int32             `json:"min,omitempty"`
-	Max  *int32             `json:"max,omitempty"`
-	Idle string             `json:"idle,omitempty"` // as written, or the default
-	Last *ScalingLastAnswer `json:"last,omitempty"`
+	Mode string `json:"mode"` // manual | auto
+	Min  *int32 `json:"min,omitempty"`
+	Max  *int32 `json:"max,omitempty"`
+	Idle string `json:"idle,omitempty"` // as set (Go's form of it, "30m0s"); empty: the default
+	// KeepsOne: the policy's default group keeps one node whatever its min (spec 011)
+	KeepsOne bool               `json:"keepsOne,omitempty"`
+	Last     *ScalingLastAnswer `json:"last,omitempty"`
 	// Drained is the node drained for the scale-down: it takes no new connection and goes once idle
 	Drained string `json:"drained,omitempty"`
 }
@@ -103,22 +104,32 @@ type ScalingLastAnswer struct {
 	Reason string    `json:"reason"`
 }
 
-// scalingOf a group.
+// scalingOf a group: its mode, and its bounds and idle time when set - a manual group's kept for a switch back.
 func scalingOf(g *v1alpha1.HugrNodeGroup) ScalingAnswer {
+	out := ScalingAnswer{Mode: "manual"}
+	sc := g.Spec.Scaling
+	if sc == nil {
+		return out
+	}
+	if g.Auto() {
+		out.Mode = "auto"
+	}
+	if sc.Max > 0 {
+		minNodes, maxNodes := sc.Min, sc.Max
+		out.Min, out.Max = &minNodes, &maxNodes
+	}
+	if sc.Idle != nil && sc.Idle.Duration > 0 {
+		out.Idle = sc.Idle.Duration.String()
+	}
 	if !g.Auto() {
-		return ScalingAnswer{Mode: "manual"}
+		return out
 	}
-	minNodes, maxNodes := g.Spec.Scaling.Min, g.Spec.Scaling.Max
-	idle := autoscale.DefaultIdle
-	if g.Spec.Scaling.Idle != nil && g.Spec.Scaling.Idle.Duration > 0 {
-		idle = g.Spec.Scaling.Idle.Duration
-	}
-	out := ScalingAnswer{Mode: "auto", Min: &minNodes, Max: &maxNodes, Idle: idle.String()}
 	if s := g.Status.Scaling; s != nil {
 		if s.Last != nil {
 			out.Last = &ScalingLastAnswer{At: s.Last.At.Time, From: s.Last.From, To: s.Last.To, Reason: s.Last.Reason}
 		}
 		out.Drained = s.Surplus
+		out.KeepsOne = s.DefaultGroup != "" && s.DefaultGroup == g.EffectiveResourceGroup()
 	}
 	return out
 }

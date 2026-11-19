@@ -127,6 +127,9 @@ func CheckScaling(scaling *v1alpha1.ScalingSpec) error {
 	}
 	// a step's effect - the Deployment, then its ReplicaSet - is seen a few status looks (5 s) later: a shorter
 	// cooldown would step again before it
+	if scaling.Idle != nil && (scaling.Idle.Duration < time.Minute || scaling.Idle.Duration > 24*time.Hour) {
+		return fmt.Errorf("scaling.idle is 1m to 24h")
+	}
 	if scaling.Cooldown != nil && scaling.Cooldown.Duration < MinCooldown {
 		return fmt.Errorf("scaling.cooldown is at least %s", MinCooldown)
 	}

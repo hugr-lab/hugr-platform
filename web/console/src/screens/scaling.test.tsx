@@ -5,7 +5,7 @@ import { Api } from '../lib/api'
 import type { Session } from '../lib/auth'
 import { AppContext } from '../lib/context'
 import type { Config, Fleet as FleetAnswer, Group, Rights } from '../lib/types'
-import { Fleet, scalingProblem } from './Fleet'
+import { Fleet, minutesOf, scalingProblem } from './Fleet'
 
 // jsdom has no showModal: a <dialog> stays closed there, and its content is found with hidden: true'
 
@@ -84,7 +84,35 @@ describe('scaling a group (spec 011 stage 4)', () => {
     fireEvent.click(screen.getByLabelText('Manual'))
     fireEvent.click(screen.getByRole('button', { name: 'Switch to manual', hidden: true }))
     await waitFor(() => expect(sent).toHaveLength(1))
-    expect(sent[0].body).toEqual({ scaling: { mode: 'manual' } })
+    // manual keeps its bounds and idle, as they were, for a switch back (the review)
+    expect(sent[0].body).toEqual({ scaling: { mode: 'manual', min: 0, max: 3, idle: '30m0s' } })
+  })
+})
+
+describe('what the dialog sends back and says (the review)', () => {
+  it('sends an idle time the person did not touch as it was, warns of nodes that stop now', async () => {
+    const sent = show([group({ replicas: 5, scaling: { mode: 'auto', min: 2, max: 5, idle: '1m30s' } })])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Scale' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Scale' }))
+    fireEvent.change(screen.getByLabelText('Maximum'), { target: { value: '3' } })
+    expect(screen.getByRole('note', { hidden: true }).textContent).toContain('2 stop at once')
+    fireEvent.click(screen.getByRole('button', { name: 'Scale between 2 and 3', hidden: true }))
+    await waitFor(() => expect(sent).toHaveLength(1))
+    expect(sent[0].body).toEqual({ scaling: { mode: 'auto', min: 2, max: 3, idle: '1m30s' } })
+  })
+
+  it('a manual group keeps its bounds for the switch back; the default group keeps one node', async () => {
+    show([group({ scaling: { mode: 'manual', min: 2, max: 4 } })])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Scale' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Scale' }))
+    fireEvent.click(screen.getByLabelText('By its load'))
+    expect((screen.getByLabelText('Minimum') as HTMLInputElement).value).toBe('2')
+    expect((screen.getByLabelText('Maximum') as HTMLInputElement).value).toBe('4')
+    cleanup()
+    show([group({ scaling: { mode: 'auto', min: 0, max: 2, keepsOne: true } })])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Scale' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Scale' }))
+    expect(screen.getByText(/the policy's default group: it keeps one node/)).toBeTruthy()
   })
 })
 
@@ -93,5 +121,15 @@ describe('scalingProblem', () => {
     expect(scalingProblem({ min: 0, max: 0, idle: 30 }, 6)).toContain('at most one node or more')
     expect(scalingProblem({ min: 0, max: 2, idle: 0 }, 6)).toContain('idle time')
     expect(scalingProblem({ min: 0, max: 2, idle: 30 }, 6)).toBeUndefined()
+  })
+})
+
+describe('minutesOf', () => {
+  it('reads Go\'s durations as whole minutes, shown only', () => {
+    expect(minutesOf('45m0s')).toBe(45)
+    expect(minutesOf('1h30m0s')).toBe(90)
+    expect(minutesOf('24h0m0s')).toBe(1440)
+    expect(minutesOf('1m30s')).toBe(1)
+    expect(minutesOf(undefined)).toBe(30)
   })
 })

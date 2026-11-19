@@ -87,10 +87,12 @@ func TestConsoleGroupWrites(t *testing.T) {
 		Scaling: &console.ScalingChange{Mode: "auto", Max: 5}}); err == nil {
 		t.Error("an auto group's max past the plan")
 	}
+	// back to manual as the dialog sends it - the bounds kept for a switch back (the review)
 	must(t, writer.Change(ctx, console.GroupChange{Namespace: ns, Name: "etl", ChangedBy: "ops@example.org",
-		Scaling: &console.ScalingChange{Mode: "manual"}}))
+		Scaling: &console.ScalingChange{Mode: "manual", Min: 0, Max: 3, Idle: 45 * time.Minute}}))
 	must(t, c.client.Get(ctx, key("etl"), &g))
-	if sc := g.Spec.Scaling; sc == nil || sc.Mode != "manual" || sc.ScaleUp.MemoryUsed != 70 {
-		t.Errorf("back to manual, the threshold kept: %+v", g.Spec.Scaling)
+	if sc := g.Spec.Scaling; sc == nil || sc.Mode != "manual" || sc.ScaleUp.MemoryUsed != 70 || sc.Max != 3 ||
+		sc.Idle == nil || sc.Idle.Duration != 45*time.Minute {
+		t.Errorf("back to manual, the bounds and the threshold kept: %+v", g.Spec.Scaling)
 	}
 }

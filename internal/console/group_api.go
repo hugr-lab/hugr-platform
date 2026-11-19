@@ -66,15 +66,18 @@ type ScalingPatch struct {
 func (p *ScalingPatch) change() (*ScalingChange, string) {
 	switch p.Mode {
 	case "manual":
-		return &ScalingChange{Mode: "manual"}, ""
+		if p.Max == 0 && p.Min == 0 && p.Idle == "" {
+			return &ScalingChange{Mode: "manual"}, ""
+		}
+		// manual keeping its bounds for a later switch back (the review: they used to go)
 	case "auto":
 	default:
 		return nil, "the mode is manual or auto"
 	}
 	if p.Max < 1 || p.Min < 0 || p.Min > p.Max {
-		return nil, "an auto group runs between min and max nodes: 0 <= min <= max, max at least 1"
+		return nil, "a group's bounds are 0 <= min <= max, max at least 1"
 	}
-	c := &ScalingChange{Mode: "auto", Min: p.Min, Max: p.Max}
+	c := &ScalingChange{Mode: p.Mode, Min: p.Min, Max: p.Max}
 	if p.Idle != "" {
 		d, err := time.ParseDuration(p.Idle)
 		if err != nil || d < time.Minute || d > 24*time.Hour {

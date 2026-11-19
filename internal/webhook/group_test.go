@@ -211,6 +211,12 @@ func TestWebhookCountsAnAutoGroupAtItsMax(t *testing.T) {
 	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), quick); err == nil || !strings.Contains(err.Error(), "cooldown") {
 		t.Errorf("a cooldown shorter than a step takes to be seen: %v", err)
 	}
+	// an idle time the console could not write back (the review): 1m to 24h, as its API
+	shortIdle := auto("etl", 1, 0, 2)
+	shortIdle.Spec.Scaling.Idle = &metav1.Duration{Duration: 30 * time.Second}
+	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), shortIdle); err == nil || !strings.Contains(err.Error(), "scaling.idle") {
+		t.Errorf("an idle time of 30 s: %v", err)
+	}
 	// the scale-down below every share that grows the group
 	high := auto("etl", 1, 0, 2)
 	high.Spec.Scaling.ScaleDown.Load = 85

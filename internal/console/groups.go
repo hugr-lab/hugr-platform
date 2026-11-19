@@ -97,7 +97,7 @@ func (c GroupChange) Content() map[string]any {
 		spec["drainSeconds"] = int64(*c.DrainSeconds)
 	case c.Scaling != nil:
 		scaling := map[string]any{"mode": c.Scaling.Mode}
-		if c.Scaling.Mode == "auto" {
+		if c.Scaling.Max > 0 { // auto's bounds, or manual's kept for a later switch back
 			scaling["min"], scaling["max"] = int64(c.Scaling.Min), int64(c.Scaling.Max)
 			if c.Scaling.Idle > 0 {
 				scaling["idle"] = c.Scaling.Idle.String()

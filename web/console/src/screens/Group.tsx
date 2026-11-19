@@ -122,7 +122,7 @@ export function Group() {
                           <Link className="link mono break-all" to={`/nodes/${encodeURIComponent(n.label)}`}>{n.label}</Link>
                           {n.needsRestart && <div className="text-ink-muted">restart pending</div>}
                           {group.scaling.drained === n.label && (
-                            <div className="text-ink-muted">drained for the scale-down: goes once its sessions end</div>
+                            <div className="text-ink-muted">drained for the scale-down: no new connection, it stops once it has had no session for a while</div>
                           )}
                         </td>
                         <td className="td">

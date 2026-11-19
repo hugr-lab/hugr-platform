@@ -787,6 +787,15 @@ func TestPatchScaling(t *testing.T) {
 	if len(manual) != 1 || manual["mode"] != "manual" {
 		t.Errorf("manual names the mode alone: %v", manual)
 	}
+	// manual keeping its bounds for a switch back (the review)
+	if code, _, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken,
+		`{"scaling": {"mode": "manual", "min": 1, "max": 3, "idle": "1m30s"}}`); code != 204 {
+		t.Fatalf("manual with its bounds: %d", code)
+	}
+	kept := h.writer.changes[2].Content()["spec"].(map[string]any)["scaling"].(map[string]any)
+	if kept["mode"] != "manual" || kept["min"] != int64(1) || kept["max"] != int64(3) || kept["idle"] != "1m30s" {
+		t.Errorf("manual keeps its bounds and idle: %v", kept)
+	}
 	observe := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
 	if code, _, _ := observe.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, `{"scaling": {"mode": "manual"}}`); code != http.StatusForbidden {
 		t.Errorf("observe sets a group's scaling: %d", code)

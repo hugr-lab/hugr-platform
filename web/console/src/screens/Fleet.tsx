@@ -28,7 +28,7 @@ export function groupState(g: Group): { mark: Mark; text: string; note: string }
     return { mark: 'half', text: 'Scaling down', note: stopping ? `${stopping.label} drains, then goes` : `${g.readyReplicas} ready, ${g.replicas} asked` }
   if (g.lost.length > 0) return { mark: 'half', text: 'Node lost', note: g.lost.join(', ') }
   if (g.scaling.drained)
-    return { mark: 'ok', text: 'Ready', note: `${g.scaling.drained} takes no new connection: it goes once its sessions end` }
+    return { mark: 'ok', text: 'Ready', note: `${g.scaling.drained} takes no new connection: it stops once it has had no session for a while, or takes connections again if the load comes back` }
   return { mark: 'ok', text: 'Ready', note: '' }
 }
 
@@ -55,7 +55,7 @@ export function wanted(g: Group): Mark[] {
 export function room(fleet: FleetAnswer, group: Group): number {
   const kept = fleet.groups
     .filter((g) => g.name !== group.name)
-    .reduce((n, g) => n + (g.scaling.mode === 'auto' ? (g.scaling.max ?? g.replicas) : g.replicas), 0)
+    .reduce((n, g) => n + (g.scaling.mode === 'auto' ? Math.max(g.scaling.max ?? 0, g.replicas) : g.replicas), 0)
   return fleet.plan.maxNodes - kept
 }
 
@@ -191,10 +191,11 @@ export function Fleet() {
   )
 }
 
-/** minutes of a Kubernetes duration as the console writes it back ("30m0s" -> 30) */
-const minutesOf = (d: string | undefined) => {
-  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:\d+s)?$/.exec(d ?? '')
-  return m && (m[1] || m[2]) ? Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0) : 30
+/** whole minutes of a duration as the server writes it ("1h30m0s" -> 90; none: the default 30) - shown only: an idle
+ * time the person does not touch is sent back as it was */
+export const minutesOf = (d: string | undefined) => {
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:[\d.]+[mµun]?s)?$/.exec(d ?? '')
+  return d && m && (m[1] || m[2]) ? Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0) : 30
 }
 
 /** what an auto group's scaling form allows, or why not */
@@ -213,21 +214,26 @@ function ScaleDialog({ fleet, group, onDone }: { fleet: FleetAnswer; group: Grou
   const [replicas, setReplicas] = useState(group.replicas)
   const [min, setMin] = useState(group.scaling.min ?? 0)
   const [max, setMax] = useState(group.scaling.max ?? Math.max(1, group.replicas))
-  const [idle, setIdle] = useState(minutesOf(group.scaling.idle))
+  const [idle, setIdleMinutes] = useState(minutesOf(group.scaling.idle))
+  const [idleTouched, setIdleTouched] = useState(false)
+  const setIdle = (n: number) => { setIdleMinutes(n); setIdleTouched(true) }
+  // the idle time as it goes back: the person's, else what the group has (as the server wrote it), else none (the default)
+  const idleSent = idleTouched ? `${idle}m` : group.scaling.idle
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const room_ = room(fleet, group)
   const over = replicas > room_
   const why = mode === 'auto' ? scalingProblem({ min, max, idle }, room_) : undefined
   const unchanged = mode === 'auto'
-    ? auto && min === group.scaling.min && max === group.scaling.max && idle === minutesOf(group.scaling.idle)
+    ? auto && min === group.scaling.min && max === group.scaling.max && !idleTouched
     : !auto && replicas === group.replicas
   const save = async () => {
     setBusy(true)
     setError(undefined)
     try {
-      if (mode === 'auto') await api.setScaling(group.name, { mode: 'auto', min, max, idle: `${idle}m` })
-      else if (auto) await api.setScaling(group.name, { mode: 'manual' }) // keeps the nodes it runs
+      if (mode === 'auto') await api.setScaling(group.name, { mode: 'auto', min, max, idle: idleSent })
+      // manual keeps the nodes it runs, and its bounds for a switch back
+      else if (auto) await api.setScaling(group.name, { mode: 'manual', min, max, idle: idleSent })
       else await api.scale(group.name, replicas)
       onDone(true)
     } catch (e) {
@@ -245,8 +251,10 @@ function ScaleDialog({ fleet, group, onDone }: { fleet: FleetAnswer; group: Grou
         <div className="flex flex-col gap-3">
           <p className="text-ink-muted">
             The group grows when every node is under load, drains a node when the load fits in fewer, and stops a node
-            once it has had no session for the idle time. With a minimum of 0 it stops when nobody uses it and starts
-            on the first client.
+            once it has had no session for the idle time.{' '}
+            {group.scaling.keepsOne
+              ? 'It is the policy\'s default group: it keeps one node whatever its minimum.'
+              : 'With a minimum of 0 it stops when nobody uses it and starts on the first client.'}
           </p>
           <div className="flex flex-wrap gap-6">
             <div className="flex flex-col gap-1">
@@ -269,6 +277,15 @@ function ScaleDialog({ fleet, group, onDone }: { fleet: FleetAnswer; group: Grou
             </p>
           ) : (
             <p className="text-sm text-ink-muted">The plan counts this group at its maximum: up to {room_} here.</p>
+          )}
+          {!why && max < group.replicas && (
+            <p role="note" className="text-sm font-medium">
+              It runs {nodes(group.replicas)} now: {group.replicas - max} stop at once - each drains first, then its
+              sessions end after {group.drainSeconds} s.
+            </p>
+          )}
+          {!why && min > group.replicas && (
+            <p role="note" className="text-sm font-medium">It runs {nodes(group.replicas)} now: {nodes(min - group.replicas)} more start at once.</p>
           )}
         </div>
       ) : auto ? (

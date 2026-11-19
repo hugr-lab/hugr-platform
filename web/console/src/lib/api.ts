@@ -73,7 +73,7 @@ export class Api {
   fleet = () => this.request<Fleet>('GET', 'groups')
   scale = (group: string, replicas: number) => this.request<void>('PATCH', `groups/${part(group)}`, { replicas })
   /** spec 011 stage 4: manual, or auto between min and max with an idle time ("30m") */
-  setScaling = (group: string, scaling: { mode: 'manual' | 'auto'; min?: number; max?: number; idle?: string }) =>
+  setScaling = (group: string, scaling: { mode: 'manual' | 'auto'; min?: number; max?: number; idle?: string }) => // a manual group may keep its bounds
     this.request<void>('PATCH', `groups/${part(group)}`, { scaling })
   restart = (group: string) => this.request<void>('PATCH', `groups/${part(group)}`, { restart: true })
   // spec 006: the groups themselves, and a group's place in the policy
