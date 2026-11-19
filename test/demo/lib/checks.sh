@@ -81,6 +81,16 @@ deploy() { k -n hugr get deploy "hugr-node-$1" -o jsonpath="$2"; }
 
 # conditions for eventually, each reading the state when it runs
 status_is() { [ "$(status "$1" "$2")" = "$3" ]; }
+# demand_expired <lease>: the front's demand Lease is gone or no longer renewed (spec 011 stage 2)
+demand_expired() {
+	local json
+	json="$(k -n hugr get lease "$1" -o json 2>/dev/null)" || return 0
+	python3 -c '
+import datetime, json, sys
+s = json.loads(sys.argv[1])["spec"]
+renewed = datetime.datetime.fromisoformat(s["renewTime"].replace("Z", "+00:00"))
+sys.exit(0 if datetime.datetime.now(datetime.timezone.utc) > renewed + datetime.timedelta(seconds=s["leaseDurationSeconds"]) else 1)' "$json"
+}
 lease_is() { [ "$(lease "$1" "$2")" = "$3" ]; }
 deploy_is() { [ "$(deploy "$1" "$2")" = "$3" ]; }
 group_ready() { status_is "$1" '{.status.readyReplicas}/{.status.resourceGroupKnown}' "$(status "$1" '{.spec.replicas}')/true"; }
@@ -235,15 +245,24 @@ check_front() {
 	grep -q 'hugr: no node of group b can take a new session - retry' <<<"$got" || fail "analyst_b with no node of b: $got"
 	ok "with no node of b, analyst_b is refused after the wait, naming b - never seated on a"
 	# spec 011 stage 2: b scales itself from 0 - analyst_b's statement is held by the front while the operator starts
-	# b's node for it (the front's demand Lease, answered "starting"), then answered there
+	# b's node for it (the front's demand Lease, answered "starting"), then answered there. The refused statement above
+	# left a demand for b: it expires first (30 s), so what wakes b is the statement below
+	local demand started
+	demand="hugr-demand-$(printf b | python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])')"
+	eventually 90 "b's earlier demand expired" demand_expired "$demand"
 	k -n hugr patch hng b --type=merge -p '{"spec":{"scaling":{"mode":"auto","min":0,"max":1}}}' >/dev/null ||
 		fail "group b to auto, min 0"
+	sleep 10 # two of the operator's looks: no demand, so b stays at 0
+	status_is b '{.spec.replicas}' 0 || fail "b woke with nobody waiting: $(status b '{.spec.replicas}')"
+	started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	got="$(VIA_WAIT=300 via_front analyst-b "SELECT count(*) FROM orders" 2>&1)" ||
 		fail "analyst_b was not served once b's node started: $got"
 	[ "$got" = "$want" ] || fail "analyst_b read $got once b's node started, on b $want"
 	status_is b '{.spec.replicas}' 1 || fail "b was not scaled to 1: $(status b '{.spec.replicas}')"
 	status b '{.status.scaling.last.reason}' | grep -q 'client waits' ||
 		fail "b's last scaling: $(status b '{.status.scaling.last}')"
+	[[ "$(status b '{.status.scaling.last.at}')" > "$started" || "$(status b '{.status.scaling.last.at}')" = "$started" ]] ||
+		fail "b woke at $(status b '{.status.scaling.last.at}'), before analyst_b's statement at $started"
 	# back to manual, one node, for the checks after
 	k -n hugr patch hng b --type=merge -p '{"spec":{"scaling":null,"replicas":1}}' >/dev/null || fail "group b back to manual"
 	eventually 300 "group b serves again" group_ready b

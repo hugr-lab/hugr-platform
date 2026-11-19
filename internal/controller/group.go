@@ -331,6 +331,19 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 			MayGrow: !meta.IsStatusConditionTrue(status.Conditions, ConditionRefused), Now: r.now()}
 		for _, n := range nodes {
 			in.Nodes = append(in.Nodes, nodeOf(n))
+			in.Default = in.Default || n.Summary.GroupDefault
+		}
+		// the policy's default group is kept as such: one heartbeat during a catalog hiccup says not-default, and
+		// the default group at 0 would leave no node to name any group to wake (the review)
+		if status.Scaling == nil {
+			status.Scaling = &v1alpha1.ScalingStatus{}
+		}
+		rg := group.EffectiveResourceGroup()
+		switch {
+		case in.Default:
+			status.Scaling.DefaultGroup = rg
+		case status.Scaling.DefaultGroup == rg:
+			in.Default = true
 		}
 		// stage 2: the front holds a client of the group's resource group with no node to seat it on
 		var wanted coordinationv1.Lease
@@ -340,7 +353,11 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		in.Demand = hasDemand && nodeproto.DemandLive(&wanted, in.Now)
 		r.autoscale(ctx, group, *scaling, in, status)
 		if hasDemand {
-			r.answerDemand(ctx, group, &wanted, in.Demand && in.MayGrow && group.Spec.Replicas > 0)
+			// "starting" while a node is on its way for it - asked for and not here yet, or not reported - never for
+			// a group whose nodes run but are not placeable for the client (at capacity, past the critical level):
+			// that client should hear "no node" soon, not be held (the review)
+			onItsWay := group.Spec.Replicas > 0 && (alive < int(group.Spec.Replicas) || unreported > 0)
+			r.answerDemand(ctx, group, &wanted, in.Demand && in.MayGrow && onItsWay)
 		}
 	case status.Scaling != nil:
 		status.Scaling.PressureSince = nil // a manual group keeps its last change, never a pressure clock
@@ -414,8 +431,11 @@ func DeletionCost(state NodeState, idle time.Duration, now time.Time) int64 {
 func (r *GroupReconciler) answerDemand(ctx context.Context, group *v1alpha1.HugrNodeGroup, lease *coordinationv1.Lease,
 	starting bool) {
 	current := lease.Annotations[nodeproto.AnnotationStarting]
-	if (current != "") == starting {
-		return
+	switch {
+	case starting && current == group.Name, !starting && current != group.Name:
+		return // as it should be - or another group's answer (two groups serving one resource group), not ours
+	case starting && current != "":
+		return // another group of the resource group answered first: one answer is enough
 	}
 	patch := client.MergeFrom(lease.DeepCopy())
 	if lease.Annotations == nil {

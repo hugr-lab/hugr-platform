@@ -1,3 +1,4 @@
 # opt-in: kubectl apply -k config/policy (see group-pods.yaml)
 resources:
 - group-pods.yaml
+- front-leases.yaml

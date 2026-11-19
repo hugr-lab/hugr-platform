@@ -221,21 +221,38 @@ last decision with its reason. The plan's check counts an auto group at its `max
   the client. Named groups are those a node's `wrong_resource_group` refusal named, which it does only for a token
   it verified, so an unauthenticated caller wakes nothing.
   - It writes the demand Lease at once: created, then merge-patched on its spec only, so the operator's answer stays.
+    A new demand on a Lease that expired drops an answer left from before: the group may be manual by now, or gone,
+    and a client would otherwise be held for nothing (the review).
   - It renews the Lease every 10 s while any of its clients waits for the group, and lets it expire after that
     (30 s).
+  - It reads the operator's answer once per group every 2 s, however many clients wait. Its API client's limit is
+    raised to 50 QPS / 100 burst, which the informers share.
   - It waits `noNodeWait` as before, then for as long as the operator answers "starting", up to `--demand-hold`
-    (5 min) or the client's own end.
-  - When no answer comes within 15 s (the operator looks every 5 s), the client hears "no node" as before. That is a
-    manual group, a refused one, or no group of the platform. It now waits up to 15 s, not `noNodeWait`.
-  - Its Role gains `create` and `patch` on Leases. A name derived from a group cannot be narrowed by `resourceNames`.
-    The front is the data path of every client already, and the worst a forged demand does is below.
+    (5 min) or the client's own end. That bound is one deadline per connection, so a connection re-seated after a
+    node came up and refused it again is not held anew.
+  - When no answer comes within 15 s of the demand's first write (the operator looks every 5 s), the client hears
+    "no node" as before. That is a manual group, a refused one, a full one, or no group of the platform. It now waits
+    up to 15 s, not `noNodeWait`.
+  - Its Role gains `create` and `patch` on Leases, because a name derived from a group cannot be narrowed by
+    `resourceNames`. A ValidatingAdmissionPolicy keeps it to its demand Leases: a name `hugr-demand-*` with the
+    demand label, never the operator's leader Lease nor a node's (the review). It is
+    `config/policy/front-leases.yaml`, and the chart ships it wherever the cluster has the API (Kubernetes 1.30+),
+    not as an option.
 - **The operator.**
   - The group's reconcile reads the demand Lease of the group's resource group; a renewed one is the decision's
     demand.
   - A group at 0 is woken to `max(1, min)` at once (no `for`, no cooldown).
   - The last node of a min-0 group stops only with no live demand.
-  - It answers "starting" while it holds a node for the demand, the plan admits the group and its replicas are
-    above 0, and clears the answer otherwise.
+  - It answers "starting" only while a node is on its way for the demand: asked for and not here yet, or not
+    reported, with the plan admitting the group. It never answers for a group whose node runs and is not placeable
+    (at capacity, past the critical level, at its max), so that client hears "no node" in 15 s and is not held 5 min
+    (the review).
+  - A group clears only its own answer, so two groups serving one resource group do not undo each other's.
+  - The policy's default group keeps its floor of 1. The resource group it served as the default is kept in
+    `status.scaling.defaultGroup`, and one heartbeat during a catalog hiccup says not-default. A default group at 0
+    would leave no node to name any group to wake. Known: a policy with no default group whose every auto group
+    allows min 0 can reach 0 everywhere, and then nothing names a group to wake. The first policy (hugr-node spec
+    015) writes a default group.
   - `WakeOnDemand` is on, so an auto group may go to its min of 0.
 - **Tests.**
   - `internal/front/demand` (fake clientset, `-race`):
@@ -244,12 +261,22 @@ last decision with its reason. The plan's check counts an auto group at its `max
     - an ungrouped seat writes none;
     - a client held while "starting" is seated once the node comes up, and the renew keeps the answer;
     - the client's end ends the hold;
-    - holders share one renewer.
-  - The controller test: a renewed demand wakes an auto group at 0 and is answered, an expired one is not, and a
-    min-0 group's last idle node stops.
+    - holders share one renewer;
+    - an old answer on an expired Lease is dropped;
+    - a re-seat is not held past the connection's deadline.
+  - The controller tests:
+    - a renewed demand wakes an auto group at 0 and is answered, an expired one is not;
+    - a min-0 group's last idle node stops;
+    - a full group at its max is not answered;
+    - another group's answer stays;
+    - the default group keeps one node through a heartbeat that no longer says so.
   - The envtest: the front's Role reads the fleet and writes only Leases (create, patch).
-  - The demo (kind): b at 0, switched to auto with min 0. analyst_b's statement through the front is held, b's node
-    starts, and the statement is answered there (the checker's `-timeout`).
+  - The envtest, as the front's own account against a real API server: the policy refuses a patch of a node's Lease
+    and of the leader Lease, a node Lease made by the front, and a demand Lease unmarked. The front's own demand code
+    creates and renews its Lease.
+  - The demo (kind): b at 0 waits until the demand the refused statement left has expired, is switched to auto with
+    min 0, and stays at 0 with nobody waiting. analyst_b's statement through the front is then held, b's node starts
+    for it (woken after the statement began), and the statement is answered there (the checker's `-timeout`).
 
 - The console answers the group's `scaling` (mode, min, max, `last`). A person's `replicas` on an auto group is
   refused with 409 `auto_scaled`; the dialog for min / max / idle is stage 3.

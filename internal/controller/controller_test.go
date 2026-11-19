@@ -519,3 +519,67 @@ func TestDemandWakesAGroupAtZero(t *testing.T) {
 		t.Errorf("the last idle node of a min-0 group stays: %d", got.Spec.Replicas)
 	}
 }
+
+// TestDemandAnswerAndFloor (the review): "starting" only while a node is on its way - never for a group whose node
+// runs and is not placeable (a client should hear "no node" soon); another group's answer is not ours to clear; and
+// the policy's default group keeps a floor of 1 though a heartbeat no longer says it is the default
+func TestDemandAnswerAndFloor(t *testing.T) {
+	demand := func(starting string) *coordinationv1.Lease {
+		l := lease(t0, nodeproto.DemandSeconds, nodeproto.Summary{})
+		l.Name, l.Namespace = nodeproto.DemandLeaseName("etl"), "hugr"
+		l.Labels = map[string]string{nodeproto.LabelDemand: "true"}
+		l.Annotations = map[string]string{nodeproto.AnnotationDemandGroup: "etl"}
+		if starting != "" {
+			l.Annotations[nodeproto.AnnotationStarting] = starting
+		}
+		return l
+	}
+	answer := func(w *world) string {
+		var l coordinationv1.Lease
+		_ = w.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: nodeproto.DemandLeaseName("etl")}, &l)
+		return l.Annotations[nodeproto.AnnotationStarting]
+	}
+	// a group at its max whose one node runs, at capacity (admits nobody): no node is coming
+	full := group("etl", 1, t0)
+	full.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 1}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-a", Namespace: "hugr", Labels: build.SelectorLabels(full)}}
+	beat := lease(t0, 600, nodeproto.Summary{Sessions: 1000, SessionsMax: 1000, MemoryUsed: 0.2, TempUsed: -1, SeatsUsed: -1})
+	beat.Name, beat.Namespace, beat.Labels = "hugr-node-etl-a", "hugr", map[string]string{build.LabelGroup: "etl"}
+	w := newWorld(t, full, pod, beat, demand(""))
+	w.now = t0.Add(5 * time.Second)
+	w.reconcile(t, "etl")
+	w.reconcile(t, "etl")
+	if got := answer(w); got != "" {
+		t.Errorf("a full group at its max answered %q: its client would be held for nothing", got)
+	}
+
+	// two groups of one resource group: the other's answer stays
+	other := group("etl", 0, t0)
+	other.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 1}
+	o := newWorld(t, other, demand("etl-blue"))
+	o.now = t0.Add(5 * time.Second)
+	o.reconcile(t, "etl")
+	if got := answer(o); got != "etl-blue" {
+		t.Errorf("another group's answer was replaced or cleared: %q", got)
+	}
+
+	// the default group, once known as such, keeps one node when a heartbeat no longer says so
+	def := group("etl", 1, t0)
+	def.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 2}
+	defPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-a", Namespace: "hugr", Labels: build.SelectorLabels(def)}}
+	said := lease(t0, 600, nodeproto.Summary{GroupDefault: true, SessionsMax: 1000, MemoryUsed: 0.1, TempUsed: -1,
+		SeatsUsed: -1, IdleSince: t0.Add(-time.Hour).Unix()})
+	said.Name, said.Namespace, said.Labels = "hugr-node-etl-a", "hugr", map[string]string{build.LabelGroup: "etl"}
+	d := newWorld(t, def, defPod, said)
+	d.now = t0.Add(5 * time.Second)
+	if got := d.reconcile(t, "etl"); got.Status.Scaling == nil || got.Status.Scaling.DefaultGroup != "etl" {
+		t.Fatalf("the default group is not kept: %+v", got.Status.Scaling)
+	}
+	var beatNow coordinationv1.Lease
+	_ = d.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-a"}, &beatNow)
+	beatNow.Annotations[nodeproto.AnnotationGroupDefault] = "false" // a heartbeat during a catalog hiccup
+	_ = d.client.Update(context.Background(), &beatNow)
+	if got := d.reconcile(t, "etl"); got.Spec.Replicas != 1 {
+		t.Errorf("the default group's last idle node stopped on one heartbeat: %d", got.Spec.Replicas)
+	}
+}

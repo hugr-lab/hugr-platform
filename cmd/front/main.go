@@ -83,6 +83,9 @@ func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, in
 	if err != nil {
 		return err
 	}
+	// the informers, the demand Leases' renewers and readers share one rate limit: client-go's 5 / 10 is too little
+	// for a front holding many clients of several groups (spec 011 stage 2)
+	config.QPS, config.Burst = 50, 100
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return err

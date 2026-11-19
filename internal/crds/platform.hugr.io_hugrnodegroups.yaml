@@ -375,6 +375,11 @@ spec:
                 description: 'Scaling is the autoscaler''s (spec 011): since when
                   the group is past a threshold, and its last decision.'
                 properties:
+                  defaultGroup:
+                    description: |-
+                      DefaultGroup is the resource group this group served as the policy's default: kept so (a floor of 1) while it
+                      serves that one, whatever a heartbeat says.
+                    type: string
                   last:
                     description: Last is the last change of replicas the autoscaler
                       made.

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -24,6 +25,9 @@ func pick(group string) func(*fleet.View) *fleet.Node {
 		return v.Choose(fleet.Flight, []string{group}, nil, time.Now(), rand.New(rand.NewPCG(1, 1)))
 	}
 }
+
+// soon is a connection's hold deadline in a test
+func soon() time.Time { return time.Now().Add(5 * time.Second) }
 
 func demandOf() (*Demand, *fake.Clientset) {
 	client := fake.NewClientset()
@@ -48,7 +52,7 @@ func TestAPlaceableNodeWritesNoDemand(t *testing.T) {
 	d, c := demandOf()
 	f := fleet.New()
 	f.Set(fleet.NewView([]fleet.Node{node("hugr-node-etl-a", "etl")}))
-	if n := d.Wait(context.Background(), f, time.Second, []string{"etl"}, pick("etl")); n == nil {
+	if n := d.Wait(context.Background(), f, time.Second, []string{"etl"}, soon(), pick("etl")); n == nil {
 		t.Fatal("a placeable node is not chosen")
 	}
 	if ok, _ := lease(t, c, "etl"); ok {
@@ -63,7 +67,7 @@ func TestNobodyStartsANode(t *testing.T) {
 	f := fleet.New()
 	f.Set(fleet.NewView(nil))
 	start := time.Now()
-	if n := d.Wait(context.Background(), f, 50*time.Millisecond, []string{"etl"}, pick("etl")); n != nil {
+	if n := d.Wait(context.Background(), f, 50*time.Millisecond, []string{"etl"}, soon(), pick("etl")); n != nil {
 		t.Fatalf("a node from nowhere: %v", n)
 	}
 	if took := time.Since(start); took < 300*time.Millisecond || took > 2*time.Second {
@@ -74,7 +78,7 @@ func TestNobodyStartsANode(t *testing.T) {
 	}
 	// ungrouped (the Leases' defaults, nobody verified): no demand, NoNodeWait only
 	d2, c2 := demandOf()
-	if n := d2.Wait(context.Background(), f, 10*time.Millisecond, nil, pick("etl")); n != nil {
+	if n := d2.Wait(context.Background(), f, 10*time.Millisecond, nil, soon(), pick("etl")); n != nil {
 		t.Fatal("a node from nowhere")
 	}
 	if l, _ := c2.CoordinationV1().Leases("hugr").List(context.Background(), metav1.ListOptions{}); len(l.Items) != 0 {
@@ -87,7 +91,9 @@ func TestHeldWhileANodeStarts(t *testing.T) {
 	f := fleet.New()
 	f.Set(fleet.NewView(nil))
 	done := make(chan *fleet.Node)
-	go func() { done <- d.Wait(context.Background(), f, 50*time.Millisecond, []string{"etl"}, pick("etl")) }()
+	go func() {
+		done <- d.Wait(context.Background(), f, 50*time.Millisecond, []string{"etl"}, soon(), pick("etl"))
+	}()
 	// the operator answers, and the node comes up past the answer's wait
 	for i := 0; i < 100; i++ {
 		if ok, _ := lease(t, c, "etl"); ok {
@@ -135,7 +141,7 @@ func TestTheClientsEndEndsTheHold(t *testing.T) {
 		cancel()
 	}()
 	start := time.Now()
-	if n := d.Wait(ctx, f, 50*time.Millisecond, []string{"etl"}, pick("etl")); n != nil {
+	if n := d.Wait(ctx, f, 50*time.Millisecond, []string{"etl"}, soon(), pick("etl")); n != nil {
 		t.Fatal("a node from nowhere")
 	}
 	if took := time.Since(start); took > 3*time.Second {
@@ -165,4 +171,68 @@ func TestHoldsShareOneRenewer(t *testing.T) {
 		t.Errorf("nobody holds: %+v", d.held)
 	}
 	d.mu.Unlock()
+}
+
+// TestAnOldAnswerIsDropped (the review): an answer left on a Lease that expired - its group switched to manual, or
+// gone, before the operator cleared it - is not this demand's: a new demand drops it, and the client hears "no node"
+// once nobody answers, not after the whole hold
+func TestAnOldAnswerIsDropped(t *testing.T) {
+	d, c := demandOf()
+	seconds := int32(nodeproto.DemandSeconds)
+	old := metav1.NewMicroTime(time.Now().Add(-time.Hour))
+	_, err := c.CoordinationV1().Leases("hugr").Create(context.Background(), &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeproto.DemandLeaseName("etl"), Namespace: "hugr",
+			Labels:      map[string]string{nodeproto.LabelDemand: "true"},
+			Annotations: map[string]string{nodeproto.AnnotationDemandGroup: "etl", nodeproto.AnnotationStarting: "etl"}},
+		Spec: coordinationv1.LeaseSpec{RenewTime: &old, LeaseDurationSeconds: &seconds}}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := fleet.New()
+	f.Set(fleet.NewView(nil))
+	start := time.Now()
+	if n := d.Wait(context.Background(), f, 50*time.Millisecond, []string{"etl"}, soon(), pick("etl")); n != nil {
+		t.Fatal("a node from nowhere")
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("held %v by an old answer", took)
+	}
+	if ok, starting := lease(t, c, "etl"); !ok || starting != "" {
+		t.Errorf("the old answer stays: %q", starting)
+	}
+}
+
+// TestOneHoldPerConnection (the review): a connection re-seated after a node came up and refused it again is held
+// again only within its first hold's deadline
+func TestOneHoldPerConnection(t *testing.T) {
+	d, c := demandOf()
+	f := fleet.New()
+	f.Set(fleet.NewView(nil))
+	go func() {
+		for i := 0; i < 100; i++ {
+			if ok, _ := lease(t, c, "etl"); ok {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		l, _ := c.CoordinationV1().Leases("hugr").Get(context.Background(), nodeproto.DemandLeaseName("etl"), metav1.GetOptions{})
+		l.Annotations[nodeproto.AnnotationStarting] = "etl"
+		_, _ = c.CoordinationV1().Leases("hugr").Update(context.Background(), l, metav1.UpdateOptions{})
+	}()
+	until := time.Now().Add(700 * time.Millisecond)
+	start := time.Now()
+	if n := d.Wait(context.Background(), f, 50*time.Millisecond, []string{"etl"}, until, pick("etl")); n != nil {
+		t.Fatal("a node from nowhere")
+	}
+	if took := time.Since(start); took < 600*time.Millisecond || took > 2*time.Second {
+		t.Errorf("held %v, want the connection's deadline", took)
+	}
+	// the re-seat's wait: past the deadline, no second hold
+	again := time.Now()
+	if n := d.Wait(context.Background(), f, 50*time.Millisecond, []string{"etl"}, until, pick("etl")); n != nil {
+		t.Fatal("a node from nowhere")
+	}
+	if took := time.Since(again); took > 500*time.Millisecond {
+		t.Errorf("a second hold past the connection's deadline: %v", took)
+	}
 }

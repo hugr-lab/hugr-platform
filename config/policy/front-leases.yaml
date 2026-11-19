@@ -1,0 +1,35 @@
+# The front's Leases (spec 011 stage 2): its Role may create and patch Leases - a demand Lease's name is a resource
+# group's hash, which no resourceNames can narrow - so this policy keeps it to its demand Leases: a name hugr-demand-*,
+# the demand label. Never the operator's leader Lease, never a node's (the operator scales and costs pods by them).
+# The chart ships it wherever the cluster has the API (Kubernetes >= 1.30), not as an option.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: hugr-front-leases
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [coordination.k8s.io]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE, DELETE]
+      resources: [leases]
+  matchConditions:
+  - name: the-front
+    expression: >-
+      request.userInfo.username.startsWith('system:serviceaccount:') &&
+      request.userInfo.username.endsWith(':hugr-front')
+  validations:
+  - expression: >-
+      request.operation != 'DELETE' && object.metadata.name.startsWith('hugr-demand-') &&
+      has(object.metadata.labels) && 'platform.hugr.io/demand' in object.metadata.labels &&
+      object.metadata.labels['platform.hugr.io/demand'] == 'true'
+    message: the front writes its demand Leases only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: hugr-front-leases
+spec:
+  policyName: hugr-front-leases
+  validationActions: [Deny]

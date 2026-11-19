@@ -1,0 +1,36 @@
+{{/* spec 011 stage 2: the front writes its demand Leases only (config/policy/front-leases.yaml) - not an option: its
+Role may create and patch every Lease of the namespace, which no resourceNames can narrow. Kubernetes 1.30+. */}}
+{{- if .Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy" }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "hugr.clusterName" . }}-front-leases
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [coordination.k8s.io]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE, DELETE]
+      resources: [leases]
+  matchConditions:
+  - name: the-front
+    # the front of any platform's namespace: the policy only narrows what that account may do
+    expression: >-
+      request.userInfo.username.startsWith('system:serviceaccount:') &&
+      request.userInfo.username.endsWith(':hugr-front')
+  validations:
+  - expression: >-
+      request.operation != 'DELETE' && object.metadata.name.startsWith('hugr-demand-') &&
+      has(object.metadata.labels) && 'platform.hugr.io/demand' in object.metadata.labels &&
+      object.metadata.labels['platform.hugr.io/demand'] == 'true'
+    message: the front writes its demand Leases only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "hugr.clusterName" . }}-front-leases
+spec:
+  policyName: {{ include "hugr.clusterName" . }}-front-leases
+  validationActions: [Deny]
+{{- end }}

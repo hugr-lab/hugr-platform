@@ -208,12 +208,13 @@ func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD, rout
 			seat.Groups = []string{g} // another node of the group the connection was on
 		}
 	}
-	var silent error // the last node tried did not answer
+	var silent error                              // the last node tried did not answer
+	holdUntil := time.Now().Add(p.Demand.Limit()) // one hold for a starting node, whatever the re-seats
 	for {
 		n := next
 		next = nil
 		if n == nil {
-			n = p.Demand.Wait(client.Context(), p.Fleet, p.NoNodeWait, seat.NamedGroups(), func(v *fleet.View) *fleet.Node {
+			n = p.Demand.Wait(client.Context(), p.Fleet, p.NoNodeWait, seat.NamedGroups(), holdUntil, func(v *fleet.View) *fleet.Node {
 				return v.Choose(fleet.Flight, seat.Groups, seat.Tried, time.Now(), p.random())
 			})
 		}

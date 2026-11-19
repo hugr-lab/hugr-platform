@@ -146,7 +146,7 @@ func (p *Proxy) quack(w http.ResponseWriter, r *http.Request) {
 		// a node the front does not see: any node answers that it does not know the connection, and the client
 		// connects again - the front writes no quack message of its own
 		outcome = "unknown_label"
-		if n = p.choose(r, view.DefaultGroups(time.Now()), nil, nil); n == nil {
+		if n = p.choose(r, view.DefaultGroups(time.Now()), nil, nil, time.Time{}); n == nil {
 			p.refuseNoNode(w, nil)
 			return
 		}
@@ -157,8 +157,9 @@ func (p *Proxy) quack(w http.ResponseWriter, r *http.Request) {
 
 // choose a placeable node of the groups, waiting up to NoNodeWait for one - and, for groups a node named, while the
 // operator starts one (spec 011 stage 2).
-func (p *Proxy) choose(r *http.Request, groups []string, tried map[string]bool, named []string) *fleet.Node {
-	return p.Demand.Wait(r.Context(), p.Fleet, p.NoNodeWait, named, func(v *fleet.View) *fleet.Node {
+func (p *Proxy) choose(r *http.Request, groups []string, tried map[string]bool, named []string,
+	holdUntil time.Time) *fleet.Node {
+	return p.Demand.Wait(r.Context(), p.Fleet, p.NoNodeWait, named, holdUntil, func(v *fleet.View) *fleet.Node {
 		return v.Choose(fleet.Quack, groups, tried, time.Now(), p.random())
 	})
 }
@@ -208,9 +209,10 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	view, _ := p.Fleet.View()
 	seat := route.NewSeat(view.DefaultGroups(time.Now()))
 	outcome := "seated"
-	silent := false // the last node tried did not answer
+	silent := false                               // the last node tried did not answer
+	holdUntil := time.Now().Add(p.Demand.Limit()) // one hold for a starting node, whatever the re-seats
 	for {
-		n := p.choose(r, seat.Groups, seat.Tried, seat.NamedGroups())
+		n := p.choose(r, seat.Groups, seat.Tried, seat.NamedGroups(), holdUntil)
 		if r.Context().Err() != nil {
 			return // the client went: no node is tried for it
 		}

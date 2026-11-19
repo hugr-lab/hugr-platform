@@ -219,6 +219,10 @@ type ScalingStatus struct {
 	// Last is the last change of replicas the autoscaler made.
 	// +optional
 	Last *ScalingDecision `json:"last,omitempty"`
+	// DefaultGroup is the resource group this group served as the policy's default: kept so (a floor of 1) while it
+	// serves that one, whatever a heartbeat says.
+	// +optional
+	DefaultGroup string `json:"defaultGroup,omitempty"`
 }
 
 // ScalingDecision is one change of a group's size, and why.
