@@ -748,3 +748,56 @@ func TestAutoGroupScalesItself(t *testing.T) {
 		}
 	}
 }
+
+func TestPatchScaling(t *testing.T) {
+	// spec 011 stage 4: the console sets an auto group's mode, bounds and idle time - and only those fields, its own
+	h := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
+	for _, body := range []string{`{"scaling": {"mode": "hpa"}}`, `{"scaling": {"mode": "auto", "min": 3, "max": 2}}`,
+		`{"scaling": {"mode": "auto", "min": 0, "max": 0}}`, `{"scaling": {"mode": "auto", "min": 0, "max": 2, "idle": "5s"}}`,
+		`{"scaling": {"mode": "auto", "min": 0, "max": 2, "idle": "forever"}}`, `{"scaling": {"mode": "auto", "max": 2}, "restart": true}`} {
+		if code, _, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, body); code != http.StatusBadRequest {
+			t.Errorf("%s: %d", body, code)
+		}
+	}
+	if len(h.writer.changes) != 0 {
+		t.Fatalf("nothing refused is written: %+v", h.writer.changes)
+	}
+	if code, _, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken,
+		`{"scaling": {"mode": "auto", "min": 0, "max": 3, "idle": "45m"}}`); code != 204 {
+		t.Fatalf("auto: %d", code)
+	}
+	change := h.writer.changes[0]
+	if change.Scaling == nil || change.Scaling.Mode != "auto" || change.Scaling.Max != 3 || change.Scaling.Idle != 45*time.Minute ||
+		change.Owner() != ScalingFieldOwner {
+		t.Fatalf("the change: %+v", change)
+	}
+	spec := change.Content()["spec"].(map[string]any)
+	scaling := spec["scaling"].(map[string]any)
+	if len(spec) != 1 || scaling["mode"] != "auto" || scaling["min"] != int64(0) || scaling["max"] != int64(3) ||
+		scaling["idle"] != "45m0s" {
+		t.Errorf("only the scaling's mode, bounds and idle are applied: %v", spec)
+	}
+	if _, thresholds := scaling["scaleUp"]; thresholds {
+		t.Error("the thresholds are the definition's")
+	}
+	if code, _, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, `{"scaling": {"mode": "manual"}}`); code != 204 {
+		t.Fatalf("manual: %d", code)
+	}
+	manual := h.writer.changes[1].Content()["spec"].(map[string]any)["scaling"].(map[string]any)
+	if len(manual) != 1 || manual["mode"] != "manual" {
+		t.Errorf("manual names the mode alone: %v", manual)
+	}
+	// manual keeping its bounds for a switch back (the review)
+	if code, _, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken,
+		`{"scaling": {"mode": "manual", "min": 1, "max": 3, "idle": "1m30s"}}`); code != 204 {
+		t.Fatalf("manual with its bounds: %d", code)
+	}
+	kept := h.writer.changes[2].Content()["spec"].(map[string]any)["scaling"].(map[string]any)
+	if kept["mode"] != "manual" || kept["min"] != int64(1) || kept["max"] != int64(3) || kept["idle"] != "1m30s" {
+		t.Errorf("manual keeps its bounds and idle: %v", kept)
+	}
+	observe := newHarness(t, observeInfo, node("hugr-node-etl-a", "etl"))
+	if code, _, _ := observe.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, `{"scaling": {"mode": "manual"}}`); code != http.StatusForbidden {
+		t.Errorf("observe sets a group's scaling: %d", code)
+	}
+}

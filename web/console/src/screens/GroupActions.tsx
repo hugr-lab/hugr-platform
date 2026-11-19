@@ -39,7 +39,7 @@ export function newGroupProblem(f: { name: string; size: string; replicas: numbe
 
 /** the nodes the plan has left for a new group: its nodes less what every group keeps (an autoscaled one at its max) */
 export const freeNodes = (fleet: Fleet) => fleet.plan.maxNodes -
-  fleet.groups.reduce((n, g) => n + (g.scaling.mode === 'auto' ? (g.scaling.max ?? g.replicas) : g.replicas), 0)
+  fleet.groups.reduce((n, g) => n + (g.scaling.mode === 'auto' ? Math.max(g.scaling.max ?? 0, g.replicas) : g.replicas), 0)
 
 export function NewGroupDialog({ fleet, onDone }: { fleet: Fleet; onDone: (made: boolean) => void }) {
   const { api } = useApp()

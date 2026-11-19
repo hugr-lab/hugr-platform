@@ -121,6 +121,9 @@ export function Group() {
                           {/* every node has its page - one not starting too: its pod, its events, its previous log */}
                           <Link className="link mono break-all" to={`/nodes/${encodeURIComponent(n.label)}`}>{n.label}</Link>
                           {n.needsRestart && <div className="text-ink-muted">restart pending</div>}
+                          {group.scaling.drained === n.label && (
+                            <div className="text-ink-muted">drained for the scale-down: no new connection, it stops once it has had no session for a while</div>
+                          )}
                         </td>
                         <td className="td">
                           <Status mark={state.mark}>{state.text}</Status>

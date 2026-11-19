@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,6 +34,9 @@ type GroupValidator struct {
 
 // ValidateCreate checks a new group.
 func (v *GroupValidator) ValidateCreate(ctx context.Context, group *v1alpha1.HugrNodeGroup) (admission.Warnings, error) {
+	if err := CheckScaling(group.Spec.Scaling); err != nil {
+		return nil, err
+	}
 	return nil, v.check(ctx, group)
 }
 
@@ -47,8 +51,12 @@ func (v *GroupValidator) ValidateUpdate(ctx context.Context, old, group *v1alpha
 			return nil, err
 		}
 	}
-	if err := CheckScaling(group.Spec.Scaling); err != nil {
-		return nil, err
+	// the scaling is judged when it changes, as the resource group is: an object written before a rule (an idle time
+	// past its bounds) is not frozen by it - every update refused, the autoscaler's own replicas included (the review)
+	if !equality.Semantic.DeepEqual(old.Spec.Scaling, group.Spec.Scaling) {
+		if err := CheckScaling(group.Spec.Scaling); err != nil {
+			return nil, err
+		}
 	}
 	if old.Spec.Size == group.Spec.Size && old.Spec.Platform == group.Spec.Platform && Demand(group) <= Demand(old) {
 		return nil, CheckTLS(group.Spec.TLS)
@@ -72,9 +80,6 @@ func (v *GroupValidator) check(ctx context.Context, group *v1alpha1.HugrNodeGrou
 		return err
 	}
 	if err := CheckResourceGroup(group.Spec.ResourceGroup); err != nil {
-		return err
-	}
-	if err := CheckScaling(group.Spec.Scaling); err != nil {
 		return err
 	}
 	var platform v1alpha1.HugrPlatform
@@ -129,6 +134,11 @@ func CheckScaling(scaling *v1alpha1.ScalingSpec) error {
 	// cooldown would step again before it
 	if scaling.Cooldown != nil && scaling.Cooldown.Duration < MinCooldown {
 		return fmt.Errorf("scaling.cooldown is at least %s", MinCooldown)
+	}
+	// an idle time the console can write back: 1m to 24h, as its API (0: the default)
+	if scaling.Idle != nil && scaling.Idle.Duration != 0 &&
+		(scaling.Idle.Duration < time.Minute || scaling.Idle.Duration > 24*time.Hour) {
+		return fmt.Errorf("scaling.idle is 1m to 24h")
 	}
 	// the scale-down drains to a size its load fits: below every share that grows the group, or it would drain into
 	// pressure - grow, drain, remove, grow (the review)

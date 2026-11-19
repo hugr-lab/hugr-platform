@@ -85,10 +85,15 @@ type ConditionAnswer struct {
 
 // ScalingAnswer is how the group scales (spec 011), and the autoscaler's last change.
 type ScalingAnswer struct {
-	Mode string             `json:"mode"` // manual | auto
-	Min  *int32             `json:"min,omitempty"`
-	Max  *int32             `json:"max,omitempty"`
-	Last *ScalingLastAnswer `json:"last,omitempty"`
+	Mode string `json:"mode"` // manual | auto
+	Min  *int32 `json:"min,omitempty"`
+	Max  *int32 `json:"max,omitempty"`
+	Idle string `json:"idle,omitempty"` // as set (Go's form of it, "30m0s"); empty: the default
+	// KeepsOne: the policy's default group keeps one node whatever its min (spec 011)
+	KeepsOne bool               `json:"keepsOne,omitempty"`
+	Last     *ScalingLastAnswer `json:"last,omitempty"`
+	// Drained is the node drained for the scale-down: it takes no new connection and goes once idle
+	Drained string `json:"drained,omitempty"`
 }
 
 // ScalingLastAnswer is one change the autoscaler made.
@@ -99,15 +104,36 @@ type ScalingLastAnswer struct {
 	Reason string    `json:"reason"`
 }
 
-// scalingOf a group.
-func scalingOf(g *v1alpha1.HugrNodeGroup) ScalingAnswer {
-	if !g.Auto() {
-		return ScalingAnswer{Mode: "manual"}
+// scalingOf a group: its mode, and its bounds and idle time when set - a manual group's kept for a switch back.
+func scalingOf(g *v1alpha1.HugrNodeGroup, platform *v1alpha1.HugrPlatform) ScalingAnswer {
+	out := ScalingAnswer{Mode: "manual"}
+	// the policy's default group, as the autoscaler knows it (kept in its status) or the platform names it - for a
+	// manual group too: the note matters when it is first switched to auto (the re-review)
+	rg := g.EffectiveResourceGroup()
+	out.KeepsOne = g.Status.Scaling != nil && g.Status.Scaling.DefaultGroup != "" && g.Status.Scaling.DefaultGroup == rg ||
+		platform != nil && platform.Spec.FirstPolicy != nil && platform.Spec.FirstPolicy.DefaultGroup == rg
+	sc := g.Spec.Scaling
+	if sc == nil {
+		return out
 	}
-	minNodes, maxNodes := g.Spec.Scaling.Min, g.Spec.Scaling.Max
-	out := ScalingAnswer{Mode: "auto", Min: &minNodes, Max: &maxNodes}
-	if s := g.Status.Scaling; s != nil && s.Last != nil {
-		out.Last = &ScalingLastAnswer{At: s.Last.At.Time, From: s.Last.From, To: s.Last.To, Reason: s.Last.Reason}
+	if g.Auto() {
+		out.Mode = "auto"
+	}
+	if sc.Max > 0 {
+		minNodes, maxNodes := sc.Min, sc.Max
+		out.Min, out.Max = &minNodes, &maxNodes
+	}
+	if sc.Idle != nil && sc.Idle.Duration > 0 {
+		out.Idle = sc.Idle.Duration.String()
+	}
+	if !g.Auto() {
+		return out
+	}
+	if s := g.Status.Scaling; s != nil {
+		if s.Last != nil {
+			out.Last = &ScalingLastAnswer{At: s.Last.At.Time, From: s.Last.From, To: s.Last.To, Reason: s.Last.Reason}
+		}
+		out.Drained = s.Surplus
 	}
 	return out
 }
@@ -231,7 +257,7 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 			Lost:        append([]string{}, g.Status.Lost...),
 			RestartedAt: g.Spec.RestartedAt,
 			Conditions:  conditions,
-			Scaling:     scalingOf(&g),
+			Scaling:     scalingOf(&g, platform),
 			Identity:    identityOf(platform, &g),
 			Problem:     problems[g.Name],
 			Nodes:       nodes,

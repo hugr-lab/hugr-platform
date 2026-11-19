@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { CircleAlert, Minus, Plus, RotateCcw } from 'lucide-react'
 import { NewGroupDialog } from './GroupActions'
 import { Link } from 'react-router-dom'
-import { Chip, Dialog, Glyph, Header, Problem, Refresh, Stat, Status, messageOf, type Mark } from '../components/ui'
+import { Chip, Dialog, Glyph, Header, Problem, Refresh, Segmented, Stat, Status, messageOf, type Mark } from '../components/ui'
 import { useApp, useLoad } from '../lib/context'
 import type { Fleet as FleetAnswer, Group, NodeInfo, PodState } from '../lib/types'
 
@@ -27,6 +27,8 @@ export function groupState(g: Group): { mark: Mark; text: string; note: string }
   if (stopping || g.readyReplicas > g.replicas)
     return { mark: 'half', text: 'Scaling down', note: stopping ? `${stopping.label} drains, then goes` : `${g.readyReplicas} ready, ${g.replicas} asked` }
   if (g.lost.length > 0) return { mark: 'half', text: 'Node lost', note: g.lost.join(', ') }
+  if (g.scaling.drained)
+    return { mark: 'ok', text: 'Ready', note: `${g.scaling.drained} takes no new connection: it stops once it has had no session for a while, or takes connections again if the load comes back` }
   return { mark: 'ok', text: 'Ready', note: '' }
 }
 
@@ -53,7 +55,7 @@ export function wanted(g: Group): Mark[] {
 export function room(fleet: FleetAnswer, group: Group): number {
   const kept = fleet.groups
     .filter((g) => g.name !== group.name)
-    .reduce((n, g) => n + (g.scaling.mode === 'auto' ? (g.scaling.max ?? g.replicas) : g.replicas), 0)
+    .reduce((n, g) => n + (g.scaling.mode === 'auto' ? Math.max(g.scaling.max ?? 0, g.replicas) : g.replicas), 0)
   return fleet.plan.maxNodes - kept
 }
 
@@ -122,9 +124,16 @@ export function Fleet() {
                         </td>
                         <td className="td">
                           {g.scaling.mode === 'auto' ? (
-                            <span className="flex items-center gap-2 font-semibold">
-                              {g.scaling.min} to {g.scaling.max} nodes <span className="pill border-brand-strong text-brand-strong">auto</span>
-                            </span>
+                            <>
+                              <span className="flex items-center gap-2 font-semibold">
+                                {g.scaling.min} to {g.scaling.max} nodes <span className="pill border-brand-strong text-brand-strong">auto</span>
+                              </span>
+                              {g.scaling.last && (
+                                <div className="text-ink-muted" title={new Date(g.scaling.last.at).toLocaleString()}>
+                                  last {g.scaling.last.from} → {g.scaling.last.to}: {g.scaling.last.reason}
+                                </div>
+                              )}
+                            </>
                           ) : (
                             <span className="font-semibold">{g.replicas} {g.replicas === 1 ? 'node' : 'nodes'}, manual</span>
                           )}
@@ -182,59 +191,159 @@ export function Fleet() {
   )
 }
 
+/** whole minutes of a duration as the server writes it ("1h30m0s" -> 90; none: the default 30) - shown only: an idle
+ * time the person does not touch is sent back as it was */
+export const minutesOf = (d: string | undefined) => {
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:[\d.]+[mµun]?s)?$/.exec(d ?? '')
+  return d && m && (m[1] || m[2]) ? Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0) : 30
+}
+
+/** seconds of a Go duration as the server writes it ("1h30m0s", "30s", "500ms"); undefined when it is none */
+export const secondsOf = (d: string | undefined): number | undefined => {
+  if (!d) return undefined
+  const unit: Record<string, number> = { h: 3600, m: 60, s: 1, ms: 1e-3, us: 1e-6, 'µs': 1e-6, ns: 1e-9 }
+  let total = 0
+  const re = /([\d.]+)(h|ms|us|µs|ns|m|s)/g
+  let rest = d
+  for (const m of d.matchAll(re)) {
+    total += Number(m[1]) * unit[m[2]]
+    rest = rest.replace(m[0], '')
+  }
+  return rest === '' ? total : undefined
+}
+
+/** the group's own idle time is one the console can write back: 1 to 1440 minutes (none: the default) */
+export const idleInRange = (d: string | undefined) => {
+  const s = secondsOf(d)
+  return !d || (s !== undefined && s >= 60 && s <= 86400)
+}
+
+/** what an auto group's scaling form allows, or why not */
+export function scalingProblem(f: { min: number; max: number; idle: number }, room: number): string | undefined {
+  if (f.max < 1) return 'An auto group runs at most one node or more.'
+  if (f.min > f.max) return 'The minimum is above the maximum.'
+  if (f.max > room) return `Past the plan: this group can run at most ${room}.`
+  if (f.idle < 1 || f.idle > 1440) return 'The idle time is 1 to 1440 minutes.'
+  return undefined
+}
+
 function ScaleDialog({ fleet, group, onDone }: { fleet: FleetAnswer; group: Group; onDone: (changed: boolean) => void }) {
   const { api } = useApp()
+  const auto = group.scaling.mode === 'auto'
+  const [mode, setMode] = useState<'manual' | 'auto'>(group.scaling.mode)
   const [replicas, setReplicas] = useState(group.replicas)
+  const [min, setMin] = useState(group.scaling.min ?? 0)
+  const [max, setMax] = useState(group.scaling.max ?? Math.max(1, group.replicas))
+  const [idle, setIdleMinutes] = useState(minutesOf(group.scaling.idle))
+  const [idleTouched, setIdleTouched] = useState(false)
+  const setIdle = (n: number) => { setIdleMinutes(n); setIdleTouched(true) }
+  // the idle time as it goes back: the person's, else what the group has (as the server wrote it), else none (the default)
+  const idleSent = idleTouched ? `${idle}m` : group.scaling.idle
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
-  const max = room(fleet, group)
-  const over = replicas > max
+  const room_ = room(fleet, group)
+  const over = replicas > room_
+  // an idle time on the group the console cannot write back (set elsewhere, before its bounds): shown, and the person
+  // sets one (the re-review)
+  const oddIdle = !idleTouched && !idleInRange(group.scaling.idle)
+  const why = mode === 'auto'
+    ? (oddIdle ? `The group's idle time (${group.scaling.idle}) is not 1 to 1440 minutes: set one.` : scalingProblem({ min, max, idle }, room_))
+    : undefined
+  const unchanged = mode === 'auto'
+    ? auto && min === group.scaling.min && max === group.scaling.max && !idleTouched
+    : !auto && replicas === group.replicas
   const save = async () => {
     setBusy(true)
     setError(undefined)
     try {
-      await api.scale(group.name, replicas)
+      if (mode === 'auto') await api.setScaling(group.name, { mode: 'auto', min, max, idle: idleSent })
+      // manual keeps the nodes it runs, and the group's own bounds for a switch back - never what the form was left
+      // with in the other mode; an idle time it cannot write back is left out (the re-review)
+      else if (auto) await api.setScaling(group.name, { mode: 'manual', min: group.scaling.min, max: group.scaling.max,
+        idle: idleInRange(group.scaling.idle) ? group.scaling.idle : undefined })
+      else await api.scale(group.name, replicas)
       onDone(true)
     } catch (e) {
       setError(messageOf(e)) // the webhook's reason, as the operator passes it
       setBusy(false)
     }
   }
+  const field = 'h-11 w-20 rounded-sm border border-ink-muted bg-surface text-center text-base text-ink'
+  const num = (set: (n: number) => void) => (e: { target: { value: string } }) => set(Math.max(0, parseInt(e.target.value, 10) || 0))
   return (
     <Dialog open title={`Scale ${group.name}`} onClose={() => onDone(false)}>
-      <p className="text-ink-muted">How many nodes this group runs. Kubernetes starts or stops them; a node that stops drains first.</p>
-      {group.scaling.mode === 'auto' ? (
-        <p className="text-sm">This group scales by itself between {group.scaling.min} and {group.scaling.max}; its bounds are set where it is defined.</p>
+      <Segmented legend="How the group is sized" name="scaling-mode" value={mode} onChange={setMode}
+        options={[{ value: 'manual', label: 'Manual' }, { value: 'auto', label: 'By its load' }]} />
+      {mode === 'auto' ? (
+        <div className="flex flex-col gap-3">
+          <p className="text-ink-muted">
+            The group grows when every node is under load, drains a node when the load fits in fewer, and stops a node
+            once it has had no session for the idle time.{' '}
+            {group.scaling.keepsOne
+              ? 'It is the policy\'s default group: it keeps one node whatever its minimum.'
+              : 'With a minimum of 0 it stops when nobody uses it and starts on the first client.'}
+          </p>
+          <div className="flex flex-wrap gap-6">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="scaling-min" className="text-sm font-semibold">Minimum</label>
+              <input id="scaling-min" type="number" min={0} className={field} value={min} onChange={num(setMin)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="scaling-max" className="text-sm font-semibold">Maximum</label>
+              <input id="scaling-max" type="number" min={1} className={field} value={max} onChange={num(setMax)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="scaling-idle" className="text-sm font-semibold">Idle, minutes</label>
+              <input id="scaling-idle" type="number" min={1} className={field} value={idle} onChange={num(setIdle)} />
+            </div>
+          </div>
+          {why ? (
+            <p role="alert" className="flex items-start gap-2 rounded-md bg-surface-soft px-4 py-3 text-sm font-medium">
+              <CircleAlert size={18} aria-hidden="true" className="mt-0.5 flex-none" />
+              {why}
+            </p>
+          ) : (
+            <p className="text-sm text-ink-muted">The plan counts this group at its maximum: up to {room_} here.</p>
+          )}
+          {!why && max < group.replicas && (
+            <p role="note" className="text-sm font-medium">
+              It runs {nodes(group.replicas)} now: {group.replicas - max} stop at once - each drains first, then its
+              sessions end after {group.drainSeconds} s.
+            </p>
+          )}
+          {!why && min > group.replicas && (
+            <p role="note" className="text-sm font-medium">It runs {nodes(group.replicas)} now: {nodes(min - group.replicas)} more start at once.</p>
+          )}
+        </div>
+      ) : auto ? (
+        <p className="text-sm">The group keeps the {nodes(group.replicas)} it runs now; its count is then yours to set.</p>
       ) : (
         <div className="flex flex-col gap-2">
           <label htmlFor="replicas" className="text-sm font-semibold">Nodes</label>
           <div className="flex items-center gap-2">
             <button type="button" className="btn-quiet h-11 w-11 px-0" aria-label="One node fewer"
               onClick={() => setReplicas((r) => Math.max(0, r - 1))}><Minus size={18} aria-hidden="true" /></button>
-            <input id="replicas" type="number" min={0} value={replicas}
-              onChange={(e) => setReplicas(Math.max(0, parseInt(e.target.value, 10) || 0))}
-              className="h-11 w-20 rounded-sm border border-ink-muted bg-surface text-center text-base text-ink" />
+            <input id="replicas" type="number" min={0} value={replicas} onChange={num(setReplicas)} className={field} />
             <button type="button" className="btn-quiet h-11 w-11 px-0" aria-label="One node more"
               onClick={() => setReplicas((r) => r + 1)}><Plus size={18} aria-hidden="true" /></button>
           </div>
           {over ? (
             <p role="alert" className="flex items-start gap-2 rounded-md bg-surface-soft px-4 py-3 text-sm font-medium">
               <CircleAlert size={18} aria-hidden="true" className="mt-0.5 flex-none" />
-              Past the plan: this group can run at most {max} ({fleet.plan.maxNodes} nodes in all, {fleet.plan.maxNodes - max} kept by the other groups).
+              Past the plan: this group can run at most {room_} ({fleet.plan.maxNodes} nodes in all, {fleet.plan.maxNodes - room_} kept by the other groups).
             </p>
           ) : (
-            <p className="text-sm text-ink-muted">The plan allows up to {max} here.</p>
+            <p className="text-sm text-ink-muted">The plan allows up to {room_} here.</p>
           )}
         </div>
       )}
       {error && <p role="alert" className="rounded-md bg-surface-soft px-4 py-3 text-sm font-medium">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className="btn-outline" onClick={() => onDone(false)}>Cancel</button>
-        {group.scaling.mode !== 'auto' && (
-          <button type="button" className="btn-primary" disabled={over || busy || replicas === group.replicas} onClick={save}>
-            Scale to {replicas}
-          </button>
-        )}
+        <button type="button" className="btn-primary" disabled={busy || unchanged || !!why || (mode === 'manual' && !auto && over)}
+          onClick={save}>
+          {mode === 'auto' ? `Scale between ${min} and ${max}` : auto ? 'Switch to manual' : `Scale to ${replicas}`}
+        </button>
       </div>
     </Dialog>
   )

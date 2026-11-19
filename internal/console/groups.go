@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -20,6 +21,9 @@ const (
 	SizeFieldOwner    = "hugr-console-size"
 	DoorsFieldOwner   = "hugr-console-doors"
 	DrainFieldOwner   = "hugr-console-drain"
+	// ScalingFieldOwner owns the scaling's mode, min, max and idle a person sets (spec 011 stage 4): its thresholds
+	// stay whoever's they are
+	ScalingFieldOwner = "hugr-console-scaling"
 	// CreateFieldOwner made the group (a create, not an apply: a later apply of one field takes that field over and
 	// leaves the rest as they were made)
 	CreateFieldOwner = "hugr-console-create"
@@ -38,6 +42,15 @@ type GroupChange struct {
 	Size            string
 	Quack           *bool
 	DrainSeconds    *int32
+	Scaling         *ScalingChange
+}
+
+// ScalingChange is how a group's size is decided, as a person sets it: the mode, and an auto group's bounds and idle
+// time (spec 011 stage 4).
+type ScalingChange struct {
+	Mode     string
+	Min, Max int32
+	Idle     time.Duration // 0: the default
 }
 
 // GroupWriter writes a group: a change of one field, a new group, a group's deletion.
@@ -64,6 +77,8 @@ func (c GroupChange) Owner() string {
 		return DoorsFieldOwner
 	case c.DrainSeconds != nil:
 		return DrainFieldOwner
+	case c.Scaling != nil:
+		return ScalingFieldOwner
 	}
 	return RestartFieldOwner
 }
@@ -80,6 +95,15 @@ func (c GroupChange) Content() map[string]any {
 		spec["doors"] = map[string]any{"quack": *c.Quack}
 	case c.DrainSeconds != nil:
 		spec["drainSeconds"] = int64(*c.DrainSeconds)
+	case c.Scaling != nil:
+		scaling := map[string]any{"mode": c.Scaling.Mode}
+		if c.Scaling.Max > 0 { // auto's bounds, or manual's kept for a later switch back
+			scaling["min"], scaling["max"] = int64(c.Scaling.Min), int64(c.Scaling.Max)
+			if c.Scaling.Idle > 0 {
+				scaling["idle"] = c.Scaling.Idle.String()
+			}
+		}
+		spec["scaling"] = scaling
 	case c.RestartedAt != "":
 		spec["restartedAt"] = c.RestartedAt
 	}

@@ -43,19 +43,56 @@ type GroupCreate struct {
 	ResourceGroup string `json:"resourceGroup,omitempty"`
 }
 
-// GroupPatch is `PATCH groups/{g}`: exactly one of a count, a restart, a size, the doors, the drain time.
+// GroupPatch is `PATCH groups/{g}`: exactly one of a count, a restart, a size, the doors, the drain time, the scaling.
 type GroupPatch struct {
-	Replicas     *int32  `json:"replicas,omitempty"`
-	Restart      bool    `json:"restart,omitempty"`
-	Size         *string `json:"size,omitempty"`
-	Quack        *bool   `json:"quack,omitempty"`
-	DrainSeconds *int32  `json:"drainSeconds,omitempty"`
+	Replicas     *int32        `json:"replicas,omitempty"`
+	Restart      bool          `json:"restart,omitempty"`
+	Size         *string       `json:"size,omitempty"`
+	Quack        *bool         `json:"quack,omitempty"`
+	DrainSeconds *int32        `json:"drainSeconds,omitempty"`
+	Scaling      *ScalingPatch `json:"scaling,omitempty"`
+}
+
+// ScalingPatch is the scaling a person sets (spec 011 stage 4): manual, or auto between min and max with an idle time
+// (a duration as Kubernetes writes one, "30m"; empty: the default). The thresholds are set where the group is defined.
+type ScalingPatch struct {
+	Mode string `json:"mode"`
+	Min  int32  `json:"min"`
+	Max  int32  `json:"max"`
+	Idle string `json:"idle,omitempty"`
+}
+
+// change of the scaling, or the person's reason it is none
+func (p *ScalingPatch) change() (*ScalingChange, string) {
+	switch p.Mode {
+	case "manual":
+		if p.Max == 0 && p.Min == 0 && p.Idle == "" {
+			return &ScalingChange{Mode: "manual"}, ""
+		}
+		// manual keeping its bounds for a later switch back (the review: they used to go)
+	case "auto":
+	default:
+		return nil, "the mode is manual or auto"
+	}
+	if p.Max < 1 || p.Min < 0 || p.Min > p.Max {
+		return nil, "a group's bounds are 0 <= min <= max, max at least 1"
+	}
+	c := &ScalingChange{Mode: p.Mode, Min: p.Min, Max: p.Max}
+	if p.Idle != "" {
+		d, err := time.ParseDuration(p.Idle)
+		if err != nil || d < time.Minute || d > 24*time.Hour {
+			return nil, "the idle time is a duration from 1m to 24h (30m, 2h)"
+		}
+		c.Idle = d
+	}
+	return c, ""
 }
 
 // fields the patch sets.
 func (p GroupPatch) fields() int {
 	n := 0
-	for _, set := range []bool{p.Replicas != nil, p.Restart, p.Size != nil, p.Quack != nil, p.DrainSeconds != nil} {
+	for _, set := range []bool{p.Replicas != nil, p.Restart, p.Size != nil, p.Quack != nil, p.DrainSeconds != nil,
+		p.Scaling != nil} {
 		if set {
 			n++
 		}
@@ -190,8 +227,16 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, _ string, p 
 	var patch GroupPatch
 	if err := decodeStrict(r, &patch); err != nil || patch.fields() != 1 {
 		problem(w, http.StatusBadRequest, "bad_request", "send one of {\"replicas\": n}, {\"restart\": true}, "+
-			"{\"size\": s}, {\"quack\": bool}, {\"drainSeconds\": n}")
+			"{\"size\": s}, {\"quack\": bool}, {\"drainSeconds\": n}, {\"scaling\": {...}}")
 		return
+	}
+	var scaling *ScalingChange
+	if patch.Scaling != nil {
+		var why string
+		if scaling, why = patch.Scaling.change(); scaling == nil {
+			problem(w, http.StatusBadRequest, "bad_request", why)
+			return
+		}
 	}
 	switch {
 	case patch.Replicas != nil && *patch.Replicas < 0:
@@ -215,7 +260,7 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, _ string, p 
 		return
 	}
 	change := GroupChange{Namespace: platform.Namespace, Name: group.Name, ChangedBy: changedBy(p),
-		Replicas: patch.Replicas, Quack: patch.Quack, DrainSeconds: patch.DrainSeconds}
+		Replicas: patch.Replicas, Quack: patch.Quack, DrainSeconds: patch.DrainSeconds, Scaling: scaling}
 	if patch.Size != nil {
 		change.Size = *patch.Size
 	}

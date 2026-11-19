@@ -1,8 +1,8 @@
 # Spec 011: a node group scales itself - from its load, down to zero
 
 - **Status**: accepted (the owner, 2026-11-16); stage 1 built (the operator's decision, 2026-11-19), stage 2 built
-  (the front's demand, 2026-11-19), stage 3 built (the scale-down by drain, 2026-11-19), stage 4 (the console's
-  dialog) to come
+  (the front's demand, 2026-11-19), stage 3 built (the scale-down by drain, 2026-11-19), stage 4 built (the console's
+  dialog, 2026-11-19)
 - **Date**: 2026-11-16
 - **Author**: Claude, from the owner's decisions of 2026-11-16 (in the release, not after it)
 - **Follows**: spec 001 (the operator, the heartbeat, the Lease, the pod-deletion cost), spec 002 (the front's seating,
@@ -137,8 +137,8 @@ capacity on its way: no second step while one is starting.
 
 ### The console (spec 003)
 
-The reserved `scaling: {mode, min, max, last}` API: an auto group's dialog edits `min`, `max`, `idle` and the
-thresholds within the plan and never `replicas`; the fleet shows "stopped - starts on the first client" for a group at 0, and the
+The reserved `scaling: {mode, min, max, last}` API: an auto group's dialog edits `min`, `max`, `idle` within the plan and never `replicas` (the
+thresholds are set where the group is defined - stage 4); the fleet shows "stopped - starts on the first client" for a group at 0, and the
 last decision with its reason. The plan's check counts an auto group at its `max`.
 
 ## Enforcement & security
@@ -367,8 +367,50 @@ back.
   - Controller: the drained node's pod is marked, others not; drained and idle, it costs -2 and the group shrinks.
   - nodeapi: a marked pod's heartbeat is answered `{"drain":"scale-down"}`, unmarked 204.
 
+### Built (stage 4, 2026-11-19): the console's dialog
+
+- **API.** `PATCH groups/{g}` takes `{"scaling": {"mode": "manual" | "auto", "min", "max", "idle": "30m"}}`, with the
+  cluster right as every group write. It is checked first: an auto group has 0 ≤ min ≤ max and max at least 1, and an
+  idle time from 1m to 24h.
+- **The write.** It is applied by server-side apply as its own field manager (`hugr-console-scaling`), naming only the
+  mode, the bounds and the idle time. The thresholds (`scaleUp`, `scaleDown`) stay whoever set them where the group is
+  defined. Back to manual keeps the nodes the group runs, and its bounds and idle time for a switch back (the dialog
+  sends them with the mode; a manual group answers them too). The webhook judges the plan at the max as always, and
+  bounds `idle` to 1m–24h, as the API does.
+- **Who owns the fields.** The console's forced apply takes the fields it names from whoever held them, and it names
+  the bounds and the idle time in manual mode too, untouched values included, because they are kept for a switch
+  back. A group a GitOps tool applies (Helm, Argo) then needs `--force-conflicts` there, or its scaling left to the
+  console. This is the same rule as every other field the console writes.
+- **An idle time written before its bounds** (outside 1m–24h, by `kubectl`) is shown in the dialog, and must be set
+  before an auto save. A switch to manual leaves it out and sends the group's own bounds, never the values a form was
+  left with in the other mode. The webhook judges a group's scaling only when it changes, so such an object is not
+  frozen: the autoscaler's replicas and a restart still pass (the re-review). A new group is judged whole.
+- **The answer.** `groups` returns the group's `scaling` with `idle` as written or the default, `last` (from, to, why)
+  and `drained` (the node drained for the scale-down).
+- **The dialog.**
+  - "How the group is sized" switches between Manual (the count, as before) and By its load (minimum, maximum and idle
+    minutes, with the max checked against the plan's room).
+  - From auto, Manual is "Switch to manual".
+  - An idle time the person does not touch goes back exactly as it was (or not at all, for the default). Only an
+    edited one is written, in whole minutes (the review: a non-minute value was rewritten unseen).
+  - It warns when the change takes effect at once: a max below the nodes running stops them now (each drains first,
+    then its sessions end after `drainSeconds`), and a min above them starts nodes now.
+  - The policy's default group is said to keep one node whatever its minimum (`keepsOne`, from
+    `status.scaling.defaultGroup` or the platform's `firstPolicy.defaultGroup`, so a manual group switched to auto for
+    the first time says so too).
+  - The plan's room counts the others as the webhook does: an auto group at `max(max, replicas)`.
+  - The fleet shows an auto group's bounds, its last step with the reason, the drained node in its status, and "Starts
+    on the first client" at 0. The group page marks the drained node.
+- **Tests.**
+  - `server_test.go`: the patch's checks, the change and its apply content (only mode, bounds, idle), manual alone,
+    and no write without the cluster right.
+  - envtest against the real API server: auto from the console keeps a threshold `kubectl` set, a max past the plan is
+    refused, and back to manual keeps it, the bounds and the idle time too.
+  - `scaling.test.tsx`: manual to auto with the body sent; a max past the plan and a min past the max refused; an auto
+    group's last step, its drained node, and the switch back to manual.
+
 - The console answers the group's `scaling` (mode, min, max, `last`). A person's `replicas` on an auto group is
-  refused with 409 `auto_scaled`; the dialog for min / max / idle is stage 3.
+  refused with 409 `auto_scaled`; the dialog for min / max / idle is stage 4.
 
 ## Testing
 

@@ -211,6 +211,12 @@ func TestWebhookCountsAnAutoGroupAtItsMax(t *testing.T) {
 	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), quick); err == nil || !strings.Contains(err.Error(), "cooldown") {
 		t.Errorf("a cooldown shorter than a step takes to be seen: %v", err)
 	}
+	// an idle time the console could not write back (the review): 1m to 24h, as its API
+	shortIdle := auto("etl", 1, 0, 2)
+	shortIdle.Spec.Scaling.Idle = &metav1.Duration{Duration: 30 * time.Second}
+	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), shortIdle); err == nil || !strings.Contains(err.Error(), "scaling.idle") {
+		t.Errorf("an idle time of 30 s: %v", err)
+	}
 	// the scale-down below every share that grows the group
 	high := auto("etl", 1, 0, 2)
 	high.Spec.Scaling.ScaleDown.Load = 85
@@ -222,5 +228,27 @@ func TestWebhookCountsAnAutoGroupAtItsMax(t *testing.T) {
 	tight.Spec.Scaling.ScaleUp.SessionsUsed = 50
 	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), tight); err == nil {
 		t.Error("a scale-down at a scale-up share")
+	}
+}
+
+// TestAnOldScalingIsNotFrozen (the re-review): a scaling written before a rule (an idle time past its bounds) is
+// judged only when it changes - the autoscaler's replicas and a restart still pass
+func TestAnOldScalingIsNotFrozen(t *testing.T) {
+	ctx := context.Background()
+	old := group("etl", "large", 1)
+	old.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Max: 2, Idle: &metav1.Duration{Duration: 30 * time.Second}}
+	v := validator(t, group("bi", "large", 1))
+	next := old.DeepCopy()
+	next.Spec.Replicas = 2
+	if _, err := v.ValidateUpdate(ctx, old, next); err != nil {
+		t.Errorf("the autoscaler's step on a group with an old idle time: %v", err)
+	}
+	changed := old.DeepCopy()
+	changed.Spec.Scaling.Max = 3
+	if _, err := v.ValidateUpdate(ctx, old, changed); err == nil {
+		t.Error("a change of the scaling is judged whole: its idle time too")
+	}
+	if _, err := v.ValidateCreate(ctx, old); err == nil {
+		t.Error("a new group with an idle time past its bounds")
 	}
 }
