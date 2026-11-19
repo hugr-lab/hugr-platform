@@ -125,8 +125,16 @@ func CheckScaling(scaling *v1alpha1.ScalingSpec) error {
 	if scaling.Min > scaling.Max {
 		return fmt.Errorf("scaling.min (%d) is above scaling.max (%d)", scaling.Min, scaling.Max)
 	}
+	// a step's effect - the Deployment, then its ReplicaSet - is seen a few status looks (5 s) later: a shorter
+	// cooldown would step again before it
+	if scaling.Cooldown != nil && scaling.Cooldown.Duration < MinCooldown {
+		return fmt.Errorf("scaling.cooldown is at least %s", MinCooldown)
+	}
 	return nil
 }
+
+// MinCooldown is the shortest cooldown an auto group may have.
+const MinCooldown = 30 * time.Second
 
 // CheckResourceGroup says whether a group may name this resource group (empty: its own name). Every node's bootstrap
 // document lists every group's in the first policy, which takes plain names only: one it refuses stops every node of

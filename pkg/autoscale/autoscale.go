@@ -148,6 +148,12 @@ func Decide(s Scaling, in Input) Decision {
 	if !in.State.LastChange.IsZero() && now.Sub(in.State.LastChange) < s.Cooldown {
 		return next
 	}
+	// the last write has not reached the Deployment (its apply fails, or the look is the one that applies it): its
+	// effect is not seen yet - a step now would remove another node for the same idle one (the re-review). A surge
+	// pod, a pod that does not schedule, a quota: none of them change what the Deployment is asked
+	if in.Running != replicas {
+		return next
+	}
 	// a pod not created or not reported yet is a node on its way - or one that does not come up (a surge pod a
 	// rollout cannot schedule, a quota): no more nodes until it is here. A shrink still goes: a scale-down takes an
 	// unready pod first, and the cooldown - kept in the same write as the replicas - holds a second step until the

@@ -167,6 +167,10 @@ last decision with its reason. The plan's check counts an auto group at its `max
     the annotation `platform.hugr.io/scaled-at`. A look that reads the new replicas therefore reads the cooldown too,
     even when the status patch after it is lost to a leader's end or the cache is behind. Otherwise two pods would go
     for one idle node (the reviews).
+  - **The Deployment behind.** Nothing happens while the Deployment is not yet asked the replicas last written: its
+    apply fails, or the look is the one that applies them (`Running` read before the apply). Its effect is not seen
+    yet, and a second shrink would remove a busy node for the same idle one (the re-review). A surge pod, a pod that
+    does not schedule or a quota changes nothing the Deployment is asked, so none of them freezes the group.
   - **Growth.** One more node when every placeable node has been past a threshold for `for`. A pod not created yet,
     or not reported, holds the growth: it is a node on its way, or one that does not come up (a surge pod the
     cluster cannot schedule, a quota), and more of the same would help nothing. It never holds the shrink, since a
@@ -198,7 +202,8 @@ last decision with its reason. The plan's check counts an auto group at its `max
   A share is left out when there is no limit, and a node of an older pin reports none of them, which reads as no
   pressure and never idle.
 - The webhook counts an auto group at `max(max, replicas)`. A growth of its max, or a switch to auto, is a growth for
-  the plan, and `min > max` is refused.
+  the plan. It refuses `min > max` and a cooldown under 30 s: a step's effect, first the Deployment and then its
+  ReplicaSet, is seen a few 5 s looks later.
 - The console answers the group's `scaling` (mode, min, max, `last`). A person's `replicas` on an auto group is
   refused with 409 `auto_scaled`; the dialog for min / max / idle is stage 3.
 

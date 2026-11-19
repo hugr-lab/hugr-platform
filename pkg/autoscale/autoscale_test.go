@@ -271,3 +271,16 @@ func TestIdlePast(t *testing.T) {
 		t.Error("a lost node is lost, not idle")
 	}
 }
+
+// TestNoStepBeforeTheDeploymentTakesTheLast (the re-review): a Deployment that has not taken the last write (its
+// apply fails, or the look is the one that applies it) still runs the idle node - a second shrink would take a busy one
+func TestNoStepBeforeTheDeploymentTakesTheLast(t *testing.T) {
+	behind := look(2, idle("a", time.Hour), busy("b"), busy("c")).with(func(in *Input) { in.Running, in.Pods = 3, 3 })
+	if d := Decide(scaling, behind); d.Replicas != 2 || d.Reason != "" {
+		t.Errorf("a second shrink before the Deployment took the first: %+v", d)
+	}
+	hotBehind := look(3, hot("a"), hot("b")).with(func(in *Input) { in.Running = 2 }).with(under(time.Hour))
+	if d := Decide(scaling, hotBehind); d.Replicas != 3 {
+		t.Errorf("a growth before the Deployment took the last: %+v", d)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -204,5 +205,10 @@ func TestWebhookCountsAnAutoGroupAtItsMax(t *testing.T) {
 	}
 	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), auto("etl", 1, 3, 2)); err == nil {
 		t.Error("min above max on an update that grows nothing")
+	}
+	quick := auto("etl", 1, 0, 2)
+	quick.Spec.Scaling.Cooldown = &metav1.Duration{Duration: time.Second}
+	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), quick); err == nil || !strings.Contains(err.Error(), "cooldown") {
+		t.Errorf("a cooldown shorter than a step takes to be seen: %v", err)
 	}
 }

@@ -384,6 +384,10 @@ func TestAutoscaleShrinksAnIdleNode(t *testing.T) {
 	ghost.Name, ghost.Namespace, ghost.Labels = "hugr-node-etl-old", "hugr", map[string]string{build.LabelGroup: "etl"}
 	w := newWorld(t, append(objs, g, busy, idle, evicted, ghost)...)
 	w.now = t0.Add(10 * time.Second)
+	// the first look builds the Deployment: nothing runs the group's 2 yet, no step before it does
+	if first := w.reconcile(t, "etl"); first.Spec.Replicas != 2 {
+		t.Fatalf("a step before the Deployment runs the replicas: %d", first.Spec.Replicas)
+	}
 	got := w.reconcile(t, "etl")
 	if got.Spec.Replicas != 1 {
 		t.Fatalf("the idle node's replica stays: %d", got.Spec.Replicas)
@@ -443,10 +447,13 @@ func TestCooldownRidesOnTheReplicasWrite(t *testing.T) {
 	}
 	w := newWorld(t, objs...)
 	w.now = t0.Add(10 * time.Second)
+	w.reconcile(t, "etl") // builds the Deployment
 	if got := w.reconcile(t, "etl"); got.Spec.Replicas != 2 || got.Annotations[AnnotationScaledAt] == "" {
 		t.Fatalf("the first idle node goes, its time with it: %d %v", got.Spec.Replicas, got.Annotations)
 	}
-	// the status that said so is gone; the pod the step took is gone too
+	// the next look applies 2 to the Deployment; then the status that said so is gone, and the pod the step took too
+	w.now = t0.Add(15 * time.Second)
+	w.reconcile(t, "etl")
 	ctx := context.Background()
 	var current v1alpha1.HugrNodeGroup
 	_ = w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "etl"}, &current)
