@@ -377,7 +377,12 @@ func TestAutoscaleShrinksAnIdleNode(t *testing.T) {
 	idle := lease(t0, 30, nodeproto.Summary{SessionsMax: 1000, MemoryUsed: 0.1, TempUsed: -1, SeatsUsed: -1,
 		IdleSince: t0.Add(-time.Hour).Unix()})
 	idle.Name, idle.Namespace, idle.Labels = "hugr-node-etl-b", "hugr", map[string]string{build.LabelGroup: "etl"}
-	w := newWorld(t, append(objs, g, busy, idle)...)
+	// an evicted pod (Failed, kept until pod GC) with its Lease long expired: no node, no pod of the group
+	evicted := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-old", Namespace: "hugr",
+		Labels: build.SelectorLabels(g)}, Status: corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted"}}
+	ghost := lease(t0.Add(-time.Hour), 30, nodeproto.Summary{})
+	ghost.Name, ghost.Namespace, ghost.Labels = "hugr-node-etl-old", "hugr", map[string]string{build.LabelGroup: "etl"}
+	w := newWorld(t, append(objs, g, busy, idle, evicted, ghost)...)
 	w.now = t0.Add(10 * time.Second)
 	got := w.reconcile(t, "etl")
 	if got.Spec.Replicas != 1 {
@@ -393,8 +398,12 @@ func TestAutoscaleShrinksAnIdleNode(t *testing.T) {
 		t.Errorf("the idle node costs %q, want -2: the scale-down takes it", b.Annotations[AnnotationDeletionCost])
 	}
 	// the next look is within the cooldown: nothing more, whatever the leases say
+	if len(got.Status.Lost) != 0 {
+		t.Errorf("an evicted pod is not a lost node: %v", got.Status.Lost)
+	}
+	// the next look: both pods still run (the ReplicaSet has not taken one yet) - the step is being made, nothing more
 	if again := w.reconcile(t, "etl"); again.Spec.Replicas != 1 {
-		t.Errorf("a second step within the cooldown: %d", again.Spec.Replicas)
+		t.Errorf("a second step before the first is made: %d", again.Spec.Replicas)
 	}
 	// the Deployment follows the group
 	if d := w.deployment(t, "etl"); d == nil || *d.Spec.Replicas != 1 {

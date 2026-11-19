@@ -39,7 +39,7 @@ spec:
   replicas: 3            # mode manual (today): the operator's number; mode auto: written by the autoscaler only
   scaling:
     mode: auto           # manual (the default) | auto
-    min: 0               # 0..max; the default group's min is at least 1 (refused otherwise)
+    min: 0               # 0..max; the policy's default group keeps at least 1 whatever min says
     max: 4               # <= the plan's maxNodes counted over every group at its max
     idle: 30m            # a node with no session for this long is drained and stopped (while above min)
     scaleUp:             # a new node when, on every placeable node, for `for` (a share in percent, 1..100):
@@ -146,21 +146,46 @@ last decision with its reason. The plan's check counts an auto group at its `max
 
 ### Built (stage 1, 2026-11-19)
 
-- `pkg/autoscale.Decide` is the pure decision. Its inputs are the scaling with its defaults filled in, the replicas,
-  the reported nodes, the demand (false until stage 2), the kept state and the clock. It answers the next replicas,
-  a reason and the state to keep. In order:
-  - the bounds: a min or max just written;
-  - a client waiting at 0 nodes (stage 2);
-  - nothing while a node is starting (asked for, not reported) or within the cooldown;
-  - growth by one when every placeable node has been past a threshold for `for`;
-  - shrinking by one when a node has been idle past `idle`.
-- The default group's min of 1 is the autoscaler's floor, not the webhook's. The policy says which group is the
-  default (the nodes report `group_default`), and the webhook cannot know it. A group whose nodes say so never goes
-  below 1.
-- The group's reconcile (the leader, every 5 s) runs the decision for an auto group that is not refused by the plan.
-  - It writes `spec.replicas`, and the Deployment follows at the reconcile that write triggers.
-  - It keeps `status.scaling`: `pressureSince`, so a new leader keeps the clock, and `last`.
+- `pkg/autoscale.Decide` is the pure decision. Its input is one look at the group:
+  - the replicas asked and the replicas the Deployment runs;
+  - the group's pods (not going, not ended: an evicted pod is Failed until pod GC) and how many have not reported;
+  - the reported nodes;
+  - the demand (false until stage 2);
+  - whether it is the policy's default group;
+  - whether the plan admits a growth;
+  - the kept state and the clock.
+
+  It answers the next replicas, a reason and the state to keep. In order:
+  - **The bounds.** A max just lowered is applied.
+  - **The plan.** While the plan refuses the group, what it asked past what runs goes back, and it does not grow, is
+    not raised to its min, and is not woken. It may still shrink. Otherwise a min just raised is applied.
+  - **A waiting client.** A client waiting at 0 nodes wakes the group (stage 2).
+  - **A step in progress.** Nothing happens while the pods differ from the replicas asked. The look right after a
+    shrink may read the status before its own write, and so skip the cooldown; the pods still listed hold it, or two
+    pods would go for one idle node (the review).
+  - **The cooldown.** Nothing happens within it.
+  - **Growth.** One more node when every placeable node has been past a threshold for `for`. An unreported pod holds
+    the growth: it is a node on its way, or one that does not come up, and then more of the same help nothing. It
+    never holds the shrink, since a scale-down takes an unready pod first.
+  - **Shrinking.** One fewer node when a node has been idle past `idle`.
+- **The floor.**
+  - The policy's default group never goes below 1. It is the default when the platform's `firstPolicy.defaultGroup`
+    names its resource group, or when a node's Lease says `group-default`. A single heartbeat during a catalog hiccup
+    reads not-default, so the platform's word stands beside the Lease's. The webhook cannot judge this, because the
+    policy is the node's.
+  - Until stage 2 nothing wakes a group at 0, so every auto group keeps at least one node, whatever its min (the
+    review). Stage 2 lifts that (`WakeOnDemand`).
+- The group's reconcile (the leader, every 5 s) runs the decision for every auto group, refused or not.
+  - It writes `spec.replicas` with an optimistic lock, so a person's change since the read is never written over,
+    and the Deployment follows at the reconcile that write triggers.
+  - A write that fails is logged and left to the next look. The rest of the status is written all the same.
+  - It keeps `status.scaling`: `pressureSince`, so a new leader keeps the clock, and `last`. A manual group keeps no
+    pressure clock.
   - The pod-deletion cost is -3 for a lost node and -2, in an auto group, for a node idle past `idle`.
+- Known: the decision reads `sessions` / `idle-since` from a Lease up to one heartbeat old. A client seated on the
+  idle node in that gap meets its drain, which keeps it for `drainSeconds`; the front seats it again after that. The
+  console's statement calls (a node's sessions, the policy pages) are per-call sessions, so they go to a busy node
+  first (spec 012).
 - The heartbeat's summary, and so the Lease, carries:
   - `memory-used` (working / limit) and `temp-used`;
   - `seats-used`, `sessions-max` and `streams-waiting`;
@@ -180,7 +205,7 @@ last decision with its reason. The plan's check counts an auto group at its `max
   streams for
   `for`,
   cooldown, shrink only an idle node above min, the last node of a min-0 group after `idle` with no demand, the
-  default group's min >= 1 refused;
+  default group kept at 1;
 - front: the demand Lease written while a client of a 0-node group is held, renewed, released; the hold until the
   client's timeout or a `Refused` group; the seat once a node is placeable;
 - duckdb-acl: the load report's `memory.temp_used` / `temp_limit` against a query that spills under a small

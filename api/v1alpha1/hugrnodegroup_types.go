@@ -51,9 +51,10 @@ type ScalingSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Min int32 `json:"min,omitempty"`
-	// Max nodes; the plan counts an auto group at its max.
+	// Max nodes, at least 1 for an auto group; the plan counts an auto group at its max.
 	// +kubebuilder:validation:Minimum=1
-	Max int32 `json:"max"`
+	// +optional
+	Max int32 `json:"max,omitempty"`
 	// Idle: a node with no session for this long stops while the group is above min. Default 30m.
 	// +optional
 	Idle *metav1.Duration `json:"idle,omitempty"`

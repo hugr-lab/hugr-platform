@@ -113,7 +113,8 @@ spec:
                       while the group is above min. Default 30m.'
                     type: string
                   max:
-                    description: Max nodes; the plan counts an auto group at its max.
+                    description: Max nodes, at least 1 for an auto group; the plan
+                      counts an auto group at its max.
                     format: int32
                     minimum: 1
                     type: integer
@@ -172,8 +173,6 @@ spec:
                         minimum: 1
                         type: integer
                     type: object
-                required:
-                - max
                 type: object
               size:
                 description: Size is one of the platform's sizes, allowed by its plan.

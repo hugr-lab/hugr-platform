@@ -29,6 +29,8 @@ type Scaling struct {
 	// the shares (0..1) and the count past which a node is under pressure
 	MemoryUsed, TempUsed, SessionsUsed, SeatsUsed float64
 	StreamsWaiting                                int64
+	// WakeOnDemand: something wakes a group at 0 (the front's demand, stage 2). Without it a group keeps one node.
+	WakeOnDemand bool
 }
 
 // Node is one node of the group as its Lease says. A share is 0..1, or below 0 when the node did not report it.
@@ -44,7 +46,7 @@ type Node struct {
 	StreamsWaiting int64
 	// IdleSince is since when the node has had no live session; zero while it has one (or did not say).
 	IdleSince time.Time
-	// Default: the node's group is the policy's default, which keeps at least one node.
+	// Default: the node's Lease says its group is the policy's default.
 	Default bool
 }
 
@@ -56,6 +58,25 @@ type State struct {
 	LastChange time.Time
 }
 
+// Input is one look at a group.
+type Input struct {
+	// Replicas the group asks; Running what its Deployment runs now (the plan keeps it when it refuses a growth).
+	Replicas, Running int32
+	// Pods are the group's pods that run (not going, not ended); Unreported those of them with no Lease yet - a
+	// node on its way, or one that does not come up.
+	Pods, Unreported int
+	// Nodes are the reported pods.
+	Nodes []Node
+	// Demand: a client of the group is held waiting for a node.
+	Demand bool
+	// Default: the group is the policy's default (the platform says so; a node's Lease may too).
+	Default bool
+	// MayGrow: the plan admits a growth (false while it refuses the group).
+	MayGrow bool
+	State   State
+	Now     time.Time
+}
+
 // Decision is the next size, why, and the state to keep.
 type Decision struct {
 	Replicas int32
@@ -64,48 +85,54 @@ type Decision struct {
 	State  State
 }
 
-// Decide the group's next replicas. replicas is what the group asks now; nodes are the reported pods (a pod not yet
-// reported is not among them - it is starting); demand: a client of the group is held waiting for a node.
-func Decide(s Scaling, replicas int32, nodes []Node, demand bool, state State, now time.Time) Decision {
-	next := Decision{Replicas: replicas, State: state}
+// Decide the group's next replicas.
+func Decide(s Scaling, in Input) Decision {
+	replicas, now := in.Replicas, in.Now
+	next := Decision{Replicas: replicas, State: in.State}
 	change := func(to int32, reason string) Decision {
 		return Decision{Replicas: to, Reason: reason, State: State{LastChange: now}}
 	}
 	floor := s.Min
-	for _, n := range nodes {
-		if n.Default && floor < 1 {
-			floor = 1 // the policy's default group seats every new connection first: its entry never goes
-		}
+	isDefault := in.Default
+	for _, n := range in.Nodes {
+		isDefault = isDefault || n.Default
 	}
-	// the bounds first, whatever else holds: a min or max just written
-	if replicas < floor {
-		return change(floor, fmt.Sprintf("below the minimum of %d", floor))
+	if floor < 1 && (isDefault || !s.WakeOnDemand) {
+		// the policy's default group seats every new connection first: its entry never goes; and a group nothing
+		// can wake from 0 keeps one node
+		floor = 1
 	}
+	// the bounds first, whatever else holds: a max just lowered, a min just raised (a growth: only if admitted)
 	if replicas > s.Max {
 		return change(s.Max, fmt.Sprintf("above the maximum of %d", s.Max))
 	}
+	if !in.MayGrow {
+		// the plan refuses the group: what it asked past what runs goes back, and it may only shrink
+		next.State.PressureSince = time.Time{}
+		if replicas > in.Running {
+			return change(in.Running, fmt.Sprintf("the plan admits no growth past the %d that run", in.Running))
+		}
+	} else if replicas < floor {
+		return change(floor, fmt.Sprintf("below the minimum of %d", floor))
+	}
 	// a client waits for a group with no node: at once, no `for`, no cooldown
-	if demand && replicas == 0 {
+	if in.MayGrow && in.Demand && replicas == 0 {
 		return change(max(1, floor), "a client waits for a node of the group")
 	}
+	// the last step is still being made (pods created or going): its effect is not seen yet
+	if in.Pods != int(replicas) {
+		return next
+	}
 
-	var live, placeable []Node
-	for _, n := range nodes {
-		if n.Lost {
-			continue
-		}
-		live = append(live, n)
-		if !n.Draining {
+	var placeable []Node
+	for _, n := range in.Nodes {
+		if !n.Lost && !n.Draining {
 			placeable = append(placeable, n)
 		}
 	}
-	// a node on its way (asked for, not reported yet) is capacity coming: no step until it is here. A lost node has
-	// reported - it is no capacity, and it is not on its way either (the scale-down takes it first, cost -3)
-	starting := int(replicas) > len(nodes)
-
 	// growth: every placeable node past a threshold for `for`
 	pressure := ""
-	if len(placeable) > 0 {
+	if in.MayGrow && len(placeable) > 0 {
 		if first := s.pressure(placeable[0]); first != "" {
 			pressure = placeable[0].Name + ": " + first
 		}
@@ -121,18 +148,19 @@ func Decide(s Scaling, replicas int32, nodes []Node, demand bool, state State, n
 	} else if next.State.PressureSince.IsZero() {
 		next.State.PressureSince = now
 	}
-	cooling := !state.LastChange.IsZero() && now.Sub(state.LastChange) < s.Cooldown
-	if starting || cooling {
+	if !in.State.LastChange.IsZero() && now.Sub(in.State.LastChange) < s.Cooldown {
 		return next
 	}
-	if pressure != "" && replicas < s.Max && now.Sub(next.State.PressureSince) >= s.For {
+	// a pod not reported yet is a node on its way - or one that does not come up: no more nodes until it is here
+	// (a shrink still goes: a scale-down takes an unready pod first)
+	if pressure != "" && in.Unreported == 0 && replicas < s.Max && now.Sub(next.State.PressureSince) >= s.For {
 		return change(replicas+1, fmt.Sprintf("every node under load for %s (%s)", s.For, pressure))
 	}
 
 	// shrinking: a node idle past `idle` stops while above the floor - never a busy one, never the last with a client
 	// waiting
-	if replicas > floor && !(demand && replicas == 1) {
-		for _, n := range live {
+	if replicas > floor && !(in.Demand && replicas == 1) {
+		for _, n := range in.Nodes {
 			if IdlePast(n, s.Idle, now) {
 				return change(replicas-1, fmt.Sprintf("%s has had no session for %s", n.Name,
 					now.Sub(n.IdleSince).Truncate(time.Second)))

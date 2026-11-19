@@ -135,7 +135,7 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
-	if err := r.aggregate(ctx, &group, status); err != nil {
+	if err := r.aggregate(ctx, &platform, &group, status); err != nil {
 		return ctrl.Result{}, err
 	}
 	if applyErr != nil {
@@ -264,8 +264,10 @@ func (r *GroupReconciler) apply(ctx context.Context, group *v1alpha1.HugrNodeGro
 }
 
 // aggregate the group's status from its Deployment and its nodes' Leases, and write each pod's deletion cost.
-func (r *GroupReconciler) aggregate(ctx context.Context, group *v1alpha1.HugrNodeGroup, status *v1alpha1.HugrNodeGroupStatus) error {
+func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.HugrPlatform, group *v1alpha1.HugrNodeGroup,
+	status *v1alpha1.HugrNodeGroupStatus) error {
 	var deployment appsv1.Deployment
+	var running int32 // what the Deployment is asked to run
 	err := r.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: build.Name(group)}, &deployment)
 	switch {
 	case apierrors.IsNotFound(err):
@@ -274,6 +276,9 @@ func (r *GroupReconciler) aggregate(ctx context.Context, group *v1alpha1.HugrNod
 		return err
 	default:
 		status.Replicas, status.ReadyReplicas = deployment.Status.Replicas, deployment.Status.ReadyReplicas
+		if deployment.Spec.Replicas != nil {
+			running = *deployment.Spec.Replicas
+		}
 	}
 
 	var pods corev1.PodList
@@ -294,13 +299,16 @@ func (r *GroupReconciler) aggregate(ctx context.Context, group *v1alpha1.HugrNod
 		s := ScalingOf(group.Spec.Scaling)
 		scaling = &s
 	}
+	alive, unreported := 0, 0
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if pod.DeletionTimestamp != nil {
-			continue
+		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+			continue // going, or ended (an evicted pod stays Failed until pod GC): no node, as for the ReplicaSet
 		}
+		alive++
 		lease, ok := byPod[pod.Name]
 		if !ok {
+			unreported++
 			continue // not reported yet: neither lost nor counted
 		}
 		state := NodeStateOf(pod.Name, lease, r.now())
@@ -313,10 +321,21 @@ func (r *GroupReconciler) aggregate(ctx context.Context, group *v1alpha1.HugrNod
 			return err
 		}
 	}
-	if scaling != nil && !meta.IsStatusConditionTrue(status.Conditions, ConditionRefused) {
-		if err := r.autoscale(ctx, group, *scaling, nodes, status); err != nil {
-			return err
+	switch {
+	case scaling != nil:
+		defaultGroup := ""
+		if platform.Spec.FirstPolicy != nil {
+			defaultGroup = platform.Spec.FirstPolicy.DefaultGroup
 		}
+		in := autoscale.Input{Replicas: group.Spec.Replicas, Running: running, Pods: alive, Unreported: unreported,
+			Default: defaultGroup != "" && group.EffectiveResourceGroup() == defaultGroup,
+			MayGrow: !meta.IsStatusConditionTrue(status.Conditions, ConditionRefused), Now: r.now()}
+		for _, n := range nodes {
+			in.Nodes = append(in.Nodes, nodeOf(n))
+		}
+		r.autoscale(ctx, group, *scaling, in, status)
+	case status.Scaling != nil:
+		status.Scaling.PressureSince = nil // a manual group keeps its last change, never a pressure clock
 	}
 	fleet := Aggregate(nodes)
 	status.Profile = fleet.Profile
@@ -382,10 +401,14 @@ func DeletionCost(state NodeState, idle time.Duration, now time.Time) int64 {
 	return bucket
 }
 
+// WakeOnDemand: the front's demand wakes a group at 0 (spec 011 stage 2). Until then an auto group keeps one node,
+// whatever its min - nothing would start it again.
+const WakeOnDemand = false
+
 // ScalingOf a group's scaling, its defaults filled in (spec 011).
 func ScalingOf(spec *v1alpha1.ScalingSpec) autoscale.Scaling {
 	s := autoscale.Scaling{Min: spec.Min, Max: spec.Max, Idle: autoscale.DefaultIdle, For: autoscale.DefaultFor,
-		Cooldown: autoscale.DefaultCooldown, MemoryUsed: autoscale.DefaultMemoryUsed,
+		Cooldown: autoscale.DefaultCooldown, MemoryUsed: autoscale.DefaultMemoryUsed, WakeOnDemand: WakeOnDemand,
 		TempUsed: autoscale.DefaultTempUsed, SessionsUsed: autoscale.DefaultSessionsUsed,
 		SeatsUsed: autoscale.DefaultSeatsUsed, StreamsWaiting: autoscale.DefaultStreamsWaiting}
 	duration := func(d *metav1.Duration, into *time.Duration) {
@@ -424,14 +447,11 @@ func nodeOf(state NodeState) autoscale.Node {
 }
 
 // autoscale an auto group (spec 011): the decision from its nodes, the replicas written to its spec - the Deployment
-// follows at the reconcile that write triggers - and what the autoscaler keeps in the status.
+// follows at the reconcile that write triggers - and what the autoscaler keeps in the status. A write that fails (a
+// group changed meanwhile: the optimistic lock) is left to the next look; the rest of the status is written anyway.
 func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNodeGroup, scaling autoscale.Scaling,
-	states []NodeState, status *v1alpha1.HugrNodeGroupStatus) error {
-	now := r.now()
-	var nodes []autoscale.Node
-	for _, s := range states {
-		nodes = append(nodes, nodeOf(s))
-	}
+	in autoscale.Input, status *v1alpha1.HugrNodeGroupStatus) {
+	now := in.Now
 	var kept autoscale.State
 	if status.Scaling != nil {
 		if status.Scaling.PressureSince != nil {
@@ -441,7 +461,8 @@ func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNod
 			kept.LastChange = status.Scaling.Last.At.Time
 		}
 	}
-	decision := autoscale.Decide(scaling, group.Spec.Replicas, nodes, false, kept, now)
+	in.State = kept
+	decision := autoscale.Decide(scaling, in)
 	if status.Scaling == nil {
 		status.Scaling = &v1alpha1.ScalingStatus{}
 	}
@@ -450,19 +471,22 @@ func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNod
 		status.Scaling.PressureSince = &metav1.Time{Time: decision.State.PressureSince}
 	}
 	if decision.Replicas == group.Spec.Replicas {
-		return nil
+		return
 	}
-	log.FromContext(ctx).Info("autoscale", "group", group.Name, "from", group.Spec.Replicas, "to", decision.Replicas,
-		"reason", decision.Reason)
-	patch := client.MergeFrom(group.DeepCopy())
+	logger := log.FromContext(ctx)
+	// the group as read, or nothing: a person's change since (mode back to manual, a new max) is not written over
+	patch := client.MergeFromWithOptions(group.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	from := group.Spec.Replicas
 	group.Spec.Replicas = decision.Replicas
 	if err := r.Patch(ctx, group, patch); err != nil {
-		return err
+		group.Spec.Replicas = from
+		logger.Info("autoscale not written, next look", "group", group.Name, "error", err.Error())
+		return
 	}
+	logger.Info("autoscale", "group", group.Name, "from", from, "to", decision.Replicas, "reason", decision.Reason)
+	status.ObservedGeneration = group.Generation
 	status.Scaling.Last = &v1alpha1.ScalingDecision{At: metav1.Time{Time: now}, From: from, To: decision.Replicas,
 		Reason: decision.Reason}
-	return nil
 }
 
 // writeStatus patches the status (a merge patch, no resourceVersion precondition): the group read from the cache may
