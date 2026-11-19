@@ -30,6 +30,7 @@ import (
 	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/internal/upgrade"
 	"github.com/hugr-lab/hugr-platform/pkg/autoscale"
+	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
 	"github.com/hugr-lab/hugr-platform/pkg/plan"
 )
 
@@ -81,7 +82,8 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if group.DeletionTimestamp != nil {
-		return ctrl.Result{}, nil // going: the garbage collector takes its objects, nothing is applied again
+		r.tidyAnswers(ctx, &group) // its "starting" goes with it (stage 2)
+		return ctrl.Result{}, nil  // going: the garbage collector takes its objects, nothing is applied again
 	}
 	status := group.Status.DeepCopy()
 	status.ObservedGeneration = group.Generation
@@ -298,6 +300,9 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		scaling = &s
 	}
 	alive, unreported := 0, 0
+	// a node on its way for a held client (stage 2): none admits yet, and a pod is not reported or young and not
+	// admitting - a node that reported may need its readiness and a heartbeat more to admit (the review)
+	admitting, coming := false, false
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
@@ -307,10 +312,18 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		lease, ok := byPod[pod.Name]
 		if !ok {
 			unreported++
+			coming = true
 			continue // not reported yet: neither lost nor counted
 		}
 		state := NodeStateOf(pod.Name, lease, r.now())
 		nodes = append(nodes, state)
+		if !state.Lost && !state.Summary.Draining && state.Summary.AdmitSession && podReady(pod) {
+			admitting = true
+		} else if r.now().Sub(lease.CreationTimestamp.Time) < StartWindow {
+			// young from its first heartbeat (its Lease's creation), not its pod's: a node that waited for a VM
+			// and an image pull is new all the same (the last review)
+			coming = true
+		}
 		var idle time.Duration
 		if scaling != nil {
 			idle = scaling.Idle
@@ -330,10 +343,44 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 			MayGrow: !meta.IsStatusConditionTrue(status.Conditions, ConditionRefused), Now: r.now()}
 		for _, n := range nodes {
 			in.Nodes = append(in.Nodes, nodeOf(n))
+			in.Default = in.Default || n.Summary.GroupDefault
 		}
+		// the policy's default group is kept as such: one heartbeat during a catalog hiccup says not-default, and
+		// the default group at 0 would leave no node to name any group to wake (the review)
+		if status.Scaling == nil {
+			status.Scaling = &v1alpha1.ScalingStatus{}
+		}
+		rg := group.EffectiveResourceGroup()
+		switch {
+		case in.Default:
+			status.Scaling.DefaultGroup = rg
+		case status.Scaling.DefaultGroup == rg && r.anotherDefault(ctx, group.Namespace, rg):
+			// a node of another resource group says it is the policy's default now (ALTER RESOURCE GROUP …
+			// SET DEFAULT): the floor follows it - never on firstPolicy's word, which is the bootstrap's only
+			status.Scaling.DefaultGroup = ""
+		case status.Scaling.DefaultGroup == rg:
+			in.Default = true
+		}
+		// stage 2: the front holds a client of the group's resource group with no node to seat it on
+		var wanted coordinationv1.Lease
+		demandKey := types.NamespacedName{Namespace: group.Namespace,
+			Name: nodeproto.DemandLeaseName(group.EffectiveResourceGroup())}
+		hasDemand := r.Get(ctx, demandKey, &wanted) == nil
+		in.Demand = hasDemand && nodeproto.DemandLive(&wanted, in.Now)
 		r.autoscale(ctx, group, *scaling, in, status)
+		if hasDemand {
+			// "starting" while a node is on its way for it - asked for and not here yet, not reported, or young and
+			// not admitting yet - never for a group whose nodes run and admit nobody (at capacity, past the critical
+			// level): that client should hear "no node" soon, not be held (the review)
+			onItsWay := group.Spec.Replicas > 0 && !admitting && (alive < int(group.Spec.Replicas) || coming)
+			r.answerDemand(ctx, group, &wanted, in.Demand && in.MayGrow && onItsWay)
+		}
+		r.tidyAnswers(ctx, group)
 	case status.Scaling != nil:
 		status.Scaling.PressureSince = nil // a manual group keeps its last change, never a pressure clock
+		r.tidyAnswers(ctx, group)
+	default:
+		r.tidyAnswers(ctx, group)
 	}
 	fleet := Aggregate(nodes)
 	status.Profile = fleet.Profile
@@ -399,12 +446,110 @@ func DeletionCost(state NodeState, idle time.Duration, now time.Time) int64 {
 	return bucket
 }
 
+// anotherDefault: a live node of the namespace reports another resource group as the policy's default.
+func (r *GroupReconciler) anotherDefault(ctx context.Context, namespace, rg string) bool {
+	var leases coordinationv1.LeaseList
+	if err := r.List(ctx, &leases, client.InNamespace(namespace), client.HasLabels{build.LabelGroup}); err != nil {
+		return false
+	}
+	now := r.now()
+	for i := range leases.Items {
+		n := NodeStateOf(leases.Items[i].Name, &leases.Items[i], now)
+		if !n.Lost && n.Summary.GroupDefault && n.Summary.Group != "" && n.Summary.Group != rg {
+			return true
+		}
+	}
+	return false
+}
+
+// StartWindow is how long a new node counts as on its way from its first heartbeat: its readiness and a heartbeat
+// that admits.
+const StartWindow = 5 * time.Minute
+
+// podReady: the pod's Ready condition is true (the EndpointSlice the front seats by follows it).
+func podReady(pod *corev1.Pod) bool {
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// tidyAnswers drops a "starting" that is no longer anybody's (the review): one that names this group on another
+// resource group's demand or while it is not auto; and, on its own resource group's demand, one that names a group
+// that is gone, not auto, or serves another resource group - a client would otherwise be held for nothing for as long
+// as new clients keep the demand alive.
+func (r *GroupReconciler) tidyAnswers(ctx context.Context, group *v1alpha1.HugrNodeGroup) {
+	var demands coordinationv1.LeaseList
+	if err := r.List(ctx, &demands, client.InNamespace(group.Namespace),
+		client.MatchingLabels{nodeproto.LabelDemand: "true"}); err != nil {
+		return
+	}
+	mine := group.EffectiveResourceGroup()
+	for i := range demands.Items {
+		lease := &demands.Items[i]
+		named := lease.Annotations[nodeproto.AnnotationStarting]
+		if named == "" {
+			continue
+		}
+		stale := false
+		switch {
+		case named == group.Name:
+			stale = group.DeletionTimestamp != nil || !group.Auto() ||
+				lease.Annotations[nodeproto.AnnotationDemandGroup] != mine
+		default:
+			// another group's answer: dropped once that group is gone - whatever the demand's resource group, a
+			// deleted group's own look never comes (no finalizer) - or, on our resource group's demand, once it is
+			// no longer auto or serves another one
+			var answerer v1alpha1.HugrNodeGroup
+			err := r.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: named}, &answerer)
+			stale = apierrors.IsNotFound(err) || err == nil && answerer.DeletionTimestamp != nil ||
+				err == nil && lease.Annotations[nodeproto.AnnotationDemandGroup] == mine &&
+					(!answerer.Auto() || answerer.EffectiveResourceGroup() != mine)
+		}
+		if !stale {
+			continue
+		}
+		patch := client.MergeFrom(lease.DeepCopy())
+		delete(lease.Annotations, nodeproto.AnnotationStarting)
+		if err := r.Patch(ctx, lease, patch); err != nil {
+			log.FromContext(ctx).Info("a stale demand answer not dropped, next look", "lease", lease.Name,
+				"error", err.Error())
+		}
+	}
+}
+
+// answerDemand says on the front's demand Lease whether a node of the group starts for it (spec 011 stage 2): the
+// front holds its client while it does, and answers "no node" once it had time to hear and nobody does.
+func (r *GroupReconciler) answerDemand(ctx context.Context, group *v1alpha1.HugrNodeGroup, lease *coordinationv1.Lease,
+	starting bool) {
+	current := lease.Annotations[nodeproto.AnnotationStarting]
+	switch {
+	case starting && current == group.Name, !starting && current != group.Name:
+		return // as it should be - or another group's answer (two groups serving one resource group), not ours
+	case starting && current != "":
+		return // another group of the resource group answered first: one answer is enough
+	}
+	patch := client.MergeFrom(lease.DeepCopy())
+	if lease.Annotations == nil {
+		lease.Annotations = map[string]string{}
+	}
+	if starting {
+		lease.Annotations[nodeproto.AnnotationStarting] = group.Name
+	} else {
+		delete(lease.Annotations, nodeproto.AnnotationStarting)
+	}
+	if err := r.Patch(ctx, lease, patch); err != nil {
+		log.FromContext(ctx).Info("demand not answered, next look", "group", group.Name, "error", err.Error())
+	}
+}
+
 // AnnotationScaledAt is when the autoscaler last changed the group's replicas, written with them (spec 011).
 const AnnotationScaledAt = "platform.hugr.io/scaled-at"
 
-// WakeOnDemand: the front's demand wakes a group at 0 (spec 011 stage 2). Until then an auto group keeps one node,
-// whatever its min - nothing would start it again.
-const WakeOnDemand = false
+// WakeOnDemand: the front's demand wakes a group at 0 (spec 011 stage 2), so an auto group may go to its min of 0.
+const WakeOnDemand = true
 
 // ScalingOf a group's scaling, its defaults filled in (spec 011).
 func ScalingOf(spec *v1alpha1.ScalingSpec) autoscale.Scaling {

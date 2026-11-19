@@ -48,6 +48,7 @@ func main() {
 		caFile     = flag.String("ca", "", "the run's CA")
 		sql        = flag.String("sql", "", "the statement")
 		hold       = flag.Bool("hold", false, "keep the node's cookie and leave the session open: a client's own session")
+		wait       = flag.Duration("timeout", 60*time.Second, "how long the statement may take (a node that starts for it: longer)")
 		consoleURL = flag.String("console", "", "instead of -sql: a console API URL (spec 003), reached through a port-forward")
 		method     = flag.String("method", "GET", "the console call's method")
 		body       = flag.String("body", "", "the console call's JSON body")
@@ -63,7 +64,7 @@ func main() {
 	case *consoleURL != "":
 		err = console(idp, *consoleURL, *method, *body, *serverName, *caFile)
 	default:
-		err = run(idp, *node, *serverName, *caFile, *sql, *hold)
+		err = run(idp, *node, *serverName, *caFile, *sql, *hold, *wait)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, redact(err.Error()))
@@ -81,7 +82,7 @@ type tokenRequest struct {
 	url, host, client, secretFile, scope string
 }
 
-func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool) error {
+func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool, wait time.Duration) error {
 	pem, err := os.ReadFile(caFile)
 	if err != nil {
 		return err
@@ -90,7 +91,7 @@ func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool) erro
 	if !pool.AppendCertsFromPEM(pem) {
 		return errors.New("the CA file holds no certificate")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	token, err := clientCredentials(ctx, idp, pool)
 	if err != nil {

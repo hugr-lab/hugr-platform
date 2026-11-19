@@ -70,10 +70,14 @@ func TestFrontObjects(t *testing.T) {
 	}
 	var role rbacv1.Role
 	must(t, c.client.Get(ctx, key(build.FrontName), &role))
+	// it reads the fleet, and writes only its demand Leases (spec 011 stage 2): create and patch, never update or
+	// delete, never another resource
+	allowed := map[string][]string{"endpointslices": {"get", "list", "watch"},
+		"leases": {"get", "list", "watch", "create", "patch"}}
 	for _, rule := range role.Rules {
-		if slices.ContainsFunc(rule.Verbs, func(v string) bool { return v != "get" && v != "list" && v != "watch" }) ||
-			len(rule.Resources) != 1 || (rule.Resources[0] != "endpointslices" && rule.Resources[0] != "leases") {
-			t.Errorf("the front's Role reads more than the fleet: %+v", rule)
+		if len(rule.Resources) != 1 || allowed[rule.Resources[0]] == nil ||
+			slices.ContainsFunc(rule.Verbs, func(v string) bool { return !slices.Contains(allowed[rule.Resources[0]], v) }) {
+			t.Errorf("the front's Role does more than read the fleet and write its demand: %+v", rule)
 		}
 	}
 	for _, obj := range []client.Object{&rbacv1.RoleBinding{}, &corev1.ServiceAccount{}, &policyv1.PodDisruptionBudget{}} {

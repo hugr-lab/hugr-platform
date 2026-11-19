@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -22,10 +23,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/net/netutil"
 	"google.golang.org/grpc/credentials"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 
+	"github.com/hugr-lab/hugr-platform/internal/front/demand"
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 	"github.com/hugr-lab/hugr-platform/internal/front/flightproxy"
 	"github.com/hugr-lab/hugr-platform/internal/front/metrics"
@@ -42,7 +46,7 @@ const Unready = 5 * time.Second
 func main() {
 	var (
 		namespace, certDir, caFile, flightAddr, quackAddr, internalAddr string
-		heartbeat, noNodeWait                                           time.Duration
+		heartbeat, noNodeWait, demandHold                               time.Duration
 		maxConns                                                        int
 	)
 	flag.StringVar(&namespace, "namespace", os.Getenv("POD_NAMESPACE"), "the platform's namespace")
@@ -53,18 +57,20 @@ func main() {
 	flag.StringVar(&internalAddr, "internal-address", ":8081", "where /metrics, /healthz and /readyz listen")
 	flag.DurationVar(&heartbeat, "heartbeat", 15*time.Second, "the nodes' heartbeat interval: a watch lost for 3 makes the front not ready")
 	flag.DurationVar(&noNodeWait, "no-node-wait", 5*time.Second, "how long a new connection waits for a node of its group")
+	flag.DurationVar(&demandHold, "demand-hold", demand.DefaultMax, "how long a client of a group with no node is held "+
+		"while the operator starts one (its own timeout usually ends the wait first)")
 	flag.IntVar(&maxConns, "max-connections", 16384, "the most client connections each door holds at once")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := run(log, namespace, certDir, caFile, flightAddr, quackAddr, internalAddr, heartbeat, noNodeWait,
-		maxConns); err != nil {
+		demandHold, maxConns); err != nil {
 		log.Error("the front stopped", "error", err.Error())
 		os.Exit(1)
 	}
 }
 
 func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, internalAddr string, heartbeat,
-	noNodeWait time.Duration, maxConns int) error {
+	noNodeWait, demandHold time.Duration, maxConns int) error {
 	if namespace == "" {
 		return errors.New("--namespace is required")
 	}
@@ -80,6 +86,9 @@ func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, in
 	if err != nil {
 		return err
 	}
+	// the informers, the demand Leases' renewers and readers share one rate limit: client-go's 5 / 10 is too little
+	// for a front holding many clients of several groups (spec 011 stage 2)
+	config.QPS, config.Burst = 50, 100
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return err
@@ -98,8 +107,16 @@ func run(log *slog.Logger, namespace, certDir, caFile, flightAddr, quackAddr, in
 	nodes := fleet.New()
 	watcher := watch.New(client, namespace, nodes, heartbeat)
 	go watcher.Run(run)
-	flight := &flightproxy.Proxy{Fleet: nodes, Namespace: namespace, Roots: roots, NoNodeWait: noNodeWait, Log: log}
-	quack := &quackproxy.Proxy{Fleet: nodes, Namespace: namespace, Roots: roots, NoNodeWait: noNodeWait, Log: log}
+	checkLeasePolicy(run, client, namespace, log)
+	holder := os.Getenv("POD_NAME")
+	if holder == "" {
+		holder, _ = os.Hostname()
+	}
+	wake := &demand.Demand{Client: client, Namespace: namespace, Holder: holder, Max: demandHold}
+	flight := &flightproxy.Proxy{Fleet: nodes, Namespace: namespace, Roots: roots, NoNodeWait: noNodeWait,
+		Demand: wake, Log: log}
+	quack := &quackproxy.Proxy{Fleet: nodes, Namespace: namespace, Roots: roots, NoNodeWait: noNodeWait,
+		Demand: wake, Log: log}
 	go follow(run, nodes, flight)
 
 	public := &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.GetCertificate}
@@ -190,5 +207,22 @@ func follow(ctx context.Context, nodes *fleet.Fleet, flight *flightproxy.Proxy) 
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// checkLeasePolicy: the front's Role may create and patch every Lease of the namespace; the admission policy
+// front-leases (spec 011 stage 2) keeps it to its demand Leases. A cluster without it (before Kubernetes 1.30, a chart
+// rendered without the API) is said once at start - a dry-run of a node's Lease must be refused.
+func checkLeasePolicy(ctx context.Context, client kubernetes.Interface, namespace string, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	probe := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-front-policy-probe", Namespace: namespace}}
+	_, err := client.CoordinationV1().Leases(namespace).Create(ctx, probe, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+	switch {
+	case err == nil:
+		log.Error("the admission policy that keeps the front to its demand Leases is not in force: the front's Role " +
+			"reaches every Lease of the namespace (the operator's leader Lease, the nodes')")
+	case !strings.Contains(err.Error(), "demand Leases only"):
+		log.Warn("the front's Lease policy could not be checked", "error", err.Error())
 	}
 }

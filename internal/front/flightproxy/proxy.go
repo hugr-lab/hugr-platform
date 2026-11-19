@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/hugr-lab/hugr-platform/internal/front/demand"
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 	"github.com/hugr-lab/hugr-platform/internal/front/flightwire"
 	"github.com/hugr-lab/hugr-platform/internal/front/metrics"
@@ -68,7 +69,10 @@ type Proxy struct {
 	Roots *x509.CertPool
 	// NoNodeWait is how long a new connection waits for a placeable node of its group.
 	NoNodeWait time.Duration
-	Log        *slog.Logger
+	// Demand wakes a group with no node (spec 011 stage 2); nil: none, a group with no node is refused after
+	// NoNodeWait.
+	Demand *demand.Demand
+	Log    *slog.Logger
 	// Insecure dials the nodes in the clear - a test's only.
 	Insecure bool
 
@@ -204,12 +208,13 @@ func (p *Proxy) seat(client grpc.ServerStream, name string, md metadata.MD, rout
 			seat.Groups = []string{g} // another node of the group the connection was on
 		}
 	}
-	var silent error // the last node tried did not answer
+	var silent error                              // the last node tried did not answer
+	holdUntil := time.Now().Add(p.Demand.Limit()) // one hold for a starting node, whatever the re-seats
 	for {
 		n := next
 		next = nil
 		if n == nil {
-			n = p.Fleet.Wait(client.Context(), p.NoNodeWait, func(v *fleet.View) *fleet.Node {
+			n = p.Demand.Wait(client.Context(), p.Fleet, p.NoNodeWait, seat.NamedGroups(), holdUntil, func(v *fleet.View) *fleet.Node {
 				return v.Choose(fleet.Flight, seat.Groups, seat.Tried, time.Now(), p.random())
 			})
 		}
