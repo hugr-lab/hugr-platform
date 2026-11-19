@@ -2,6 +2,7 @@ package nodeproto
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -185,5 +186,43 @@ func TestPlaced(t *testing.T) {
 	}
 	if p := s.Placed("interactive"); p.AdmitSession || p.GroupDefault || p.Group != "interactive" {
 		t.Errorf("a node reporting another group than the operator gave it: %+v", p)
+	}
+}
+
+func TestSummaryScalingLoad(t *testing.T) {
+	// spec 011: the load the autoscaler reads, from duckdb-acl spec 175's report (and 079's seats, 080's streams)
+	const loaded = `{"node_id": "n", "load": {"sessions": {"live": 0, "max": 1000, "idle_since": 1763546400},
+	  "memory": {"used": 900, "working": 400, "limit": 1000, "temp_used": 50, "temp_limit": null, "critical": false},
+	  "quack": {"seats": 16, "doors": [{"seated": 4, "seats_left": 12}, {"seated": 12, "seats_left": 4}]},
+	  "streams": {"queued": 2}}}`
+	r, load, err := ReadReport(strings.NewReader(loaded), "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := SummaryOf(r, load)
+	if s.MemoryUsed != 0.4 || s.TempUsed != -1 || s.SeatsUsed != 0.5 || s.StreamsWaiting != 2 ||
+		s.IdleSince != 1763546400 || s.SessionsMax != 1000 {
+		t.Errorf("working memory against the limit, no spill limit no share, seats over both doors: %+v", s)
+	}
+	back := ParseSummary(s.Annotations())
+	if back.MemoryUsed != 0.4 || back.TempUsed != -1 || back.SeatsUsed != 0.5 || back.StreamsWaiting != 2 ||
+		back.IdleSince != 1763546400 || back.SessionsMax != 1000 {
+		t.Errorf("the load does not survive the Lease: %+v", back)
+	}
+	if _, kept := s.Annotations()[AnnotationTempUsed]; kept {
+		t.Error("a share with no limit is not written")
+	}
+	// a live node, and a node of an older pin: nothing to read
+	old := SummaryOf(Report{}, Load{})
+	if old.MemoryUsed != -1 || old.TempUsed != -1 || old.SeatsUsed != -1 || old.IdleSince != 0 {
+		t.Errorf("an older node's report says nothing of its load: %+v", old)
+	}
+	if none := ParseSummary(nil); none.MemoryUsed != -1 || none.IdleSince != 0 || none.SeatsUsed != -1 {
+		t.Errorf("a Lease without the keys: %+v", none)
+	}
+	for _, key := range []string{AnnotationMemoryUsed, AnnotationIdleSince, AnnotationSeatsUsed} {
+		if !slices.Contains(ReportedKeys, key) {
+			t.Errorf("%s is dropped from the Lease once a report no longer says it", key)
+		}
 	}
 }

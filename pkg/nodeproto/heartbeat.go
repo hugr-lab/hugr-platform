@@ -64,12 +64,29 @@ type Load struct {
 	Sessions     struct {
 		Live int64 `json:"live"`
 		Max  int64 `json:"max"`
+		// IdleSince is since when the node has had no live session (unix seconds; nil while it has one - duckdb-acl
+		// spec 175)
+		IdleSince *int64 `json:"idle_since"`
 	} `json:"sessions"`
+	// Memory is the engine's (duckdb-acl spec 175): the working memory - used less the cache it drops - and the
+	// spill, each against its limit (nil: no limit, nothing to take a share of)
+	Memory *struct {
+		Working   int64  `json:"working"`
+		Limit     *int64 `json:"limit"`
+		TempUsed  int64  `json:"temp_used"`
+		TempLimit *int64 `json:"temp_limit"`
+	} `json:"memory"`
 	Quack *struct {
+		Seats int64 `json:"seats"` // per door
 		Doors []struct {
+			Seated    int64 `json:"seated"`
 			SeatsLeft int64 `json:"seats_left"`
 		} `json:"doors"`
 	} `json:"quack"`
+	// Streams is the quack doors' stream budget (duckdb-acl spec 080): how many streams wait for room
+	Streams *struct {
+		Queued int64 `json:"queued"`
+	} `json:"streams"`
 	Admit struct {
 		NewSession bool `json:"new_session"`
 	} `json:"admit"`
@@ -120,6 +137,14 @@ type Summary struct {
 	GroupDefault bool // where the front seats a principal whose group it does not know yet (spec 002)
 	Sessions     int64
 	SeatsLeft    int64 // -1: the node opens no quack door
+	// The load the autoscaler grows and shrinks a group by (spec 011). A share is 0..1, -1 when not reported (no
+	// limit, no quack door, a node of an older pin); IdleSince is 0 while the node has a live session or did not say.
+	SessionsMax    int64
+	MemoryUsed     float64 // working memory / memory_limit
+	TempUsed       float64 // spilled / max_temp_directory_size
+	SeatsUsed      float64 // quack seats seated / seats
+	StreamsWaiting int64
+	IdleSince      int64
 	// What the node is (spec 008, hugr-node spec 017): its build, its DuckDB release and platform, and the catalog as
 	// its build judges it. Empty or 0: not reported (a node of an older pin).
 	Build                 string
@@ -152,6 +177,10 @@ func SummaryOf(report Report, load Load) Summary {
 		}
 	}
 	s := Summary{
+		SessionsMax:           load.Sessions.Max,
+		MemoryUsed:            -1,
+		TempUsed:              -1,
+		SeatsUsed:             -1,
 		Target:                report.Config.Target,
 		Applied:               report.Config.Applied,
 		NeedsRestart:          report.Config.NeedsRestart,
@@ -169,6 +198,23 @@ func SummaryOf(report Report, load Load) Summary {
 		CatalogBuild:          report.Catalog.Build,
 		CatalogBuildMinReader: report.Catalog.BuildMinReader,
 	}
+	if load.Sessions.IdleSince != nil && *load.Sessions.IdleSince > 0 {
+		s.IdleSince = *load.Sessions.IdleSince
+	}
+	if m := load.Memory; m != nil {
+		s.MemoryUsed = share(m.Working, m.Limit)
+		s.TempUsed = share(m.TempUsed, m.TempLimit)
+	}
+	if q := load.Quack; q != nil && q.Seats > 0 && len(q.Doors) > 0 {
+		var seated int64
+		for _, door := range q.Doors {
+			seated += door.Seated
+		}
+		s.SeatsUsed = float64(seated) / float64(q.Seats*int64(len(q.Doors)))
+	}
+	if load.Streams != nil {
+		s.StreamsWaiting = load.Streams.Queued
+	}
 	if report.Catalog.Schema != nil {
 		s.CatalogSchema = *report.Catalog.Schema
 	}
@@ -176,6 +222,14 @@ func SummaryOf(report Report, load Load) Summary {
 		s.CatalogMinReader = *report.Catalog.MinReader
 	}
 	return s
+}
+
+// share of a limit: -1 when there is none
+func share(used int64, limit *int64) float64 {
+	if limit == nil || *limit <= 0 {
+		return -1
+	}
+	return float64(used) / float64(*limit)
 }
 
 // Placed is the summary as the operator writes it for a node it gave the resource group `group`: the group is the
@@ -201,6 +255,13 @@ const (
 	AnnotationGroupDefault = "platform.hugr.io/group-default"
 	AnnotationSessions     = "platform.hugr.io/sessions"
 	AnnotationSeatsLeft    = "platform.hugr.io/seats-left"
+	// spec 011: the load the autoscaler reads
+	AnnotationSessionsMax    = "platform.hugr.io/sessions-max"
+	AnnotationMemoryUsed     = "platform.hugr.io/memory-used"
+	AnnotationTempUsed       = "platform.hugr.io/temp-used"
+	AnnotationSeatsUsed      = "platform.hugr.io/seats-used"
+	AnnotationStreamsWaiting = "platform.hugr.io/streams-waiting"
+	AnnotationIdleSince      = "platform.hugr.io/idle-since"
 	// spec 008: what the node is
 	AnnotationBuild                 = "platform.hugr.io/build"
 	AnnotationDuckDBVersion         = "platform.hugr.io/duckdb-version"
@@ -228,6 +289,18 @@ func (s Summary) Annotations() map[string]string {
 	if s.GroupKnown != nil {
 		out[AnnotationGroupKnown] = strconv.FormatBool(*s.GroupKnown)
 	}
+	for key, value := range map[string]float64{AnnotationMemoryUsed: s.MemoryUsed, AnnotationTempUsed: s.TempUsed,
+		AnnotationSeatsUsed: s.SeatsUsed} {
+		if value >= 0 {
+			out[key] = strconv.FormatFloat(value, 'f', 3, 64)
+		}
+	}
+	for key, value := range map[string]int64{AnnotationSessionsMax: s.SessionsMax,
+		AnnotationStreamsWaiting: s.StreamsWaiting, AnnotationIdleSince: s.IdleSince} {
+		if value > 0 {
+			out[key] = strconv.FormatInt(value, 10)
+		}
+	}
 	for key, value := range map[string]string{AnnotationBuild: s.Build, AnnotationDuckDBVersion: s.DuckDBVersion,
 		AnnotationPlatform: s.Platform, AnnotationCatalogExtension: s.CatalogExtension} {
 		if value != "" {
@@ -246,7 +319,8 @@ func (s Summary) Annotations() map[string]string {
 
 // ReportedKeys are the annotations a heartbeat may leave out (an older node's): the Lease drops what the report no
 // longer says, so a key never outlives the build that wrote it.
-var ReportedKeys = []string{AnnotationGroupKnown, AnnotationBuild, AnnotationDuckDBVersion, AnnotationPlatform,
+var ReportedKeys = []string{AnnotationGroupKnown, AnnotationSessionsMax, AnnotationMemoryUsed, AnnotationTempUsed,
+	AnnotationSeatsUsed, AnnotationStreamsWaiting, AnnotationIdleSince, AnnotationBuild, AnnotationDuckDBVersion, AnnotationPlatform,
 	AnnotationCatalogExtension, AnnotationCatalogBuild, AnnotationCatalogBuildMinReader, AnnotationCatalogSchema,
 	AnnotationCatalogMinReader}
 
@@ -281,6 +355,16 @@ func ParseSummary(annotations map[string]string) Summary {
 		CatalogSchema:         num(AnnotationCatalogSchema),
 		CatalogMinReader:      num(AnnotationCatalogMinReader),
 	}
+	s.SessionsMax = num(AnnotationSessionsMax)
+	s.StreamsWaiting = num(AnnotationStreamsWaiting)
+	s.IdleSince = num(AnnotationIdleSince)
+	ratio := func(key string) float64 {
+		if v, err := strconv.ParseFloat(annotations[key], 64); err == nil && v >= 0 {
+			return v
+		}
+		return -1
+	}
+	s.MemoryUsed, s.TempUsed, s.SeatsUsed = ratio(AnnotationMemoryUsed), ratio(AnnotationTempUsed), ratio(AnnotationSeatsUsed)
 	if v, ok := annotations[AnnotationSeatsLeft]; ok {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			s.SeatsLeft = n

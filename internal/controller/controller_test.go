@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,8 +293,8 @@ func TestReconcileStatusFromLeases(t *testing.T) {
 	if a.Annotations[AnnotationDeletionCost] != "4" || b.Annotations[AnnotationDeletionCost] != "1" {
 		t.Errorf("deletion costs %q %q, want 4 (7 sessions) and 1", a.Annotations[AnnotationDeletionCost], b.Annotations[AnnotationDeletionCost])
 	}
-	if c.Annotations[AnnotationDeletionCost] != "-1" {
-		t.Errorf("a lost node's cost %q, want -1: a scale-down takes it first", c.Annotations[AnnotationDeletionCost])
+	if c.Annotations[AnnotationDeletionCost] != "-3" {
+		t.Errorf("a lost node's cost %q, want -3: a scale-down takes it first", c.Annotations[AnnotationDeletionCost])
 	}
 }
 
@@ -340,11 +341,135 @@ func TestReconcileWithoutPlatform(t *testing.T) {
 
 func TestDeletionCost(t *testing.T) {
 	for sessions, want := range map[int64]int64{0: 0, 1: 1, 2: 2, 3: 2, 7: 4, 8: 8, 1000: 512} {
-		if got := DeletionCost(NodeState{Summary: nodeproto.Summary{Sessions: sessions}}); got != want {
+		if got := DeletionCost(NodeState{Summary: nodeproto.Summary{Sessions: sessions}}, 0, t0); got != want {
 			t.Errorf("%d sessions cost %d, want %d", sessions, got, want)
 		}
 	}
-	if DeletionCost(NodeState{Lost: true, Summary: nodeproto.Summary{Sessions: 900}}) != -1 {
+	if DeletionCost(NodeState{Lost: true, Summary: nodeproto.Summary{Sessions: 900}}, 0, t0) != -3 {
 		t.Error("a lost node keeps its last cost")
+	}
+	// spec 011: in an auto group a node idle past its idle time goes before any live one, after a lost one
+	idle := NodeState{Summary: nodeproto.Summary{IdleSince: t0.Add(-time.Hour).Unix()}}
+	if got := DeletionCost(idle, 30*time.Minute, t0); got != -2 {
+		t.Errorf("an idle node of an auto group costs %d, want -2", got)
+	}
+	if got := DeletionCost(idle, 0, t0); got != 0 {
+		t.Errorf("a manual group has no idle time: %d", got)
+	}
+	recent := NodeState{Summary: nodeproto.Summary{IdleSince: t0.Add(-time.Minute).Unix()}}
+	if got := DeletionCost(recent, 30*time.Minute, t0); got != 0 {
+		t.Errorf("idle, but not for long: %d", got)
+	}
+}
+
+// TestAutoscaleShrinksAnIdleNode: an auto group (spec 011) whose node has had no session past its idle time loses a
+// replica, that node costs -2 so the scale-down takes it, and the decision is in the status; a manual group is left as
+// it is
+func TestAutoscaleShrinksAnIdleNode(t *testing.T) {
+	g := group("etl", 2, t0)
+	g.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 1, Max: 3}
+	var objs []client.Object
+	for _, name := range []string{"hugr-node-etl-a", "hugr-node-etl-b"} {
+		objs = append(objs, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "hugr", Labels: build.SelectorLabels(g)}})
+	}
+	busy := lease(t0, 30, nodeproto.Summary{Sessions: 3, SessionsMax: 1000, MemoryUsed: 0.2, TempUsed: -1, SeatsUsed: -1})
+	busy.Name, busy.Namespace, busy.Labels = "hugr-node-etl-a", "hugr", map[string]string{build.LabelGroup: "etl"}
+	idle := lease(t0, 30, nodeproto.Summary{SessionsMax: 1000, MemoryUsed: 0.1, TempUsed: -1, SeatsUsed: -1,
+		IdleSince: t0.Add(-time.Hour).Unix()})
+	idle.Name, idle.Namespace, idle.Labels = "hugr-node-etl-b", "hugr", map[string]string{build.LabelGroup: "etl"}
+	// an evicted pod (Failed, kept until pod GC) with its Lease long expired: no node, no pod of the group
+	evicted := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-etl-old", Namespace: "hugr",
+		Labels: build.SelectorLabels(g)}, Status: corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted"}}
+	ghost := lease(t0.Add(-time.Hour), 30, nodeproto.Summary{})
+	ghost.Name, ghost.Namespace, ghost.Labels = "hugr-node-etl-old", "hugr", map[string]string{build.LabelGroup: "etl"}
+	w := newWorld(t, append(objs, g, busy, idle, evicted, ghost)...)
+	w.now = t0.Add(10 * time.Second)
+	// the first look builds the Deployment: nothing runs the group's 2 yet, no step before it does
+	if first := w.reconcile(t, "etl"); first.Spec.Replicas != 2 {
+		t.Fatalf("a step before the Deployment runs the replicas: %d", first.Spec.Replicas)
+	}
+	got := w.reconcile(t, "etl")
+	if got.Spec.Replicas != 1 {
+		t.Fatalf("the idle node's replica stays: %d", got.Spec.Replicas)
+	}
+	last := got.Status.Scaling.Last
+	if last == nil || last.From != 2 || last.To != 1 || !strings.Contains(last.Reason, "hugr-node-etl-b") {
+		t.Errorf("the decision in the status: %+v", last)
+	}
+	var b corev1.Pod
+	_ = w.client.Get(context.Background(), types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-b"}, &b)
+	if b.Annotations[AnnotationDeletionCost] != "-2" {
+		t.Errorf("the idle node costs %q, want -2: the scale-down takes it", b.Annotations[AnnotationDeletionCost])
+	}
+	// the next look is within the cooldown: nothing more, whatever the leases say
+	if len(got.Status.Lost) != 0 {
+		t.Errorf("an evicted pod is not a lost node: %v", got.Status.Lost)
+	}
+	// the next look: both pods still run (the ReplicaSet has not taken one yet) - the step is being made, nothing more
+	if again := w.reconcile(t, "etl"); again.Spec.Replicas != 1 {
+		t.Errorf("a second step before the first is made: %d", again.Spec.Replicas)
+	}
+	// the Deployment follows the group
+	if d := w.deployment(t, "etl"); d == nil || *d.Spec.Replicas != 1 {
+		t.Errorf("the Deployment does not follow the autoscaler: %+v", d)
+	}
+
+	manual := group("bi", 2, t0)
+	m := newWorld(t, manual, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "hugr-node-bi-a", Namespace: "hugr",
+		Labels: build.SelectorLabels(manual)}}, func() client.Object {
+		l := lease(t0, 30, nodeproto.Summary{IdleSince: t0.Add(-time.Hour).Unix()})
+		l.Name, l.Namespace, l.Labels = "hugr-node-bi-a", "hugr", map[string]string{build.LabelGroup: "bi"}
+		return l
+	}())
+	m.now = t0.Add(10 * time.Second)
+	if bi := m.reconcile(t, "bi"); bi.Spec.Replicas != 2 || bi.Status.Scaling != nil {
+		t.Errorf("a manual group is the operator's number: %d %+v", bi.Spec.Replicas, bi.Status.Scaling)
+	}
+}
+
+// TestCooldownRidesOnTheReplicasWrite (the re-review): the status patch that records the last change may be lost (a
+// leader's end between the two writes) - the look after must still keep the cooldown, from the change's time written
+// with the replicas, or a second idle node goes at once
+func TestCooldownRidesOnTheReplicasWrite(t *testing.T) {
+	g := group("etl", 3, t0)
+	g.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 1, Max: 3}
+	objs := []client.Object{g}
+	for i, name := range []string{"hugr-node-etl-a", "hugr-node-etl-b", "hugr-node-etl-c"} {
+		objs = append(objs, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "hugr", Labels: build.SelectorLabels(g)}})
+		summary := nodeproto.Summary{SessionsMax: 1000, MemoryUsed: 0.1, TempUsed: -1, SeatsUsed: -1,
+			IdleSince: t0.Add(-time.Hour).Unix()}
+		if i == 0 {
+			summary.Sessions, summary.IdleSince = 2, 0
+		}
+		l := lease(t0, 600, summary) // renewed through the test's minutes
+		l.Name, l.Namespace, l.Labels = name, "hugr", map[string]string{build.LabelGroup: "etl"}
+		objs = append(objs, l)
+	}
+	w := newWorld(t, objs...)
+	w.now = t0.Add(10 * time.Second)
+	w.reconcile(t, "etl") // builds the Deployment
+	if got := w.reconcile(t, "etl"); got.Spec.Replicas != 2 || got.Annotations[AnnotationScaledAt] == "" {
+		t.Fatalf("the first idle node goes, its time with it: %d %v", got.Spec.Replicas, got.Annotations)
+	}
+	// the next look applies 2 to the Deployment; then the status that said so is gone, and the pod the step took too
+	w.now = t0.Add(15 * time.Second)
+	w.reconcile(t, "etl")
+	ctx := context.Background()
+	var current v1alpha1.HugrNodeGroup
+	_ = w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "etl"}, &current)
+	current.Status.Scaling = nil
+	if err := w.client.Status().Update(ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	var taken corev1.Pod
+	_ = w.client.Get(ctx, types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-b"}, &taken)
+	_ = w.client.Delete(ctx, &taken)
+	w.now = t0.Add(20 * time.Second)
+	if got := w.reconcile(t, "etl"); got.Spec.Replicas != 2 {
+		t.Errorf("a second idle node within the cooldown, its status lost: %d", got.Spec.Replicas)
+	}
+	w.now = t0.Add(3 * time.Minute)
+	if got := w.reconcile(t, "etl"); got.Spec.Replicas != 1 {
+		t.Errorf("past the cooldown the next idle node goes: %d", got.Spec.Replicas)
 	}
 }

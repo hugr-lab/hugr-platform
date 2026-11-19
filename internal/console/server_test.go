@@ -711,3 +711,40 @@ func TestCandidatesAskABusyNodeFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoGroupScalesItself(t *testing.T) {
+	// spec 011: an auto group's replicas are the autoscaler's - the console shows its min, max and last change, and
+	// a person's replicas are refused (its min and max are what to change)
+	h := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
+	ctx := context.Background()
+	var g v1alpha1.HugrNodeGroup
+	if err := h.kube.Get(ctx, client.ObjectKey{Namespace: "hugr", Name: "etl"}, &g); err != nil {
+		t.Fatal(err)
+	}
+	g.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 3}
+	g.Status.Scaling = &v1alpha1.ScalingStatus{Last: &v1alpha1.ScalingDecision{At: metav1.NewTime(testNow), From: 2,
+		To: 1, Reason: "hugr-node-etl-b has had no session for 31m0s"}}
+	if err := h.kube.Update(ctx, &g); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := h.do(t, "PATCH", APIPrefix+"groups/etl", opsToken, `{"replicas": 3}`); code != http.StatusConflict ||
+		out["error"] != "auto_scaled" {
+		t.Errorf("a person's replicas on an auto group: %d %v", code, out)
+	}
+	if len(h.writer.changes) != 0 {
+		t.Errorf("refused, yet written: %+v", h.writer.changes)
+	}
+	_, out, _ := h.do(t, "GET", APIPrefix+"groups", opsToken, "")
+	for _, raw := range out["groups"].([]any) {
+		group := raw.(map[string]any)
+		if group["name"] != "etl" {
+			continue
+		}
+		scaling := group["scaling"].(map[string]any)
+		last, _ := scaling["last"].(map[string]any)
+		if scaling["mode"] != "auto" || scaling["min"] != float64(0) || scaling["max"] != float64(3) || last == nil ||
+			last["to"] != float64(1) || !strings.Contains(last["reason"].(string), "no session") {
+			t.Errorf("the group's scaling: %v", scaling)
+		}
+	}
+}

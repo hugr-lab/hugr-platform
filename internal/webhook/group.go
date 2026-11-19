@@ -47,7 +47,10 @@ func (v *GroupValidator) ValidateUpdate(ctx context.Context, old, group *v1alpha
 			return nil, err
 		}
 	}
-	if old.Spec.Size == group.Spec.Size && old.Spec.Platform == group.Spec.Platform && group.Spec.Replicas <= old.Spec.Replicas {
+	if err := CheckScaling(group.Spec.Scaling); err != nil {
+		return nil, err
+	}
+	if old.Spec.Size == group.Spec.Size && old.Spec.Platform == group.Spec.Platform && Demand(group) <= Demand(old) {
 		return nil, CheckTLS(group.Spec.TLS)
 	}
 	return nil, v.check(ctx, group)
@@ -71,6 +74,9 @@ func (v *GroupValidator) check(ctx context.Context, group *v1alpha1.HugrNodeGrou
 	if err := CheckResourceGroup(group.Spec.ResourceGroup); err != nil {
 		return err
 	}
+	if err := CheckScaling(group.Spec.Scaling); err != nil {
+		return err
+	}
 	var platform v1alpha1.HugrPlatform
 	if err := v.Reader.Get(ctx, types.NamespacedName{Namespace: group.Namespace, Name: group.Spec.Platform}, &platform); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -92,12 +98,43 @@ func (v *GroupValidator) check(ctx context.Context, group *v1alpha1.HugrNodeGrou
 	var others []plan.Group
 	for _, g := range groups.Items {
 		if g.Name != group.Name && g.DeletionTimestamp == nil {
-			others = append(others, plan.Group{Name: g.Name, Size: g.Spec.Size, Replicas: g.Spec.Replicas})
+			others = append(others, plan.Group{Name: g.Name, Size: g.Spec.Size, Replicas: Demand(&g)})
 		}
 	}
 	return controller.PlanOf(&platform).CheckChange(
-		plan.Group{Name: group.Name, Size: group.Spec.Size, Replicas: group.Spec.Replicas}, others)
+		plan.Group{Name: group.Name, Size: group.Spec.Size, Replicas: Demand(group)}, others)
 }
+
+// Demand is what the plan counts a group at: its replicas, or an auto group's max - whatever its load, the
+// autoscaler may take it there (spec 011).
+func Demand(group *v1alpha1.HugrNodeGroup) int32 {
+	if group.Auto() {
+		return max(group.Spec.Scaling.Max, group.Spec.Replicas)
+	}
+	return group.Spec.Replicas
+}
+
+// CheckScaling says whether a group's scaling is one the autoscaler can keep: min within max.
+func CheckScaling(scaling *v1alpha1.ScalingSpec) error {
+	if scaling == nil || scaling.Mode != "auto" {
+		return nil
+	}
+	if scaling.Max < 1 {
+		return fmt.Errorf("an auto group's scaling.max is at least 1")
+	}
+	if scaling.Min > scaling.Max {
+		return fmt.Errorf("scaling.min (%d) is above scaling.max (%d)", scaling.Min, scaling.Max)
+	}
+	// a step's effect - the Deployment, then its ReplicaSet - is seen a few status looks (5 s) later: a shorter
+	// cooldown would step again before it
+	if scaling.Cooldown != nil && scaling.Cooldown.Duration < MinCooldown {
+		return fmt.Errorf("scaling.cooldown is at least %s", MinCooldown)
+	}
+	return nil
+}
+
+// MinCooldown is the shortest cooldown an auto group may have.
+const MinCooldown = 30 * time.Second
 
 // CheckResourceGroup says whether a group may name this resource group (empty: its own name). Every node's bootstrap
 // document lists every group's in the first policy, which takes plain names only: one it refuses stops every node of

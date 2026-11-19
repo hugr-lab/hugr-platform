@@ -114,7 +114,7 @@ export interface Group {
   lost: string[]
   restartedAt?: string
   conditions: Condition[]
-  scaling: { mode: 'manual' | 'auto'; min?: number; max?: number }
+  scaling: { mode: 'manual' | 'auto'; min?: number; max?: number; last?: { at: string; from: number; to: number; reason: string } }
   identity: Identity
   memoryLimitBytes: number
   /** the quack door beside Flight, and a stopping node's wait for its sessions (spec 006) */
