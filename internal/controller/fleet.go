@@ -19,11 +19,13 @@ type NodeState struct {
 	Name    string
 	Lost    bool
 	Summary nodeproto.Summary
+	// Started is the node's first heartbeat: its Lease's creation (spec 011)
+	Started time.Time
 }
 
 // NodeStateOf a pod's Lease at a time.
 func NodeStateOf(name string, lease *coordinationv1.Lease, now time.Time) NodeState {
-	state := NodeState{Name: name, Summary: nodeproto.ParseSummary(lease.Annotations)}
+	state := NodeState{Name: name, Summary: nodeproto.ParseSummary(lease.Annotations), Started: lease.CreationTimestamp.Time}
 	if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
 		state.Lost = true
 		return state

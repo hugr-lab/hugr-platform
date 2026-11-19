@@ -327,6 +327,9 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		var idle time.Duration
 		if scaling != nil {
 			idle = scaling.Idle
+			if status.Scaling != nil && pod.Name == status.Scaling.Surplus {
+				idle = scaling.SurplusIdle // drained for the scale-down: it goes sooner, and first
+			}
 		}
 		if err := r.writeDeletionCost(ctx, pod, DeletionCost(state, idle, r.now())); err != nil {
 			return err
@@ -368,6 +371,7 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		hasDemand := r.Get(ctx, demandKey, &wanted) == nil
 		in.Demand = hasDemand && nodeproto.DemandLive(&wanted, in.Now)
 		r.autoscale(ctx, group, *scaling, in, status)
+		r.markScaleDown(ctx, pods.Items, status.Scaling.Surplus)
 		if hasDemand {
 			// "starting" while a node is on its way for it - asked for and not here yet, not reported, or young and
 			// not admitting yet - never for a group whose nodes run and admit nobody (at capacity, past the critical
@@ -377,7 +381,9 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 		}
 		r.tidyAnswers(ctx, group)
 	case status.Scaling != nil:
-		status.Scaling.PressureSince = nil // a manual group keeps its last change, never a pressure clock
+		// a manual group keeps its last change, never a pressure clock nor a node drained for a scale-down
+		status.Scaling.PressureSince, status.Scaling.UnderloadSince, status.Scaling.Surplus = nil, nil, ""
+		r.markScaleDown(ctx, pods.Items, "")
 		r.tidyAnswers(ctx, group)
 	default:
 		r.tidyAnswers(ctx, group)
@@ -476,6 +482,30 @@ func podReady(pod *corev1.Pod) bool {
 	return false
 }
 
+// markScaleDown puts the scale-down's mark on the drained node's pod and takes it off every other: the heartbeat's
+// answer reads it (nodeapi), and the node drains itself while it is there (hugr-node spec 045).
+func (r *GroupReconciler) markScaleDown(ctx context.Context, pods []corev1.Pod, surplus string) {
+	for i := range pods {
+		pod := &pods[i]
+		want := surplus != "" && pod.Name == surplus && pod.DeletionTimestamp == nil
+		if (pod.Annotations[nodeproto.AnnotationScaleDown] == nodeproto.ScaleDownDrain) == want {
+			continue
+		}
+		patch := client.MergeFrom(pod.DeepCopy())
+		if want {
+			if pod.Annotations == nil {
+				pod.Annotations = map[string]string{}
+			}
+			pod.Annotations[nodeproto.AnnotationScaleDown] = nodeproto.ScaleDownDrain
+		} else {
+			delete(pod.Annotations, nodeproto.AnnotationScaleDown)
+		}
+		if err := client.IgnoreNotFound(r.Patch(ctx, pod, patch)); err != nil {
+			log.FromContext(ctx).Info("the scale-down mark not written, next look", "pod", pod.Name, "error", err.Error())
+		}
+	}
+}
+
 // tidyAnswers drops a "starting" that is no longer anybody's (the review): one that names this group on another
 // resource group's demand or while it is not auto; and, on its own resource group's demand, one that names a group
 // that is gone, not auto, or serves another resource group - a client would otherwise be held for nothing for as long
@@ -555,7 +585,9 @@ const WakeOnDemand = true
 func ScalingOf(spec *v1alpha1.ScalingSpec) autoscale.Scaling {
 	s := autoscale.Scaling{Min: spec.Min, Max: spec.Max, Idle: autoscale.DefaultIdle, For: autoscale.DefaultFor,
 		Cooldown: autoscale.DefaultCooldown, MemoryUsed: autoscale.DefaultMemoryUsed, WakeOnDemand: WakeOnDemand,
-		TempUsed: autoscale.DefaultTempUsed, SessionsUsed: autoscale.DefaultSessionsUsed,
+		ScaleDownLoad: autoscale.DefaultScaleDownLoad, ScaleDownFor: autoscale.DefaultScaleDownFor,
+		SurplusIdle: autoscale.DefaultSurplusIdle,
+		TempUsed:    autoscale.DefaultTempUsed, SessionsUsed: autoscale.DefaultSessionsUsed,
 		SeatsUsed: autoscale.DefaultSeatsUsed, StreamsWaiting: autoscale.DefaultStreamsWaiting}
 	duration := func(d *metav1.Duration, into *time.Duration) {
 		if d != nil && d.Duration > 0 {
@@ -577,6 +609,9 @@ func ScalingOf(spec *v1alpha1.ScalingSpec) autoscale.Scaling {
 	if spec.ScaleUp.StreamsWaiting > 0 {
 		s.StreamsWaiting = int64(spec.ScaleUp.StreamsWaiting)
 	}
+	percent(spec.ScaleDown.Load, &s.ScaleDownLoad)
+	duration(spec.ScaleDown.For, &s.ScaleDownFor)
+	duration(spec.ScaleDown.Idle, &s.SurplusIdle)
 	return s
 }
 
@@ -585,7 +620,7 @@ func nodeOf(state NodeState) autoscale.Node {
 	n := autoscale.Node{Name: state.Name, Lost: state.Lost, Draining: state.Summary.Draining,
 		Sessions: state.Summary.Sessions, SessionsMax: state.Summary.SessionsMax, MemoryUsed: state.Summary.MemoryUsed,
 		TempUsed: state.Summary.TempUsed, SeatsUsed: state.Summary.SeatsUsed,
-		StreamsWaiting: state.Summary.StreamsWaiting, Default: state.Summary.GroupDefault}
+		StreamsWaiting: state.Summary.StreamsWaiting, Default: state.Summary.GroupDefault, Started: state.Started}
 	if state.Summary.IdleSince > 0 {
 		n.IdleSince = time.Unix(state.Summary.IdleSince, 0)
 	}
@@ -606,6 +641,10 @@ func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNod
 		if status.Scaling.Last != nil {
 			kept.LastChange = status.Scaling.Last.At.Time
 		}
+		if status.Scaling.UnderloadSince != nil {
+			kept.UnderloadSince = status.Scaling.UnderloadSince.Time
+		}
+		kept.Surplus = status.Scaling.Surplus
 	}
 	// the change's time rides on the same write as the replicas: a look that reads the new replicas reads it too,
 	// whatever the status says yet (a status patch lost to a leader's end, a cache behind)
@@ -617,10 +656,18 @@ func (r *GroupReconciler) autoscale(ctx context.Context, group *v1alpha1.HugrNod
 	if status.Scaling == nil {
 		status.Scaling = &v1alpha1.ScalingStatus{}
 	}
-	status.Scaling.PressureSince = nil
+	status.Scaling.PressureSince, status.Scaling.UnderloadSince = nil, nil
 	if !decision.State.PressureSince.IsZero() {
 		status.Scaling.PressureSince = &metav1.Time{Time: decision.State.PressureSince}
 	}
+	if !decision.State.UnderloadSince.IsZero() {
+		status.Scaling.UnderloadSince = &metav1.Time{Time: decision.State.UnderloadSince}
+	}
+	if decision.State.Surplus != status.Scaling.Surplus {
+		log.FromContext(ctx).Info("autoscale: scale-down drain", "group", group.Name, "from", status.Scaling.Surplus,
+			"to", decision.State.Surplus)
+	}
+	status.Scaling.Surplus = decision.State.Surplus
 	if decision.Replicas == group.Spec.Replicas {
 		return
 	}

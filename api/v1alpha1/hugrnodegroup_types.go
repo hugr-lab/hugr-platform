@@ -64,6 +64,27 @@ type ScalingSpec struct {
 	// Cooldown: no second step for the group within it. Default 2m.
 	// +optional
 	Cooldown *metav1.Duration `json:"cooldown,omitempty"`
+	// ScaleDown is when a node is drained to go: the group's load fits in one node fewer.
+	// +optional
+	ScaleDown ScaleDownSpec `json:"scaleDown,omitempty"`
+}
+
+// ScaleDownSpec (the owner, 2026-11-19): when the group's load, on one node fewer, has stayed below `load` for `for`,
+// one node is drained - it takes no new connection, its sessions end by themselves - and it goes once it has had no
+// session for `idle`; the load back resumes it.
+type ScaleDownSpec struct {
+	// Load: the group's load on one node fewer, in percent - the worst of its working memory, spill, sessions and quack
+	// seats against their limits (default 60).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	Load int32 `json:"load,omitempty"`
+	// For: how long the load must fit before a node is drained. Default 5m.
+	// +optional
+	For *metav1.Duration `json:"for,omitempty"`
+	// Idle: how long the drained node waits with no session before it goes. Default 5m.
+	// +optional
+	Idle *metav1.Duration `json:"idle,omitempty"`
 }
 
 // ScaleUpSpec: a node is added when every placeable node of the group passes one of these for `for`. A share is a
@@ -223,6 +244,12 @@ type ScalingStatus struct {
 	// serves that one, whatever a heartbeat says.
 	// +optional
 	DefaultGroup string `json:"defaultGroup,omitempty"`
+	// UnderloadSince: the group's load has fitted in one node fewer since then.
+	// +optional
+	UnderloadSince *metav1.Time `json:"underloadSince,omitempty"`
+	// Surplus is the node drained for the scale-down: it takes no new connection, and goes once idle.
+	// +optional
+	Surplus string `json:"surplus,omitempty"`
 }
 
 // ScalingDecision is one change of a group's size, and why.

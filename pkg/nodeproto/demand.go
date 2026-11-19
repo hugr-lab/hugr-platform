@@ -38,3 +38,15 @@ func DemandLive(lease *coordinationv1.Lease, now time.Time) bool {
 	}
 	return now.Before(lease.Spec.RenewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second))
 }
+
+// AnnotationScaleDown marks the pod of the node the operator drains for a scale-down (spec 011): the heartbeat's
+// answer then says {"drain": "scale-down"}, and the node drains itself (hugr-node spec 045).
+const AnnotationScaleDown = "platform.hugr.io/scale-down"
+
+// ScaleDownDrain is its one value; HeartbeatAnswer is the heartbeat's answer that carries it.
+const ScaleDownDrain = "drain"
+
+// HeartbeatAnswer is the orchestrator's answer to a heartbeat when it has something to say (else 204).
+type HeartbeatAnswer struct {
+	Drain string `json:"drain,omitempty"` // "scale-down"
+}

@@ -441,3 +441,30 @@ func TestBootstrapCanaryMigrates(t *testing.T) {
 		}
 	}
 }
+
+// TestHeartbeatAnswersTheScaleDown (spec 011): the node whose pod the autoscaler marked hears {"drain": "scale-down"}
+// in its heartbeat's answer; once unmarked, 204 again (hugr-node spec 045 resumes it)
+func TestHeartbeatAnswersTheScaleDown(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	var pod corev1.Pod
+	key := types.NamespacedName{Namespace: "hugr", Name: "hugr-node-etl-7f9c-x2k8p"}
+	if err := w.client.Get(ctx, key, &pod); err != nil {
+		t.Fatal(err)
+	}
+	pod.Annotations = map[string]string{nodeproto.AnnotationScaleDown: nodeproto.ScaleDownDrain}
+	if err := w.client.Update(ctx, &pod); err != nil {
+		t.Fatal(err)
+	}
+	rec := w.call(http.MethodPost, "/v1/heartbeat", etlToken, beat)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"drain":"scale-down"`) ||
+		rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("the marked node's heartbeat: %d %q", rec.Code, rec.Body)
+	}
+	_ = w.client.Get(ctx, key, &pod)
+	delete(pod.Annotations, nodeproto.AnnotationScaleDown)
+	_ = w.client.Update(ctx, &pod)
+	if rec := w.call(http.MethodPost, "/v1/heartbeat", etlToken, beat); rec.Code != http.StatusNoContent {
+		t.Errorf("unmarked: %d %q", rec.Code, rec.Body)
+	}
+}

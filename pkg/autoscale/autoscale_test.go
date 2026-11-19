@@ -11,7 +11,8 @@ var now = time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 // scaling wakes from 0 (stage 2's demand): a min-0 group may stop
 var scaling = Scaling{Min: 0, Max: 4, Idle: DefaultIdle, For: DefaultFor, Cooldown: DefaultCooldown,
 	MemoryUsed: DefaultMemoryUsed, TempUsed: DefaultTempUsed, SessionsUsed: DefaultSessionsUsed,
-	SeatsUsed: DefaultSeatsUsed, StreamsWaiting: DefaultStreamsWaiting, WakeOnDemand: true}
+	SeatsUsed: DefaultSeatsUsed, StreamsWaiting: DefaultStreamsWaiting, WakeOnDemand: true,
+	ScaleDownLoad: DefaultScaleDownLoad, ScaleDownFor: DefaultScaleDownFor, SurplusIdle: DefaultSurplusIdle}
 
 // busy is a node with a session and room to spare
 func busy(name string) Node {
@@ -289,5 +290,96 @@ func TestNoStepBeforeTheDeploymentTakesTheLast(t *testing.T) {
 	hotBehind := look(3, hot("a"), hot("b")).with(func(in *Input) { in.Running = 2 }).with(under(time.Hour))
 	if d := Decide(scaling, hotBehind); d.Replicas != 3 {
 		t.Errorf("a growth before the Deployment took the last: %+v", d)
+	}
+}
+
+// light is a node with a few sessions: the group's load, on one node fewer, fits well
+func light(name string, sessions int64) Node {
+	return Node{Name: name, Sessions: sessions, SessionsMax: 1000, MemoryUsed: 0.2, TempUsed: -1, SeatsUsed: -1,
+		Started: now.Add(-time.Hour)}
+}
+
+// TestScaleDownDrainsANode (the owner, 2026-11-19): a group whose load fits in one node fewer drains one - the fewest
+// sessions - for ScaleDownFor; it goes once idle; the load back resumes it before any node is added
+func TestScaleDownDrainsANode(t *testing.T) {
+	in := look(3, light("a", 40), light("b", 3), light("c", 20))
+	d := Decide(scaling, in)
+	if d.State.Surplus != "" || !d.State.UnderloadSince.Equal(now) {
+		t.Fatalf("the underload starts now, nothing drained yet: %+v", d.State)
+	}
+	in.State, in.Now = d.State, now.Add(DefaultScaleDownFor)
+	d = Decide(scaling, in)
+	if d.State.Surplus != "b" || d.Replicas != 3 {
+		t.Fatalf("after ScaleDownFor the node with the fewest sessions is drained, nothing stops yet: %+v", d)
+	}
+	// it stays drained while the load fits; its sessions end; it goes after SurplusIdle
+	b := light("b", 0)
+	at := now.Add(DefaultScaleDownFor + time.Minute)
+	b.Draining, b.IdleSince = true, at.Add(-4*time.Minute)
+	in = look(3, light("a", 40), b, light("c", 20))
+	in.State, in.Now = d.State, at
+	if d := Decide(scaling, in); d.State.Surplus != "b" || d.Replicas != 3 {
+		t.Errorf("drained, idle 4 min: it stays: %+v", d)
+	}
+	b.IdleSince = in.Now.Add(-DefaultSurplusIdle)
+	in = look(3, light("a", 40), b, light("c", 20)).with(func(x *Input) { x.State, x.Now = d.State, in.Now })
+	d2 := Decide(scaling, in)
+	if d2.Replicas != 2 || !strings.Contains(d2.Reason, "b, drained for the scale-down") || d2.State.Surplus != "b" {
+		t.Errorf("drained and idle past SurplusIdle: it goes, kept as the drained one until its pod is gone: %+v", d2)
+	}
+}
+
+func TestScaleDownResumesWhenTheLoadComesBack(t *testing.T) {
+	drained := State{Surplus: "b", UnderloadSince: now.Add(-time.Hour)}
+	b := light("b", 5)
+	b.Draining = true
+	// the load on two nodes is back past the scale-down's 60% plus the margin: b takes connections again
+	busy := look(3, Node{Name: "a", Sessions: 10, SessionsMax: 1000, MemoryUsed: 0.6, TempUsed: -1, SeatsUsed: -1}, b,
+		Node{Name: "c", Sessions: 10, SessionsMax: 1000, MemoryUsed: 0.6, TempUsed: -1, SeatsUsed: -1}).
+		with(func(in *Input) { in.State = drained })
+	if d := Decide(scaling, busy); d.State.Surplus != "" || d.Replicas != 3 {
+		t.Errorf("the load came back: b is resumed, no node added yet: %+v", d)
+	}
+	// every placeable node under pressure: the drained one is resumed before growing
+	hotPair := look(3, hot("a"), b, hot("c")).with(func(in *Input) { in.State = drained }).with(under(time.Hour))
+	if d := Decide(scaling, hotPair); d.State.Surplus != "" || d.Replicas != 3 {
+		t.Errorf("under pressure: the drained node first, then a new one: %+v", d)
+	}
+	// between the two thresholds: what is drained stays drained
+	between := look(3, Node{Name: "a", Sessions: 10, SessionsMax: 1000, MemoryUsed: 0.42, TempUsed: -1, SeatsUsed: -1}, b,
+		Node{Name: "c", Sessions: 10, SessionsMax: 1000, MemoryUsed: 0.42, TempUsed: -1, SeatsUsed: -1}).
+		with(func(in *Input) { in.State = drained })
+	if d := Decide(scaling, between); d.State.Surplus != "b" {
+		t.Errorf("between the scale-down and the resume: b stays drained: %+v", d)
+	}
+}
+
+func TestScaleDownHoldsAtTheFloorAndUnsettled(t *testing.T) {
+	withMin := scaling
+	withMin.Min = 3
+	in := look(3, light("a", 1), light("b", 1), light("c", 1)).with(func(in *Input) {
+		in.State.UnderloadSince = now.Add(-time.Hour)
+	})
+	if d := Decide(withMin, in); d.State.Surplus != "" {
+		t.Errorf("at the floor nothing is drained: %+v", d.State)
+	}
+	if d := Decide(scaling, look(1, light("a", 0))); d.State.Surplus != "" {
+		t.Errorf("one node is never drained for a scale-down (its idle time stops it): %+v", d.State)
+	}
+	coming := in.with(func(in *Input) { in.Unreported = 1 })
+	if d := Decide(scaling, coming); d.State.Surplus != "" {
+		t.Errorf("a node on its way: no scale-down: %+v", d.State)
+	}
+	// the drained node gone (the shrink took it): forgotten
+	gone := look(2, light("a", 1), light("c", 1)).with(func(in *Input) { in.State.Surplus = "b" })
+	if d := Decide(scaling, gone); d.State.Surplus != "" {
+		t.Errorf("a gone node stays drained in the state: %+v", d.State)
+	}
+	// of two empty nodes the younger
+	young := light("b", 0)
+	young.Started = now.Add(-time.Minute)
+	pair := look(3, light("a", 0), young, light("c", 9)).with(func(in *Input) { in.State.UnderloadSince = now.Add(-time.Hour) })
+	if d := Decide(scaling, pair); d.State.Surplus != "b" {
+		t.Errorf("of two empty nodes the younger is drained: %+v", d.State)
 	}
 }
