@@ -82,7 +82,7 @@ C3); the fleet's state comes from Kubernetes (C1). The policy is not edited here
 ### Pages (C1)
 
 - **Fleet** - one row per group: its size, replicas wanted / ready, the resource group it serves and whether the
-  policy knows it, the profile's target and applied version, a restart pending, draining. Actions: scale (within the
+  policy knows it, the profile's target and applied version, a restart pending, draining. Actions: scale (manual or by its load - spec 011 stage 4 - within the
   plan: the webhook refuses past it, with its reason), restart (the group's `restartedAt`).
 - **Group** - one row per node: label, ready, the Lease's age, sessions, seats left, admitting, the image's version.
 - **Node** - its load report (the Flight Handshake `node-load` with the person's token, which opens no session -

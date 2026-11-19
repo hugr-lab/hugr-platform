@@ -1,8 +1,8 @@
 # Spec 011: a node group scales itself - from its load, down to zero
 
 - **Status**: accepted (the owner, 2026-11-16); stage 1 built (the operator's decision, 2026-11-19), stage 2 built
-  (the front's demand, 2026-11-19), stage 3 built (the scale-down by drain, 2026-11-19), stage 4 (the console's
-  dialog) to come
+  (the front's demand, 2026-11-19), stage 3 built (the scale-down by drain, 2026-11-19), stage 4 built (the console's
+  dialog, 2026-11-19)
 - **Date**: 2026-11-16
 - **Author**: Claude, from the owner's decisions of 2026-11-16 (in the release, not after it)
 - **Follows**: spec 001 (the operator, the heartbeat, the Lease, the pod-deletion cost), spec 002 (the front's seating,
@@ -366,6 +366,31 @@ back.
     - of two empty nodes the younger.
   - Controller: the drained node's pod is marked, others not; drained and idle, it costs -2 and the group shrinks.
   - nodeapi: a marked pod's heartbeat is answered `{"drain":"scale-down"}`, unmarked 204.
+
+### Built (stage 4, 2026-11-19): the console's dialog
+
+- **API.** `PATCH groups/{g}` takes `{"scaling": {"mode": "manual" | "auto", "min", "max", "idle": "30m"}}`, with the
+  cluster right as every group write. It is checked first: an auto group has 0 ≤ min ≤ max and max at least 1, and an
+  idle time from 1m to 24h.
+- **The write.** It is applied by server-side apply as its own field manager (`hugr-console-scaling`), naming only the
+  mode, the bounds and the idle time. The thresholds (`scaleUp`, `scaleDown`) stay whoever set them where the group is
+  defined. Back to manual names the mode alone, and the group keeps the nodes it runs. The webhook judges the plan at
+  the max as always.
+- **The answer.** `groups` returns the group's `scaling` with `idle` as written or the default, `last` (from, to, why)
+  and `drained` (the node drained for the scale-down).
+- **The dialog.**
+  - "How the group is sized" switches between Manual (the count, as before) and By its load (minimum, maximum and idle
+    minutes, with the max checked against the plan's room).
+  - From auto, Manual is "Switch to manual".
+  - The fleet shows an auto group's bounds, its last step with the reason, the drained node in its status, and "Starts
+    on the first client" at 0. The group page marks the drained node.
+- **Tests.**
+  - `server_test.go`: the patch's checks, the change and its apply content (only mode, bounds, idle), manual alone,
+    and no write without the cluster right.
+  - envtest against the real API server: auto from the console keeps a threshold `kubectl` set, a max past the plan is
+    refused, and back to manual keeps it too.
+  - `scaling.test.tsx`: manual to auto with the body sent; a max past the plan and a min past the max refused; an auto
+    group's last step, its drained node, and the switch back to manual.
 
 - The console answers the group's `scaling` (mode, min, max, `last`). A person's `replicas` on an auto group is
   refused with 409 `auto_scaled`; the dialog for min / max / idle is stage 3.

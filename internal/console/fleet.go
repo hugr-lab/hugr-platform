@@ -10,6 +10,7 @@ import (
 	"github.com/hugr-lab/hugr-platform/api/v1alpha1"
 	"github.com/hugr-lab/hugr-platform/internal/build"
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
+	"github.com/hugr-lab/hugr-platform/pkg/autoscale"
 )
 
 // FleetAnswer is `GET groups`: the plan and the groups with their nodes, from Kubernetes (spec 003, C1).
@@ -88,7 +89,10 @@ type ScalingAnswer struct {
 	Mode string             `json:"mode"` // manual | auto
 	Min  *int32             `json:"min,omitempty"`
 	Max  *int32             `json:"max,omitempty"`
+	Idle string             `json:"idle,omitempty"` // as written, or the default
 	Last *ScalingLastAnswer `json:"last,omitempty"`
+	// Drained is the node drained for the scale-down: it takes no new connection and goes once idle
+	Drained string `json:"drained,omitempty"`
 }
 
 // ScalingLastAnswer is one change the autoscaler made.
@@ -105,9 +109,16 @@ func scalingOf(g *v1alpha1.HugrNodeGroup) ScalingAnswer {
 		return ScalingAnswer{Mode: "manual"}
 	}
 	minNodes, maxNodes := g.Spec.Scaling.Min, g.Spec.Scaling.Max
-	out := ScalingAnswer{Mode: "auto", Min: &minNodes, Max: &maxNodes}
-	if s := g.Status.Scaling; s != nil && s.Last != nil {
-		out.Last = &ScalingLastAnswer{At: s.Last.At.Time, From: s.Last.From, To: s.Last.To, Reason: s.Last.Reason}
+	idle := autoscale.DefaultIdle
+	if g.Spec.Scaling.Idle != nil && g.Spec.Scaling.Idle.Duration > 0 {
+		idle = g.Spec.Scaling.Idle.Duration
+	}
+	out := ScalingAnswer{Mode: "auto", Min: &minNodes, Max: &maxNodes, Idle: idle.String()}
+	if s := g.Status.Scaling; s != nil {
+		if s.Last != nil {
+			out.Last = &ScalingLastAnswer{At: s.Last.At.Time, From: s.Last.From, To: s.Last.To, Reason: s.Last.Reason}
+		}
+		out.Drained = s.Surplus
 	}
 	return out
 }

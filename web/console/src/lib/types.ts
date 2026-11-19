@@ -114,7 +114,12 @@ export interface Group {
   lost: string[]
   restartedAt?: string
   conditions: Condition[]
-  scaling: { mode: 'manual' | 'auto'; min?: number; max?: number; last?: { at: string; from: number; to: number; reason: string } }
+  scaling: {
+    mode: 'manual' | 'auto'; min?: number; max?: number; idle?: string
+    last?: { at: string; from: number; to: number; reason: string }
+    /** the node drained for the scale-down: no new connection, it goes once idle */
+    drained?: string
+  }
   identity: Identity
   memoryLimitBytes: number
   /** the quack door beside Flight, and a stopping node's wait for its sessions (spec 006) */
