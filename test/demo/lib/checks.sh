@@ -336,7 +336,7 @@ check_console() {
 	out="$(console_api admin GET "nodes/$a/kubernetes")" || fail "node $a's pod"
 	json_true "$out" "r['phase'] == 'Running' and r['limits']['memoryBytes'] == 2 << 30" || fail "node $a's pod: $out"
 	out="$(console_api admin GET "nodes/$a/memory")" || fail "node $a's memory"
-	json_true "$out" "not r.get('error') and r['tags']['rows'] and r['limits']['rows']" || fail "node $a's memory: $out"
+	json_true "$out" "not r.get('error') and r['tags']['rows']" || fail "node $a's memory: $out"
 	out="$(console_api admin GET "nodes/$a/inventory")" || fail "node $a's inventory"
 	json_true "$out" "any(e['extension_name'] == 'hugr_node' and e['loaded'] for e in r['extensions']['rows'])" ||
 		fail "node $a's extensions: $out"

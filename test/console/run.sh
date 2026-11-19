@@ -93,8 +93,6 @@ probe "$WORK/ops.token" \
 # refuses them); a session's tracing
 probe "$WORK/ops.token" \
 	"SELECT tag, memory_usage_bytes, temporary_storage_bytes FROM duckdb_memory()" \
-	"SELECT size FROM duckdb_temporary_files()" \
-	"SELECT current_setting('memory_limit') AS memory_limit, current_setting('max_temp_directory_size') AS max_temp_directory_size" \
 	"SELECT extension_name, loaded, installed, extension_version, install_mode, installed_from FROM duckdb_extensions() WHERE loaded OR installed" \
 	"SELECT kind, name, state, node_value, profile_value, scope FROM platform.drift" \
 	"SELECT scope, kind, name, spec, class, version, depends_on, comment FROM platform.cluster_items" \

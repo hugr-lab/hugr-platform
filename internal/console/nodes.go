@@ -198,7 +198,9 @@ func (p *Pool) handshakeLoad(ctx context.Context, client *flightsql.Client, labe
 	if err != nil {
 		return nil, nodeError(err)
 	}
-	if err := stream.Send(&flight.HandshakeRequest{Payload: []byte("node-load")}); err != nil {
+	// io.EOF: the node ended the call already - its status (a refusal to fall back on) is what Recv reads
+	err = stream.Send(&flight.HandshakeRequest{Payload: []byte("node-load")})
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, nodeError(err)
 	}
 	_ = stream.CloseSend()
