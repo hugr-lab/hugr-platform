@@ -35,6 +35,71 @@ type HugrNodeGroupSpec struct {
 	// RestartedAt rolls the group when it changes: the console's restart button, or a kubectl patch.
 	// +optional
 	RestartedAt string `json:"restartedAt,omitempty"`
+	// Scaling decides the group's size (spec 011): by hand - replicas, the default - or by its load between a
+	// minimum and a maximum, the autoscaler writing replicas.
+	// +optional
+	Scaling *ScalingSpec `json:"scaling,omitempty"`
+}
+
+// ScalingSpec is how a group's size is decided (spec 011).
+type ScalingSpec struct {
+	// Mode is manual (replicas as written) or auto (the autoscaler writes replicas, between min and max).
+	// +kubebuilder:validation:Enum=manual;auto
+	// +optional
+	Mode string `json:"mode,omitempty"`
+	// Min nodes; 0 lets the group stop when nobody uses it. A group that is the policy's default keeps at least 1.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Min int32 `json:"min,omitempty"`
+	// Max nodes; the plan counts an auto group at its max.
+	// +kubebuilder:validation:Minimum=1
+	Max int32 `json:"max"`
+	// Idle: a node with no session for this long stops while the group is above min. Default 30m.
+	// +optional
+	Idle *metav1.Duration `json:"idle,omitempty"`
+	// ScaleUp is when a node is added.
+	// +optional
+	ScaleUp ScaleUpSpec `json:"scaleUp,omitempty"`
+	// Cooldown: no second step for the group within it. Default 2m.
+	// +optional
+	Cooldown *metav1.Duration `json:"cooldown,omitempty"`
+}
+
+// ScaleUpSpec: a node is added when every placeable node of the group passes one of these for `for`. A share is a
+// percent; unset is its default.
+type ScaleUpSpec struct {
+	// MemoryUsed: the engine's working memory, percent of memory_limit (default 80) - the main signal.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	MemoryUsed int32 `json:"memoryUsed,omitempty"`
+	// TempUsed: the spill, percent of max_temp_directory_size (default 80).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	TempUsed int32 `json:"tempUsed,omitempty"`
+	// SessionsUsed: the live sessions, percent of the node's acl_max_sessions (default 90).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	SessionsUsed int32 `json:"sessionsUsed,omitempty"`
+	// SeatsUsed: the quack seats seated, percent (default 90).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	SeatsUsed int32 `json:"seatsUsed,omitempty"`
+	// StreamsWaiting: this many streams wait for the stream budget (default 1).
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	StreamsWaiting int32 `json:"streamsWaiting,omitempty"`
+	// For: how long every node must be past a threshold. Default 60s.
+	// +optional
+	For *metav1.Duration `json:"for,omitempty"`
+}
+
+// Auto says whether the autoscaler decides the group's size.
+func (g *HugrNodeGroup) Auto() bool {
+	return g.Spec.Scaling != nil && g.Spec.Scaling.Mode == "auto"
 }
 
 // DoorsSpec says which doors the nodes open.
@@ -137,9 +202,30 @@ type HugrNodeGroupStatus struct {
 	// Catalog is the policy catalog's schema as the live nodes report it: the newest stamp any of them read.
 	// +optional
 	Catalog *CatalogStamp `json:"catalog,omitempty"`
+	// Scaling is the autoscaler's (spec 011): since when the group is past a threshold, and its last decision.
+	// +optional
+	Scaling *ScalingStatus `json:"scaling,omitempty"`
 	// Conditions: Ready, Refused (past the plan), Draining (the resource group is gone).
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ScalingStatus is what the autoscaler keeps between its looks (a new leader reads it on).
+type ScalingStatus struct {
+	// PressureSince: every placeable node has been past a threshold since then.
+	// +optional
+	PressureSince *metav1.Time `json:"pressureSince,omitempty"`
+	// Last is the last change of replicas the autoscaler made.
+	// +optional
+	Last *ScalingDecision `json:"last,omitempty"`
+}
+
+// ScalingDecision is one change of a group's size, and why.
+type ScalingDecision struct {
+	At     metav1.Time `json:"at"`
+	From   int32       `json:"from"`
+	To     int32       `json:"to"`
+	Reason string      `json:"reason"`
 }
 
 // HugrNodeGroup is one pool of nodes.

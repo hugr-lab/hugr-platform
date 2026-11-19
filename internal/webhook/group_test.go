@@ -170,3 +170,39 @@ func TestWebhookResourceGroup(t *testing.T) {
 		t.Errorf("a group keeping its resource group is refused a scale-down: %v", err)
 	}
 }
+
+// TestWebhookCountsAnAutoGroupAtItsMax (spec 011): whatever its load, the autoscaler may take an auto group to its max,
+// so the plan counts it there - beside the others and when its max grows; min within max
+func TestWebhookCountsAnAutoGroupAtItsMax(t *testing.T) {
+	ctx := context.Background()
+	auto := func(name string, replicas, min, maxNodes int32) *v1alpha1.HugrNodeGroup {
+		g := group(name, "large", replicas)
+		g.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: min, Max: maxNodes}
+		return g
+	}
+	v := validator(t, auto("etl", 0, 0, 4)) // runs 0, counts 4 of the plan's 6
+	if _, err := v.ValidateCreate(ctx, group("bi", "large", 2)); err != nil {
+		t.Errorf("2 beside an auto group's 4: %v", err)
+	}
+	if _, err := v.ValidateCreate(ctx, group("bi", "large", 3)); err == nil || !strings.Contains(err.Error(), "at most 6") {
+		t.Errorf("3 beside an auto group's max of 4: %v", err)
+	}
+	// its max growing is a growth, whatever its replicas
+	alone := validator(t, group("bi", "large", 3))
+	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 3), auto("etl", 1, 0, 4)); err == nil {
+		t.Error("an auto group's max past the plan beside the others")
+	}
+	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 3), auto("etl", 2, 0, 3)); err != nil {
+		t.Errorf("the autoscaler's own step within the max: %v", err)
+	}
+	// switching a manual group to auto with a max past the plan is a growth too
+	if _, err := alone.ValidateUpdate(ctx, group("etl", "large", 1), auto("etl", 1, 0, 5)); err == nil {
+		t.Error("a switch to auto past the plan")
+	}
+	if _, err := v.ValidateCreate(ctx, auto("ml", 0, 3, 2)); err == nil || !strings.Contains(err.Error(), "above scaling.max") {
+		t.Errorf("min above max: %v", err)
+	}
+	if _, err := alone.ValidateUpdate(ctx, auto("etl", 1, 0, 2), auto("etl", 1, 3, 2)); err == nil {
+		t.Error("min above max on an update that grows nothing")
+	}
+}

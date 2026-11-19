@@ -208,6 +208,12 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, _ string, p 
 	if !ok {
 		return
 	}
+	if patch.Replicas != nil && group.Auto() {
+		// spec 011: the autoscaler writes an auto group's replicas; a person changes its min and max
+		problem(w, http.StatusConflict, "auto_scaled", "the group scales itself between its min and max - "+
+			"change those instead of its replicas")
+		return
+	}
 	change := GroupChange{Namespace: platform.Namespace, Name: group.Name, ChangedBy: changedBy(p),
 		Replicas: patch.Replicas, Quack: patch.Quack, DrainSeconds: patch.DrainSeconds}
 	if patch.Size != nil {

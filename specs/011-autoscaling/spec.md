@@ -1,6 +1,7 @@
 # Spec 011: a node group scales itself - from its load, down to zero
 
-- **Status**: accepted (the owner, 2026-11-16)
+- **Status**: accepted (the owner, 2026-11-16); stage 1 built (the operator's decision, 2026-11-19), stage 2 (the
+  front's demand) and stage 3 (the console's dialog) to come
 - **Date**: 2026-11-16
 - **Author**: Claude, from the owner's decisions of 2026-11-16 (in the release, not after it)
 - **Follows**: spec 001 (the operator, the heartbeat, the Lease, the pod-deletion cost), spec 002 (the front's seating,
@@ -41,19 +42,22 @@ spec:
     min: 0               # 0..max; the default group's min is at least 1 (refused otherwise)
     max: 4               # <= the plan's maxNodes counted over every group at its max
     idle: 30m            # a node with no session for this long is drained and stopped (while above min)
-    scaleUp:             # a new node when, on every placeable node, for `for`:
-      memoryUsed: 0.8    #   duckdb's working memory reaches this share of its memory_limit (the main signal), or
-      tempUsed: 0.8      #   its spilled data reaches this share of max_temp_directory_size, or
-      sessionsUsed: 0.9  #   the live sessions reach this share of the node's acl_max_sessions (duckdb-acl spec 044), or
-      seatsUsed: 0.9     #   the quack seats used reach this share (duckdb-acl spec 079), or
+    scaleUp:             # a new node when, on every placeable node, for `for` (a share in percent, 1..100):
+      memoryUsed: 80     #   duckdb's working memory reaches this share of its memory_limit (the main signal), or
+      tempUsed: 80       #   its spilled data reaches this share of max_temp_directory_size, or
+      sessionsUsed: 90   #   the live sessions reach this share of the node's acl_max_sessions (duckdb-acl spec 044), or
+      seatsUsed: 90      #   the quack seats used reach this share (duckdb-acl spec 079), or
       streamsWaiting: 1  #   this many streams wait for the stream budget (spec 080)
       for: 60s
     cooldown: 120s       # no second scaling decision for a group within this
 status:
-  scaling: {last: {at, from, to, reason}}   # what the console shows (spec 003)
+  scaling:
+    pressureSince: ...   # every placeable node past a threshold since then (kept for the next leader)
+    last: {at, from, to, reason}   # what the console shows (spec 003)
 ```
 
-A duration is written as Kubernetes writes one (`60s`, `30m`). There is no per-group wait (the owner): the front holds
+A duration is written as Kubernetes writes one (`60s`, `30m`); a share is a percent (a CRD has no plain float).
+Unset is the default shown. There is no per-group wait (the owner): the front holds
 a client of a group at 0 while a node is starting - the client's own timeout decides how long it waits.
 
 CPU is no signal (the owner): duckdb takes every thread it is given, so a busy node always reads as saturated. Memory
@@ -139,6 +143,35 @@ last decision with its reason. The plan's check counts an auto group at its `max
   placement or a route. The node still decides who it serves (duckdb-acl spec 096).
 - **No session is killed by scaling**; a drain keeps established sessions (spec 066).
 - **The plan bounds everything**: the sum of the groups' `max` within `maxNodes` is checked where the group is written.
+
+### Built (stage 1, 2026-11-19)
+
+- `pkg/autoscale.Decide` is the pure decision. Its inputs are the scaling with its defaults filled in, the replicas,
+  the reported nodes, the demand (false until stage 2), the kept state and the clock. It answers the next replicas,
+  a reason and the state to keep. In order:
+  - the bounds: a min or max just written;
+  - a client waiting at 0 nodes (stage 2);
+  - nothing while a node is starting (asked for, not reported) or within the cooldown;
+  - growth by one when every placeable node has been past a threshold for `for`;
+  - shrinking by one when a node has been idle past `idle`.
+- The default group's min of 1 is the autoscaler's floor, not the webhook's. The policy says which group is the
+  default (the nodes report `group_default`), and the webhook cannot know it. A group whose nodes say so never goes
+  below 1.
+- The group's reconcile (the leader, every 5 s) runs the decision for an auto group that is not refused by the plan.
+  - It writes `spec.replicas`, and the Deployment follows at the reconcile that write triggers.
+  - It keeps `status.scaling`: `pressureSince`, so a new leader keeps the clock, and `last`.
+  - The pod-deletion cost is -3 for a lost node and -2, in an auto group, for a node idle past `idle`.
+- The heartbeat's summary, and so the Lease, carries:
+  - `memory-used` (working / limit) and `temp-used`;
+  - `seats-used`, `sessions-max` and `streams-waiting`;
+  - `idle-since`.
+  
+  A share is left out when there is no limit, and a node of an older pin reports none of them, which reads as no
+  pressure and never idle.
+- The webhook counts an auto group at `max(max, replicas)`. A growth of its max, or a switch to auto, is a growth for
+  the plan, and `min > max` is refused.
+- The console answers the group's `scaling` (mode, min, max, `last`). A person's `replicas` on an auto group is
+  refused with 409 `auto_scaled`; the dialog for min / max / idle is stage 3.
 
 ## Testing
 

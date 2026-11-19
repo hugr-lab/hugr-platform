@@ -83,11 +83,33 @@ type ConditionAnswer struct {
 	Message string `json:"message"`
 }
 
-// ScalingAnswer is how the group scales.
+// ScalingAnswer is how the group scales (spec 011), and the autoscaler's last change.
 type ScalingAnswer struct {
-	Mode string `json:"mode"` // manual | auto
-	Min  *int32 `json:"min,omitempty"`
-	Max  *int32 `json:"max,omitempty"`
+	Mode string             `json:"mode"` // manual | auto
+	Min  *int32             `json:"min,omitempty"`
+	Max  *int32             `json:"max,omitempty"`
+	Last *ScalingLastAnswer `json:"last,omitempty"`
+}
+
+// ScalingLastAnswer is one change the autoscaler made.
+type ScalingLastAnswer struct {
+	At     time.Time `json:"at"`
+	From   int32     `json:"from"`
+	To     int32     `json:"to"`
+	Reason string    `json:"reason"`
+}
+
+// scalingOf a group.
+func scalingOf(g *v1alpha1.HugrNodeGroup) ScalingAnswer {
+	if !g.Auto() {
+		return ScalingAnswer{Mode: "manual"}
+	}
+	minNodes, maxNodes := g.Spec.Scaling.Min, g.Spec.Scaling.Max
+	out := ScalingAnswer{Mode: "auto", Min: &minNodes, Max: &maxNodes}
+	if s := g.Status.Scaling; s != nil && s.Last != nil {
+		out.Last = &ScalingLastAnswer{At: s.Last.At.Time, From: s.Last.From, To: s.Last.To, Reason: s.Last.Reason}
+	}
+	return out
 }
 
 // NodeAnswer is one node as Kubernetes and its Lease show it.
@@ -209,7 +231,7 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 			Lost:        append([]string{}, g.Status.Lost...),
 			RestartedAt: g.Spec.RestartedAt,
 			Conditions:  conditions,
-			Scaling:     ScalingAnswer{Mode: "manual"},
+			Scaling:     scalingOf(&g),
 			Identity:    identityOf(platform, &g),
 			Problem:     problems[g.Name],
 			Nodes:       nodes,

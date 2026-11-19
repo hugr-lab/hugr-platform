@@ -458,3 +458,31 @@ func TestDoorsCertificate(t *testing.T) {
 		}
 	}
 }
+
+// TestScalingFields (spec 011): the CRD takes an auto group's scaling - durations as Kubernetes writes them, shares in
+// percent - and refuses a mode it does not know, a share past 100 and a max below 1
+func TestScalingFields(t *testing.T) {
+	c := start(t)
+	ctx := context.Background()
+	auto := func() *v1alpha1.HugrNodeGroup {
+		g := group("etl", 0)
+		g.Spec.Scaling = &v1alpha1.ScalingSpec{Mode: "auto", Min: 0, Max: 3,
+			Idle: &metav1.Duration{Duration: 30 * time.Minute}, Cooldown: &metav1.Duration{Duration: 2 * time.Minute},
+			ScaleUp: v1alpha1.ScaleUpSpec{MemoryUsed: 80, TempUsed: 80, SessionsUsed: 90, SeatsUsed: 90,
+				StreamsWaiting: 1, For: &metav1.Duration{Duration: time.Minute}}}
+		return g
+	}
+	must(t, c.client.Create(ctx, auto(), client.DryRunAll))
+	mode := auto()
+	mode.Spec.Scaling.Mode = "hpa"
+	share := auto()
+	share.Spec.Scaling.ScaleUp.MemoryUsed = 120
+	noMax := auto()
+	noMax.Spec.Scaling.Max = 0
+	for name, g := range map[string]*v1alpha1.HugrNodeGroup{"an unknown mode": mode, "a share past 100": share,
+		"a max of 0": noMax} {
+		if err := c.client.Create(ctx, g, client.DryRunAll); err == nil {
+			t.Errorf("%s: accepted, want the CRD's refusal", name)
+		}
+	}
+}
