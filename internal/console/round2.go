@@ -252,7 +252,7 @@ func (s *Server) tracing(w http.ResponseWriter, r *http.Request, token string, p
 			nodeProblem(w, err)
 			return
 		}
-		if len(result.Rows) != 1 || len(result.Rows[0]) != 1 || result.Rows[0][0] != true {
+		if said, err := AnswerOf(result); err != nil || !said.OK {
 			problem(w, http.StatusNotFound, "not_found", "this node holds no such session; it may have ended")
 			return
 		}

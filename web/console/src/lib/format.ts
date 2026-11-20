@@ -58,3 +58,10 @@ export function sentence(text: string): string {
   if (!s) return ''
   return `${s.charAt(0).toUpperCase()}${s.slice(1)}${/[.!?]$/.test(s) ? '' : '.'}`
 }
+
+/** what an answer has to say, as the page shows it: nothing for a plain success, the node's words otherwise (a false
+ * as not done) */
+export function saidOf(a: { ok: boolean; message: string } | undefined): { ok: boolean; text: string } | undefined {
+  if (!a || (a.ok && !a.message)) return undefined
+  return { ok: a.ok, text: a.ok ? a.message : `Not done: ${a.message || 'the node said no more'}` }
+}

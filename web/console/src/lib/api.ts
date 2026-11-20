@@ -1,6 +1,6 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
-import type { AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, Rights, SessionRow, ViewPage } from './types'
+import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, Rights, SessionRow, ViewPage } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -93,8 +93,8 @@ export class Api {
   sessions = (label: string) => this.request<{ sessions: SessionRow[] }>('GET', `nodes/${part(label)}/sessions`)
   endSession = (label: string, id: string) =>
     this.request<unknown>('POST', `nodes/${part(label)}/sessions/${part(id)}/end`)
-  drain = (label: string) => this.request<unknown>('POST', `nodes/${part(label)}/drain`)
-  resume = (label: string) => this.request<unknown>('POST', `nodes/${part(label)}/resume`)
+  drain = (label: string) => this.request<Answer>('POST', `nodes/${part(label)}/drain`)
+  resume = (label: string) => this.request<Answer>('POST', `nodes/${part(label)}/resume`)
   signOut = () => this.request<void>('POST', 'sign-out')
   // round 2
   pod = (label: string) => this.request<PodPage>('GET', `nodes/${part(label)}/kubernetes`)

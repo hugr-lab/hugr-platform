@@ -167,12 +167,18 @@ func newHarness(t *testing.T, info *Result, nodes ...fleet.Node) *harness {
 			return &Result{Columns: []string{"id", "subject"}, Rows: [][]any{{"0A1B2C3D4E5F", "svc@example.org"}}}, nil
 		}
 		if strings.HasPrefix(statement, "KILL SESSION '0A1B2C3D4E5F'") {
-			return &Result{Columns: []string{"kill_session"}, Rows: [][]any{{true}}}, nil
+			return said(true, nil), nil
 		}
 		if strings.HasPrefix(statement, "KILL SESSION") {
-			return &Result{Columns: []string{"kill_session"}, Rows: [][]any{{false}}}, nil
+			return said(false, "no session has that id"), nil
 		}
-		return &Result{Columns: []string{"ok"}, Rows: [][]any{{true}}}, nil
+		if statement == stmtDrain {
+			return said(true, "3 sessions still open"), nil
+		}
+		if statement == stmtResume {
+			return said(false, "the node was not draining"), nil
+		}
+		return said(true, nil), nil
 	}}
 	w := &fakeWriter{}
 	s := &Server{
@@ -388,6 +394,29 @@ func TestNodeRefusalPassedThrough(t *testing.T) {
 	}
 	if code, _, _ := h.do(t, "POST", APIPrefix+"nodes/nobody/drain", opsToken, ""); code != http.StatusNotFound {
 		t.Errorf("a node the fleet does not know: %d", code)
+	}
+}
+
+// TestDrainAndResumeAnswer: the node's answer reaches the page as it is - drain's count, resume's not ok.
+func TestDrainAndResumeAnswer(t *testing.T) {
+	h := newHarness(t, operateInfo, node("hugr-node-etl-a", "etl"))
+	code, out, _ := h.do(t, "POST", APIPrefix+"nodes/hugr-node-etl-a/drain", opsToken, "")
+	if code != 200 || out["ok"] != true || out["message"] != "3 sessions still open" {
+		t.Errorf("drain: %d %v", code, out)
+	}
+	code, out, _ = h.do(t, "POST", APIPrefix+"nodes/hugr-node-etl-a/resume", opsToken, "")
+	if code != 200 || out["ok"] != false || out["message"] != "the node was not draining" {
+		t.Errorf("resume: %d %v", code, out)
+	}
+	// an answer of another shape is said as such, never read as done
+	h.nodes.answer = func(_ fleet.Node, statement string) (*Result, error) {
+		if statement == stmtInfo {
+			return operateInfo, nil
+		}
+		return &Result{Columns: []string{"acl_drain"}, Rows: [][]any{{int64(3)}}}, nil
+	}
+	if code, _, _ := h.do(t, "POST", APIPrefix+"nodes/hugr-node-etl-a/drain", opsToken, ""); code != http.StatusBadGateway {
+		t.Errorf("an old answer: %d", code)
 	}
 }
 

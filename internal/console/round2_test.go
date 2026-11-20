@@ -187,9 +187,9 @@ func TestTracing(t *testing.T) {
 		case statement == stmtInfo:
 			return clusterRights(), nil
 		case strings.Contains(statement, "'0A1B2C3D4E5F'"):
-			return &Result{Columns: []string{"x"}, Rows: [][]any{{true}}}, nil
+			return said(true, nil), nil
 		}
-		return &Result{Columns: []string{"x"}, Rows: [][]any{{false}}}, nil
+		return said(false, "no session has that id"), nil
 	}
 	path := APIPrefix + "nodes/hugr-node-etl-a/sessions/0a1b2c3d4e5f/tracing"
 	if code, _, _ := h.do(t, "POST", path, opsToken, `{"audit": "all", "profile": "sampled"}`); code != 204 {

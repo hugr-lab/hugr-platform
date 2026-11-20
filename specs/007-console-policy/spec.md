@@ -126,6 +126,24 @@ The same embedding is what the second stage's grids read from.
 As in the DBeaver client, an edit composes the ACL grammar, shows the statements before it runs them, runs them one at
 a time on one node and stops at the first refusal, and re-reads the object first to catch a stale form.
 
+#### Stage 2a: what a management statement answers (built 2026-11-20)
+
+Every management statement answers one row, `ok` and `message` (duckdb-acl spec 179; hugr-node's CLUSTER answer keeps
+its own fields after the pair, its `note` now the `message`). The console's writes read it (`AnswerOf`, nodes.go):
+
+- `KILL SESSION` and a session's tracing levels: not ok is "this node holds no such session" (they read a lone `true`
+  column, which no node answers any more - every end read as not found);
+- `DRAIN NODE` / `RESUME NODE` answer `{ok, message}` and the node page shows it: drain's sessions still open, a resume
+  that found the node serving as not done;
+- a CLUSTER change answers its `ok` / `message` beside the version, class and `appliedHere` (they were read from a
+  STRUCT column, which the answer now spreads into columns);
+- an answer of any other shape is no answer - never read as done (`bad_answer`, 502).
+
+It needs a hugr-node with spec 179 (after v0.3.0): the charts' node image moves with it. The editors' answers (a
+GRANT's group-source hint, hugr-node spec 035) are shown the same way when the editors come. Tests: `TestAnswerOf`,
+`TestDrainAndResumeAnswer`, the kill / tracing / profile tests on the new shape (each fails on the old reading), the web
+console's `saidOf` and the node page's drain answer.
+
 ## Security
 
 - **Every read and write is the node's to judge**, under the person's own token. The console adds no right: it hides

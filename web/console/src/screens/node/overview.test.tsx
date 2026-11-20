@@ -28,18 +28,20 @@ const node = {
 }
 const memory = { tags: { rows: [{ tag: 'BASE_TABLE', memory_usage_bytes: 61865984 }] } }
 
-function show() {
+function show(may: Partial<Rights> = {}) {
   const asked: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     const path = String(url).replace(/^.*\/api\/v1\/console\//, '')
     asked.push(path)
     if (path === 'nodes/hugr-node-etl-a') return new Response(JSON.stringify(node), { status: 200 })
+    if (path === 'nodes/hugr-node-etl-a/drain')
+      return new Response(JSON.stringify({ ok: true, message: '2 sessions still open' }), { status: 200 })
     if (path === 'nodes/hugr-node-etl-a/memory') return new Response(JSON.stringify(memory), { status: 200 })
     return new Response(JSON.stringify({ error: 'not_found', message: 'none' }), { status: 404 })
   }))
   const api = new Api({ getToken: async () => 't' }, 'hugr-nodes')
   render(
-    <AppContext.Provider value={{ config, session: {} as Session, api, rights }}>
+    <AppContext.Provider value={{ config, session: {} as Session, api, rights: { ...rights, ...may } }}>
       <MemoryRouter initialEntries={['/nodes/hugr-node-etl-a']}>
         <Routes><Route path="/nodes/:label" element={<Overview />} /></Routes>
       </MemoryRouter>
@@ -60,5 +62,14 @@ describe("a node's overview", () => {
     await waitFor(() => expect(screen.getByRole('list', { name: 'The buffer pool by use' })).toBeTruthy())
     expect(screen.getByText('BASE_TABLE')).toBeTruthy()
     expect(asked.filter((p) => p.endsWith('/memory'))).toHaveLength(1)
+  })
+
+  it("says what the node answered a drain (duckdb-acl spec 179)", async () => {
+    show({ drain: true })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Drain' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Drain' }))
+    // jsdom has no showModal: the dialog's content is found with hidden: true
+    fireEvent.click(screen.getAllByRole('button', { name: 'Drain', hidden: true }).at(-1)!)
+    await waitFor(() => expect(screen.getByText('2 sessions still open')).toBeTruthy())
   })
 })

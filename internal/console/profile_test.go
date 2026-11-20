@@ -82,16 +82,17 @@ func TestChangeProfile(t *testing.T) {
 	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
 		if strings.HasPrefix(statement, "CLUSTER ") {
 			asked = append(asked, statement)
-			// as the pool reads a STRUCT: each field its own type, the BIGINT an int64
-			return &Result{Columns: []string{"acl_cluster_attach"}, Rows: [][]any{{map[string]any{"version": int64(7),
-				"class": "hot", "applied_here": true, "note": ""}}}}, nil
+			// duckdb-acl spec 179: the pair, then the CLUSTER answer's own fields as columns - each its own type, the
+			// BIGINT an int64
+			return &Result{Columns: []string{"ok", "message", "version", "class", "applied_here"},
+				Rows: [][]any{{true, "applied on this node", int64(7), "hot", true}}}, nil
 		}
 		return answer(n, statement)
 	}
 	code, out, _ := h.do(t, "POST", APIPrefix+"cluster/profile", opsToken,
 		`{"action": "attach", "path": ":memory:", "alias": "scratch", "type": "duckdb", "group": "etl"}`)
 	if code != 200 || out["class"] != "hot" || out["version"] != float64(7) || out["appliedHere"] != true ||
-		out["node"] != "hugr-node-etl-a" {
+		out["node"] != "hugr-node-etl-a" || out["ok"] != true || out["message"] != "applied on this node" {
 		t.Fatalf("a change: %d %v", code, out)
 	}
 	if len(asked) != 1 || asked[0] != `CLUSTER ATTACH ':memory:' AS "scratch" (TYPE duckdb) IN GROUP "etl"` {

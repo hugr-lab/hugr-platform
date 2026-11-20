@@ -484,8 +484,8 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request, token string
 		nodeProblem(w, err)
 		return
 	}
-	// acl_session_kill answers false for an id the node does not hold (ended already, or another node's)
-	if len(result.Rows) != 1 || len(result.Rows[0]) != 1 || result.Rows[0][0] != true {
+	// KILL SESSION answers not ok for an id the node does not hold (ended already, or another node's)
+	if said, err := AnswerOf(result); err != nil || !said.OK {
 		problem(w, http.StatusNotFound, "not_found", "this node holds no such session; it may have ended")
 		return
 	}
@@ -517,8 +517,14 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, token string, p *pe
 		nodeProblem(w, err)
 		return
 	}
-	s.Log.Info("node action", "node", n.Label, "by", p.subject, "action", strings.Fields(statement)[0])
-	answer(w, map[string]any{"result": result.Records()})
+	said, err := AnswerOf(result)
+	if err != nil {
+		problem(w, http.StatusBadGateway, "bad_answer", err.Error())
+		return
+	}
+	s.Log.Info("node action", "node", n.Label, "by", p.subject, "action", strings.Fields(statement)[0], "ok", said.OK)
+	// DRAIN NODE: ok, how many sessions remain; RESUME NODE: not ok when the node was not draining - the page says it
+	answer(w, said)
 }
 
 func (s *Server) signOut(w http.ResponseWriter, _ *http.Request, token string) {
