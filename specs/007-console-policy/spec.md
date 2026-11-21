@@ -189,7 +189,9 @@ bundle's) on a cluster node:
 - **Found by its review, fixed**: a list set locked the console's writes out on that group's nodes; a repair could run
   a text the person never saw; the check's 45 s plus the write's 15 s passed the server's 60 s; a failing check hid
   the set and its editor; the set offered another group's own sources and a source twice in another case; another
-  group's source read as left out; the Repair buttons had one accessible name.
+  group's source read as left out; the Repair buttons had one accessible name. Its re-review: a write cut by the
+  deadline says it may have been written; a node that is down is said as down, not as the partial node's "run it
+  elsewhere"; a repair whose text changed offers to read the check again.
 
 ## Security
 

@@ -61,7 +61,7 @@ type SourceRepair struct {
 // (it reads what exposes each source), and a repair still has its write to run after it.
 const (
 	sourcesBudget = 55 * time.Second
-	repairCheck   = 35 * time.Second
+	repairCheck   = 25 * time.Second
 )
 
 // stmtGroupSources is the check of one group: its name a literal of a name the platform's group carries (a plain

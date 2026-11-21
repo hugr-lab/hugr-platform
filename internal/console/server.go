@@ -545,12 +545,20 @@ func personMessage(err error) string {
 	if errors.Is(err, errNoLoad) {
 		return errNoLoad.Error()
 	}
+	if errors.Is(err, errTimedOut) {
+		return "the node did not answer in time"
+	}
 	return "the node does not answer"
 }
 
 // nodeProblem answers a failed node call: the node's message, never more.
 func nodeProblem(w http.ResponseWriter, err error) {
 	var refused *NodeError
+	if errors.Is(err, errWriteUnknown) {
+		problem(w, http.StatusGatewayTimeout, "node_timeout", "the node did not answer in time: the change may have "+
+			"been written - read it again before writing it once more")
+		return
+	}
 	if errors.Is(err, errTimedOut) {
 		problem(w, http.StatusGatewayTimeout, "node_timeout", "the node did not answer in time")
 		return

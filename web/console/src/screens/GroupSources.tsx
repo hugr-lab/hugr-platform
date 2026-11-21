@@ -3,6 +3,7 @@
 // by itself (the owner, 2026-11-20): a repair runs when the person asks, its text the node's.
 import { useState } from 'react'
 import { Dialog, Problem, Status, messageOf } from '../components/ui'
+import { ApiError } from '../lib/api'
 import { useApp, useLoad } from '../lib/context'
 import { changeOf, changeProblem, lazyText, reachOf } from '../lib/profile'
 import type { Group, GroupSource, GroupSources, ProfileWritten } from '../lib/types'
@@ -126,6 +127,7 @@ export function RepairDialog({ group, row, onDone }: { group: Group; row: GroupS
   const { api } = useApp()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  const [stale, setStale] = useState(false)
   const [written, setWritten] = useState<ProfileWritten>()
   const run = async () => {
     setBusy(true)
@@ -133,6 +135,8 @@ export function RepairDialog({ group, row, onDone }: { group: Group; row: GroupS
     try {
       setWritten(await api.repairGroupSource(group.name, row.source, row.repair ?? ''))
     } catch (e) {
+      // the node's repair is no longer the one shown: read the check again rather than run it unseen
+      setStale(e instanceof ApiError && e.code === 'repair_changed')
       setError(messageOf(e))
     } finally {
       setBusy(false)
@@ -147,7 +151,8 @@ export function RepairDialog({ group, row, onDone }: { group: Group; row: GroupS
           {error && <p role="alert" className="rounded-md bg-surface-soft px-4 py-3 text-sm font-medium">{error}</p>}
           <div className="flex flex-wrap justify-end gap-2">
             <button type="button" className="btn-outline" disabled={busy} onClick={() => onDone(false)}>Cancel</button>
-            <button type="button" className="btn-primary" disabled={busy} onClick={run}>Run</button>
+            {stale ? <button type="button" className="btn-primary" onClick={() => onDone(true)}>Read the check again</button>
+              : <button type="button" className="btn-primary" disabled={busy} onClick={run}>Run</button>}
           </div>
         </>
       )}

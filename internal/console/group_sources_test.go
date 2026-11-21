@@ -200,4 +200,19 @@ func TestWriteAvoidsPartialNodes(t *testing.T) {
 	if code != http.StatusForbidden || !strings.Contains(out["message"].(string), "attaches the sources of group") {
 		t.Errorf("only partial nodes: %d %v", code, out)
 	}
+	// another group's node that is down is said as down, never as the partial node's "run it elsewhere"
+	d := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"), node("hugr-node-general-a", "general"))
+	answer = d.nodes.answer
+	d.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
+		if n.Group() == "general" && statement != stmtInfo {
+			return nil, errUnreachable
+		}
+		if strings.HasPrefix(statement, "CLUSTER ") {
+			return nil, partial("etl")
+		}
+		return answer(n, statement)
+	}
+	if code, out, _ := d.do(t, "POST", APIPrefix+"cluster/profile", opsToken, change); code != http.StatusServiceUnavailable {
+		t.Errorf("another group's node down: %d %v", code, out)
+	}
 }

@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -58,8 +59,7 @@ func resourceGroupOf(group *v1alpha1.HugrNodeGroup) string {
 
 // onNode reads on one node, under the person's token: the first answering node that seats the person (one of the
 // groups a refusal names, as for the rights), the rest of the statements on that same node. Only reads go here - a
-// statement retried on the next node may have run on the last (a timeout); a write goes to the node a read answered
-// (writeOn), once.
+// statement retried on the next node may have run on the last (a timeout); a write goes through write, once.
 func (s *Server) onNode(ctx context.Context, token string, statements ...string) ([]*Result, *fleet.Node, error) {
 	return s.onNodeAvoiding(ctx, token, nil, statements...)
 }
@@ -130,7 +130,9 @@ func (s *Server) write(ctx context.Context, token string, statements ...string) 
 	for {
 		_, node, err := s.onNodeAvoiding(ctx, token, avoid, "SELECT 1")
 		if err != nil {
-			if refused != nil {
+			// no other node to try: the partial node's refusal says where to run it; a node that is down or slow
+			// says that
+			if refused != nil && errors.Is(err, errNoNode) {
 				return nil, nil, refused
 			}
 			return nil, nil, err
@@ -141,15 +143,26 @@ func (s *Server) write(ctx context.Context, token string, statements ...string) 
 			continue
 		}
 		if err != nil {
-			return nil, node, err
+			return nil, node, writeFailure(err)
 		}
 		for _, statement := range statements[1:] {
 			if _, err := s.Nodes.Query(ctx, *node, token, statement); err != nil {
-				return first, node, err
+				return first, node, writeFailure(err)
 			}
 		}
 		return first, node, nil
 	}
+}
+
+// errWriteUnknown: a write the node did not answer in time - it may have run there all the same.
+var errWriteUnknown = fmt.Errorf("%w: the change may have been written - read it again before writing it once more",
+	errTimedOut)
+
+func writeFailure(err error) error {
+	if errors.Is(err, errTimedOut) {
+		return errWriteUnknown
+	}
+	return err
 }
 
 // partialNode: the node refused a write as a node of a group whose source set is a list (duckdb-acl spec 176) - a
