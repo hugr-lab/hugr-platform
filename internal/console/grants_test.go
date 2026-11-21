@@ -63,6 +63,14 @@ func TestGrantStatements(t *testing.T) {
 		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
 			Versions: "BETWEEN TIMESTAMP '2026-01-01 MASK' AND now()"}, nil,
 			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" VERSIONS BETWEEN TIMESTAMP '2026-01-01 MASK' AND now()`}},
+		// a name ending in e before a quote is no escape string; a $ inside a string is text
+		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Masks: []GrantMask{{Column: "a", Mask: "concat(name, '$')"}}}, nil,
+			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" MASK ("a" AS concat(name, '$'))`}},
+		// a catalog grant's versions cleared: written again without the clause (the current version)
+		{GrantForm{Level: "catalog", Role: "r", Catalog: "c"},
+			&GrantForm{Level: "catalog", Role: "r", Catalog: "c", Versions: "ANY"},
+			[]string{`GRANT CATALOG "c" TO ROLE "r"`}},
 		// a mask's own quotes and parentheses
 		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
 			Masks: []GrantMask{{Column: "a", Mask: "replace(a, ';', '(')"}}}, nil,
@@ -97,6 +105,13 @@ func TestGrantStatements(t *testing.T) {
 		"between and a clause": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
 			Versions: "BETWEEN '2026-01-01' AND now() COLUMNS (a)"}, nil},
 		"at and more": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Versions: "AT (VERSION => 1) (x)"}, nil},
+		// strings this scan does not read as duckdb's tokenizer does
+		"an escape string": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Masks: []GrantMask{{Column: "a", Mask: `E'\'' ) ; REVOKE CATALOG c FROM ROLE r ; SELECT (E'\''`}}}, nil},
+		"a dollar string": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Masks: []GrantMask{{Column: "a", Mask: `$$'$$ ) ; X ; SELECT ($$'$$`}}}, nil},
+		"versions' escape string": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Versions: `AT (TIMESTAMP => e'\'' ) MASK (a AS 1) --')`}, nil},
 	} {
 		if got, err := tc.form.statements(tc.current); err == nil {
 			t.Errorf("%s: written %q", name, got)
@@ -126,6 +141,11 @@ func grantsNode(h *harness, wrote *[]string, refuse string) {
 		case stmtSchemaNames:
 			return &Result{Columns: []string{"catalog", "name", "phys_path"}, Rows: [][]any{
 				{"Sales", "pg", "pg.public"}, {"Sales", "raw", nil}}}, nil
+		case stmtMappedRoles:
+			if refuse == "mappings" {
+				return nil, &NodeError{Message: "acl: platform.role_mappings is the policy bundle's"}
+			}
+			return &Result{Columns: []string{"name"}, Rows: [][]any{{"from_idp"}}}, nil
 		case stmtObjectNames:
 			return &Result{Columns: []string{"catalog", "name"}, Rows: [][]any{{"Sales", "people"}, {"Sales", "orders"}}}, nil
 		}
@@ -191,7 +211,7 @@ func TestGrantEditor(t *testing.T) {
 	}
 	// a new grant where one exists: the same refusal
 	if code, out, _ := h.do(t, "POST", APIPrefix+"policy/grant", opsToken, strings.Replace(shown, v, "", 1)); code != http.StatusConflict ||
-		!strings.Contains(out["message"].(string), "holds this grant already") {
+		out["error"] != "grant_exists" || !strings.Contains(out["message"].(string), "holds this grant already") {
 		t.Errorf("a new grant over one: %d", code)
 	}
 	// names the node does not list
@@ -235,7 +255,7 @@ func TestGrantEditor(t *testing.T) {
 	// a table under a live alias schema is an object the node takes; under a declared schema it is not one
 	alias := `{"form": {"level": "object", "role": "analyst", "catalog": "Sales", "target": "PG.orders", "caps": null}, "version": ""}`
 	if code, out, _ := h.do(t, "POST", APIPrefix+"policy/grant/preview", opsToken, alias); code != 200 ||
-		!reflect.DeepEqual(out["statements"], []any{`GRANT OBJECT "Sales"."PG"."orders" TO ROLE "analyst"`}) {
+		!reflect.DeepEqual(out["statements"], []any{`GRANT OBJECT "Sales"."pg"."orders" TO ROLE "analyst"`}) {
 		t.Errorf("a table under an alias: %d %v", code, out)
 	}
 	notAlias := strings.Replace(alias, "PG.orders", "raw.orders", 1)
@@ -286,5 +306,23 @@ func TestGrantCheck(t *testing.T) {
 	o := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
 	if code, _, _ := o.do(t, "POST", APIPrefix+"policy/grant/check", opsToken, form); code != http.StatusForbidden {
 		t.Errorf("without check_grant: %d", code)
+	}
+}
+
+// TestGrantMappedRole: a role only a mapping names is taken where the person reads the mappings; where the mappings
+// are refused (they are the policy bundle's), the editor still works for the roles it knows.
+func TestGrantMappedRole(t *testing.T) {
+	for _, tc := range []struct {
+		refuse string
+		role   string
+		want   int
+	}{{"", "from_idp", 200}, {"mappings", "from_idp", http.StatusUnprocessableEntity}, {"mappings", "ops", 200}} {
+		h := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
+		var wrote []string
+		grantsNode(h, &wrote, tc.refuse)
+		form := `{"form": {"level": "catalog", "role": "` + tc.role + `", "catalog": "Sales", "caps": null}, "version": ""}`
+		if code, out, _ := h.do(t, "POST", APIPrefix+"policy/grant/preview", opsToken, form); code != tc.want {
+			t.Errorf("%+v: %d %v", tc, code, out)
+		}
 	}
 }

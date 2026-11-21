@@ -47,8 +47,8 @@ type GrantForm struct {
 	Into        string `json:"into,omitempty"`
 	VirtualOnly bool   `json:"virtualOnly,omitempty"`
 	Comment     string `json:"comment,omitempty"`
-	// read only: an object grant whose COLUMNS or MASK the node could not read (the view answers NULL), or a catalog
-	// grant carrying a list stored by an older build - written anew it would widen, so it is only revoked here
+	// read only: an object grant whose COLUMNS or MASK the node could not read (the view answers NULL) - written anew
+	// it would widen, so it is only revoked here
 	Unreadable bool `json:"unreadable,omitempty"`
 	// read only: a catalog grant's legacy column list (duckdb-acl spec 158: it refuses every read under the grant)
 	LegacyColumns bool `json:"legacyColumns,omitempty"`
@@ -118,10 +118,12 @@ const (
 		`LIMIT 100001`
 )
 
-// stmtGrantRoles: a grant may name a role the policy never created (an IdP's role) - the roles the policy names
-// anywhere: created, granted, mapped
-var stmtGrantRoles = argumentLists["role"] + ` UNION SELECT "role" FROM platform.role_mappings ` +
-	`UNION SELECT "role" FROM platform.schema_grants UNION SELECT "role" FROM platform.object_grants`
+// stmtGrantRoles: a grant may name a role the policy never created (an IdP's role) - the roles the policy names:
+// created and granted; stmtMappedRoles adds the mapped ones where the person reads the mappings (the policy's view)
+var stmtGrantRoles = argumentLists["role"] +
+	` UNION SELECT "role" FROM platform.schema_grants UNION SELECT "role" FROM platform.object_grants`
+
+const stmtMappedRoles = `SELECT DISTINCT "role" AS name FROM platform.role_mappings`
 
 // grantBody reads the editor's request: a form with its masks may pass decodeStrict's 4 KiB.
 func grantBody(r *http.Request, v any) error {
@@ -252,13 +254,21 @@ func (s *Server) readGrant(ctx context.Context, token string, f *GrantForm) (*gr
 	if f.Level == "object" {
 		statements = append(statements, stmtSchemaNames) // a live alias's tables are no relation of their own
 	}
-	results, _, err := s.onNode(ctx, token, statements...)
+	results, node, err := s.onNode(ctx, token, statements...)
 	if err != nil {
 		return nil, err
 	}
 	n := &grantNames{targets: map[string][]string{}}
 	for _, row := range results[0].Records() {
 		n.roles = append(n.roles, str(row["name"]))
+	}
+	if _, known := listed(n.roles, f.Role, false); !known {
+		// a mapped role: asked only when needed, and a refusal (the mappings are the policy bundle's) names none
+		if mapped, err := s.Nodes.Query(ctx, *node, token, stmtMappedRoles); err == nil {
+			for _, row := range mapped.Records() {
+				n.roles = append(n.roles, str(row["name"]))
+			}
+		}
 	}
 	for _, row := range results[1].Records() {
 		n.catalogs = append(n.catalogs, str(row["name"]))
@@ -280,8 +290,9 @@ func (s *Server) readGrant(ctx context.Context, token string, f *GrantForm) (*gr
 	f.Role, f.Catalog = role, catalog
 	if targets != "" {
 		target, ok := listed(n.targets[asciiFold(catalog)], f.Target, true)
-		if !ok && f.Level == "object" && underAlias(results[4], catalog, f.Target) {
-			target, ok = f.Target, true // the node judges the table under the alias
+		if !ok && f.Level == "object" {
+			// a table under a live alias, the alias in the node's spelling; the node judges the table
+			target, ok = underAlias(results[4], catalog, f.Target)
 		}
 		if !ok {
 			return nil, fmt.Errorf("the catalog %s has no %s %s", catalog, f.Level, f.Target)
@@ -303,8 +314,9 @@ func (s *Server) readGrant(ctx context.Context, token string, f *GrantForm) (*gr
 }
 
 // underAlias: the key names an object under a live alias schema of the catalog (a schema with a physical path) -
-// `<alias path>.<table>`, which the node takes as a grant's object (duckdb-acl spec 158).
-func underAlias(schemas *Result, catalog, key string) bool {
+// `<alias path>.<table>`, which the node takes as a grant's object (duckdb-acl spec 158) - answered with the alias
+// in the node's spelling (the node compares that prefix exactly).
+func underAlias(schemas *Result, catalog, key string) (string, bool) {
 	parts := keyParts(key)
 	for _, row := range schemas.Records() {
 		if asciiFold(str(row["catalog"])) != asciiFold(catalog) || str(row["phys_path"]) == "" {
@@ -322,10 +334,22 @@ func underAlias(schemas *Result, catalog, key string) bool {
 			}
 		}
 		if same {
-			return true
+			return str(row["name"]) + "." + keyOf(parts[len(alias):]), true
 		}
 	}
-	return false
+	return "", false
+}
+
+// keyOf parts as a canonical key (duckdb-acl spec 116): joined by '.', a part quoted when it holds '.' or '"'.
+func keyOf(parts []string) string {
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		if strings.ContainsAny(p, `."`) {
+			p = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
+		}
+		out[i] = p
+	}
+	return strings.Join(out, ".")
 }
 
 // capsClause is a GRANT's capabilities: unstated no clause, none CAPS '{}', else WITH (…).
@@ -387,8 +411,14 @@ func clause(field, v string) (string, error) {
 			if c == quote {
 				quote = 0 // a doubled quote closes and opens again: the same
 			}
+		case c == '\'' && i > 0 && (v[i-1] == 'E' || v[i-1] == 'e') && (i == 1 || !identChar(v[i-2])):
+			// an escape string reads a backslash-escaped quote, which this scan does not: from the SQL page
+			return "", fmt.Errorf("%s writes no E'…' string here", field)
 		case c == '\'' || c == '"':
 			quote = c
+		case c == '$':
+			// a dollar-quoted string ($$…$$) likewise
+			return "", fmt.Errorf("%s writes no $ outside a quoted string", field)
 		case c == '(':
 			depth++
 		case c == ')':
@@ -406,6 +436,10 @@ func clause(field, v string) (string, error) {
 		return "", fmt.Errorf("%s leaves a quote or a parenthesis open", field)
 	}
 	return v, nil
+}
+
+func identChar(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
 }
 
 // versionsClause checks a VERSIONS clause's form (duckdb-acl spec 167): CURRENT, ANY, AT (…) whole, or BETWEEN … AND
@@ -585,7 +619,10 @@ func (f GrantForm) statements(current *GrantForm) ([]string, error) {
 			if strings.TrimSpace(f.RLS) != "" {
 				out += " RLS " + rls
 			}
-			return []string{out + " VERSIONS " + versions}, nil
+			if versions != "" {
+				out += " VERSIONS " + versions // none: the current version (duckdb-acl spec 168)
+			}
+			return []string{out}, nil
 		}
 		alter := "ALTER GRANT CATALOG " + cat + " TO ROLE " + role + " SET "
 		var out []string
@@ -827,8 +864,12 @@ func (f GrantForm) checkStatement() (string, error) {
 func grantProblem(w http.ResponseWriter, err error) {
 	var refused *NodeError
 	switch {
-	case errors.Is(err, errGrantChanged), errors.Is(err, errGrantExists), errors.Is(err, errNotShown):
+	case errors.Is(err, errGrantChanged):
 		problem(w, http.StatusConflict, "grant_changed", err.Error())
+	case errors.Is(err, errGrantExists):
+		problem(w, http.StatusConflict, "grant_exists", err.Error())
+	case errors.Is(err, errNotShown):
+		problem(w, http.StatusConflict, "not_shown", err.Error())
 	case errors.As(err, &refused), errors.Is(err, errNoNode), errors.Is(err, errUnreachable):
 		policyProblem(w, err)
 	default:

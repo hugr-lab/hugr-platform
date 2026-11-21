@@ -76,6 +76,8 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
       await what()
     } catch (e) {
       setStale(e instanceof ApiError && e.code === 'grant_changed')
+      // the statements composed now are not the ones shown: show them again
+      if (e instanceof ApiError && e.code === 'not_shown') setPreview(undefined)
       setError(messageOf(e))
     } finally {
       setBusy(false)
@@ -136,12 +138,10 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
             </fieldset>
           )}
           {level === 'object' && <Masks masks={form.masks ?? []} onChange={(masks) => set({ masks })} />}
-          {level !== 'schema' && (editing && level === 'catalog' ? (
-            <p className="text-sm text-ink-muted">Versions: {form.versions || 'current'} (written with the grant).</p>
-          ) : (
+          {level !== 'schema' && (
             <Text id="g-versions" title="Versions" value={form.versions ?? ''} onChange={(v) => set({ versions: v })}
-              hint={`Of a time-travel table: CURRENT, ANY, AT (VERSION => 3), BETWEEN … AND …; empty: ${level === 'object' ? "the catalog grant's" : 'the current one'}.`} />
-          ))}
+              hint={`Of a time-travel table: CURRENT, ANY, AT (VERSION => 3), BETWEEN … AND …; empty: ${level === 'object' ? "the catalog grant's" : 'the current one'}.${editing && level === 'catalog' ? ' A change writes the grant again; its object grants stay.' : ''}`} />
+          )}
           {level === 'schema' && (
             <div className="grid grid-cols-2 gap-4">
               <Text id="g-into" title="Creates into" value={form.into ?? ''} onChange={(v) => set({ into: v })}
