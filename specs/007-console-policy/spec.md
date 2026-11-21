@@ -119,7 +119,7 @@ The same embedding is what the second stage's grids read from.
   lists. An expression field (a row filter, a mask, a computed column) is the person's SQL, placed in its clause as
   written. The node judges it: one expression or a refusal (duckdb-acl spec 148), and Flight runs one statement. Not
   through the page's DuckDB: that would need a quack door and the 34 MB engine for every editor.
-- **The order of the work** (each a PR, all after a hugr-node release carrying stage 2a's answers): 2b a group's
+- **The order of the work** (each a PR; hugr-node v0.4.0 carries stage 2a's answers): 2b a group's
   sources, 2c the grant editor, 2d the data grid, 2e roles / resource groups / mappings, 2f catalog objects and their
   repair, 2g issuers / clients / function categories / admin bundles.
 - **The DBeaver client's editors,** in the same order spec 008 built them:
@@ -147,7 +147,7 @@ its own fields after the pair, its `note` now the `message`). The console's writ
   STRUCT column, which the answer now spreads into columns);
 - an answer of any other shape is no answer - never read as done (`bad_answer`, 502).
 
-It needs a hugr-node with spec 179 (after v0.3.0): the charts' node image moves with it. The editors' answers (a
+It needs hugr-node v0.4.0 (spec 179 and duckdb-acl #319), which the charts pin since stage 2a. The editors' answers (a
 GRANT's group-source hint, hugr-node spec 035) are shown the same way when the editors come. Tests: `TestAnswerOf`,
 `TestDrainAndResumeAnswer`, the kill / tracing / profile tests on the new shape (each fails on the old reading), the web
 console's `saidOf` and the node page's drain answer.
