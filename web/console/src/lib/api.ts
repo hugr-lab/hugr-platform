@@ -1,6 +1,6 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
-import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, GroupSources, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, Rights, SessionRow, ViewPage } from './types'
+import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, GrantForm, GrantRead, GrantWritten, GroupSources, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, Rights, SessionRow, ViewPage } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -114,6 +114,12 @@ export class Api {
   // spec 007: the policy's pages - a view filtered by its columns, a read function by the node's own names
   policyView = (view: string, filters: Record<string, string> = {}, offset = 0, limit = 500) =>
     this.request<ViewPage>('GET', `policy/views/${part(view)}?${query({ ...filters, offset: String(offset), limit: String(limit) })}`)
+  // spec 007 stage 2c: the grant editor - the grant as it stands (with its version), its statements, the write, the check
+  grantRead = (level: string, role: string, catalog: string, target = '') =>
+    this.request<GrantRead>('GET', `policy/grant?${query({ level, role, catalog, ...(target ? { target } : {}) })}`)
+  grantPreview = (form: GrantForm, version: string) => this.request<GrantWritten>('POST', 'policy/grant/preview', { form, version })
+  grantWrite = (form: GrantForm, version: string) => this.request<GrantWritten>('POST', 'policy/grant', { form, version })
+  grantCheck = (form: GrantForm) => this.request<ViewPage>('POST', 'policy/grant/check', form)
   policySources = () => this.request<{ sources: string[] }>('GET', 'policy/sources')
   policyCall = (fn: string, args: Record<string, string>, limit = 5000) =>
     this.request<ViewPage>('GET', `policy/functions/${part(fn)}?${query({ ...args, limit: String(limit) })}`)

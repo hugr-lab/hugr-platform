@@ -193,6 +193,38 @@ bundle's) on a cluster node:
   deadline says it may have been written; a node that is down is said as down, not as the partial node's "run it
   elsewhere"; a repair whose text changed offers to read the check again.
 
+#### Stage 2c: the grant editor (built 2026-11-21)
+
+A catalog's page edits its grants, offered with `check_grant` among `console_info()`'s functions (who may grant may
+check, duckdb-acl spec 122); the node judges every write. A row's role opens its grant, a button a new one.
+
+- **Read first** (`GET policy/grant?level&role&catalog[&target]`): the grant as the node holds it now, from
+  `platform.grants` / `schema_grants` (not an inherited row) / `object_grants`, and its version (a digest of it). The
+  role, the catalog and the schema or object are taken from the node's lists (`roles` and the grants' roles,
+  `catalogs`, `schemas`, `relations` + `functions`), in the node's spelling.
+- **The statements** are the server's, from the form, shown before they run (`POST policy/grant/preview`):
+  - a catalog grant: `GRANT CATALOG c TO ROLE r [WITH (…) | CAPS '{}'] [MAIN] [RLS '<filter>'] [VERSIONS …]`; one
+    that exists changes property by property (`ALTER GRANT CATALOG … SET CAPS | MAIN | RLS`), keeping its object
+    grants, and its versions are written with it;
+  - a schema grant: `GRANT SCHEMA c.path TO ROLE r [caps] [INTO db.schema | VIRTUAL ONLY] [COMMENT '…']`;
+  - an object grant, written whole (a GRANT replaces it): `GRANT OBJECT c.n TO ROLE r [caps] [RLS '<filter>'] [COLUMNS
+    (a, b) | COLUMNS (* EXCLUDE (a, b))] [MASK ("col" AS <expression>, …)] [VERSIONS …]` (duckdb-acl spec 158);
+  - a revoke: `REVOKE CATALOG | SCHEMA | OBJECT … FROM ROLE r`.
+
+  Names are quoted identifiers; the row filter is a literal (the grammar takes one); a mask's expression and a
+  versions clause are the person's SQL in their clauses, which the node judges.
+- **The write** (`POST policy/grant`) reads the grant again and composes the same statements only while its version is
+  the form's (else 409: read it again; a new grant where one exists is the same), then runs them one at a time on one
+  node that writes (stage 2b's routing), stopping at the first refusal. The answer is each statement's `(ok, message)` -
+  a grant's group-source hint (hugr-node spec 035) among them - and the refused one with the node's reason.
+- **Check with the node** (`POST policy/grant/check`): `platform.check_grant(role, catalog, object, rls, columns,
+  caps :=, masks :=)`, every argument a literal - what the write would say, written nowhere.
+- The DBeaver client's object grant editor still writes the pre-158 column list: its fix is acl-clients' own.
+- Tests: `TestGrantStatements` (each level, an existing catalog grant's ALTERs, the refusals), `TestGrantEditor` (the
+  read with its version, preview, write and its hint, a stale form and a new grant over one refused, names the node
+  does not list), `TestGrantRefusedHalfWay`, `TestGrantCheck` (a filter that would close the call stays a literal),
+  the web console's `grants.test.tsx`.
+
 ## Security
 
 - **Every read and write is the node's to judge**, under the person's own token. The console adds no right: it hides

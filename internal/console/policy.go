@@ -123,8 +123,8 @@ func (s *Server) onNodeAvoiding(ctx context.Context, token string, avoid map[str
 // write runs the writes on a node that seats the person and writes, in order, each once: a failure stops there and
 // is the person's to read. A node whose group's source set is a list refuses every write before it runs it
 // (duckdb-acl spec 176) - then the writes go to a node of another group, and when every group that seats the person
-// has a list, the node's refusal says where to run them. The first statement's result is answered.
-func (s *Server) write(ctx context.Context, token string, statements ...string) (*Result, *fleet.Node, error) {
+// has a list, the node's refusal says where to run them. Each statement's result is answered, up to the one that failed.
+func (s *Server) write(ctx context.Context, token string, statements ...string) ([]*Result, *fleet.Node, error) {
 	avoid := map[string]bool{}
 	var refused error
 	for {
@@ -145,12 +145,15 @@ func (s *Server) write(ctx context.Context, token string, statements ...string) 
 		if err != nil {
 			return nil, node, writeFailure(err)
 		}
+		out := []*Result{first}
 		for _, statement := range statements[1:] {
-			if _, err := s.Nodes.Query(ctx, *node, token, statement); err != nil {
-				return first, node, writeFailure(err)
+			result, err := s.Nodes.Query(ctx, *node, token, statement)
+			if err != nil {
+				return out, node, writeFailure(err)
 			}
+			out = append(out, result)
 		}
-		return first, node, nil
+		return out, node, nil
 	}
 }
 

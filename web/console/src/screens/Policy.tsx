@@ -6,7 +6,8 @@ import { Crumbs, Header, Problem } from '../components/ui'
 import { Rows, Section, ViewTable } from '../components/ViewTable'
 import { useApp, useLoad } from '../lib/context'
 import { calls, caps, grantColumns, grantMasks, policyParts, reads } from '../lib/policy'
-import type { ViewPage } from '../lib/types'
+import type { GrantForm, ViewPage } from '../lib/types'
+import { GrantDialog } from './GrantDialog'
 
 const enc = encodeURIComponent
 
@@ -82,12 +83,28 @@ function Pick({ name, picked, onPick }: { name: string; picked: boolean; onPick:
   return <button type="button" className="link text-left" aria-pressed={picked} onClick={onPick}>{name}</button>
 }
 
+/** a grant the editor opens: a new one of a level, or one of a row */
+type Editing = { level: GrantForm['level']; role?: string; target?: string }
+
 export function Catalog({ name }: { name: string }) {
   const { rights, api } = useApp()
   const [object, setObject] = useState<string>()
   const [fn, setFn] = useState<string>()
   const [checks, setChecks] = useState(0)
+  const [editing, setEditing] = useState<Editing>()
+  // the grants' tables read again after a write
+  const [written, setWritten] = useState(0)
   const at = { catalog: name }
+  // who may grant may check (duckdb-acl spec 122): the editor is offered with check_grant, the node judges each write
+  const grants = calls(rights, 'check_grant')
+  const edit = (level: GrantForm['level'], target: string) => (c: string, row: Record<string, unknown>) =>
+    grants && c === 'role' ? (
+      <button type="button" className="link text-left" aria-label={`Edit the grant of ${String(row.role)}${target ? ` on ${String(row[target])}` : ''}`}
+        onClick={() => setEditing({ level, role: String(row.role), target: target ? String(row[target]) : undefined })}>{String(row.role)}</button>
+    ) : undefined
+  const add = (level: GrantForm['level'], text: string) => grants && (
+    <div><button type="button" className="btn-outline" onClick={() => setEditing({ level })}>{text}</button></div>
+  )
   return (
     <Frame title={name} crumbs={[{ label: 'Policy', to: '/policy/catalogs' }, { label: name }]}>
       {calls(rights, 'check_catalog') && reads(rights, 'catalogs') && reads(rights, 'grants') && (
@@ -119,9 +136,15 @@ export function Catalog({ name }: { name: string }) {
       {fn && <ViewTable key={fn} view="function_columns" filters={{ ...at, function: fn }} title={`Parameters and columns of ${fn}`}
         columns={['kind', 'pos', 'name', 'type', 'nullable', 'comment']} />}
       {reads(rights, 'references') && <ViewTable view="references" filters={at} title="References" columns={['name', 'from_object', 'to_object', 'cardinality', 'optional', 'comment']} />}
-      {reads(rights, 'grants') && <ViewTable view="grants" filters={at} title="Catalog grants" columns={['role', 'is_main', 'caps', 'rls', 'versions']} format={grantCaps} />}
-      {reads(rights, 'schema_grants') && <ViewTable view="schema_grants" filters={at} title="Schema grants" columns={['role', 'schema_path', 'caps', 'inherited', 'into', 'virtual_only']} format={objectCaps} />}
-      {reads(rights, 'object_grants') && <ViewTable view="object_grants" filters={at} title="Object grants" columns={['role', 'object', 'caps', 'rls', 'columns', 'masks', 'versions']} format={objectGrant} />}
+      {reads(rights, 'grants') && <ViewTable key={`g${written}`} view="grants" filters={at} title="Catalog grants" columns={['role', 'is_main', 'caps', 'rls', 'versions']} format={grantCaps} link={edit('catalog', '')} />}
+      {reads(rights, 'grants') && add('catalog', 'Grant the catalog')}
+      {reads(rights, 'schema_grants') && <ViewTable key={`s${written}`} view="schema_grants" filters={at} title="Schema grants" columns={['role', 'schema_path', 'caps', 'inherited', 'into', 'virtual_only']} format={objectCaps}
+        link={(c, row) => row.inherited ? undefined : edit('schema', 'schema_path')(c, row)} />}
+      {reads(rights, 'schema_grants') && add('schema', 'Grant a schema')}
+      {reads(rights, 'object_grants') && <ViewTable key={`o${written}`} view="object_grants" filters={at} title="Object grants" columns={['role', 'object', 'caps', 'rls', 'columns', 'masks', 'versions']} format={objectGrant} link={edit('object', 'object')} />}
+      {reads(rights, 'object_grants') && add('object', 'Grant an object')}
+      {editing && <GrantDialog level={editing.level} catalog={name} role={editing.role} target={editing.target}
+        onDone={(changed) => { setEditing(undefined); if (changed) setWritten((n) => n + 1) }} />}
     </Frame>
   )
 }

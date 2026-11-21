@@ -265,13 +265,13 @@ func (s *Server) changeProfile(w http.ResponseWriter, r *http.Request, token str
 
 // writeProfile runs one CLUSTER statement on a node that writes (write), once, and answers what the node did.
 func (s *Server) writeProfile(w http.ResponseWriter, ctx context.Context, token, statement string) {
-	result, node, err := s.write(ctx, token, statement)
+	results, node, err := s.write(ctx, token, statement)
 	if err != nil {
 		policyProblem(w, err)
 		return
 	}
 	// the CLUSTER answer: (ok, message) and its own fields after them as columns (duckdb-acl spec 179)
-	said, err := AnswerOf(result)
+	said, err := AnswerOf(results[0])
 	if err != nil {
 		problem(w, http.StatusBadGateway, "bad_answer", err.Error())
 		return
