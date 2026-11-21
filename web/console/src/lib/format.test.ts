@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bytes, fill, home, sentence, share, traceOf } from './format'
+import { bytes, fill, home, saidOf, sentence, share, traceOf } from './format'
 
 const link = { kind: 'telemetry' as const, name: 'Grafana', url: 'https://grafana.example.org/explore?node={node}&s={session}' }
 
@@ -42,5 +42,16 @@ describe('a reason as a sentence', () => {
     expect(sentence('a standalone node keeps no cluster profile')).toBe('A standalone node keeps no cluster profile.')
     expect(sentence('Catalog "x" does not exist!\n')).toBe('Catalog "x" does not exist!')
     expect(sentence('  ')).toBe('')
+  })
+})
+
+describe('what a management statement answered (duckdb-acl spec 179)', () => {
+  it('says nothing for a plain success, the node\'s words otherwise', () => {
+    expect(saidOf({ ok: true, message: '' })).toBeUndefined()
+    expect(saidOf(undefined)).toBeUndefined()
+    expect(saidOf({ ok: true, message: '2 sessions still open' })).toEqual({ ok: true, text: '2 sessions still open' })
+    expect(saidOf({ ok: false, message: 'the node was not draining' }))
+      .toEqual({ ok: false, text: 'Not done: the node was not draining' })
+    expect(saidOf({ ok: false, message: '' })).toEqual({ ok: false, text: 'Not done: the node said no more' })
   })
 })

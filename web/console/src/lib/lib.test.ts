@@ -356,8 +356,8 @@ describe('a change of the profile from a form (spec 010 stage 2)', () => {
     expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'a', type: 'duckdb', dependsOn: ['b\u0085'] })).toMatch(/dependency/)
   })
   it('reads the node\'s answer as how the change reaches the nodes', () => {
-    expect(reachOf({ version: 7, class: 'hot', appliedHere: true, note: '', node: 'n-a' })).toMatch(/version 7: applied live - n-a applied it/)
-    expect(reachOf({ version: 8, class: 'restart', appliedHere: false, note: '', node: 'n-a' })).toMatch(/at a restart/)
-    expect(reachOf({ version: 9, class: 'drain', appliedHere: false, note: '', node: 'n-a' })).toMatch(/drains/)
+    expect(reachOf({ version: 7, class: 'hot', appliedHere: true, ok: true, message: '', node: 'n-a' })).toMatch(/version 7: applied live - n-a applied it/)
+    expect(reachOf({ version: 8, class: 'restart', appliedHere: false, ok: true, message: '', node: 'n-a' })).toMatch(/at a restart/)
+    expect(reachOf({ version: 9, class: 'drain', appliedHere: false, ok: true, message: '', node: 'n-a' })).toMatch(/drains/)
   })
 })

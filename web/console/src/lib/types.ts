@@ -253,12 +253,18 @@ export interface ProfileChange {
   comment?: string
 }
 
-/** what the node did: the profile's version after it, how the change reaches the nodes, the writing node */
-export interface ProfileWritten {
+/** what a management statement answers (duckdb-acl spec 179): ok, and what the node says beside it - a false says what
+ * did not happen (a resume of a node that was not draining), a message a count or a hint */
+export interface Answer {
+  ok: boolean
+  message: string
+}
+
+/** what the node did: the profile's version after it, how the change reaches the nodes, the writing node, its answer */
+export interface ProfileWritten extends Answer {
   version: number
   class: string
   appliedHere: boolean
-  note: string
   node: string
 }
 

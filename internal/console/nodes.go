@@ -50,6 +50,37 @@ func (r *Result) Records() []map[string]any {
 	return out
 }
 
+// Answer is what a management statement answers (duckdb-acl spec 179): one row, ok and message - a false says what did
+// not happen, a message what the node says beside a write (a count, a grant's hint); a STRUCT answer's own fields
+// follow the pair as columns of their own (hugr-node's CLUSTER forms), kept in Fields. A refusal is an error, never an
+// answer.
+type Answer struct {
+	OK      bool           `json:"ok"`
+	Message string         `json:"message"`
+	Fields  map[string]any `json:"-"`
+}
+
+// errNotAnAnswer is a result that is no management answer: not one row with ok and message.
+var errNotAnAnswer = errors.New("the node answered no (ok, message) row")
+
+// AnswerOf reads the answer of a management statement's result. An ok that is NULL or no boolean is not ok - the node
+// never answers one, and the console must not read it as done.
+func AnswerOf(r *Result) (Answer, error) {
+	if r == nil || len(r.Rows) != 1 {
+		return Answer{}, errNotAnAnswer
+	}
+	record := r.Records()[0]
+	ok, hasOK := record["ok"]
+	message, hasMessage := record["message"]
+	if !hasOK || !hasMessage {
+		return Answer{}, errNotAnAnswer
+	}
+	out := Answer{Fields: record}
+	out.OK, _ = ok.(bool)
+	out.Message, _ = message.(string)
+	return out, nil
+}
+
 // NodeError is a node's refusal: its gRPC code and its message, passed to the person as the message only.
 type NodeError struct {
 	Code    codes.Code

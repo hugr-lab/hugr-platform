@@ -60,7 +60,7 @@ export function ProfileDialog({ group, onDone }: { group?: string; onDone: (chan
       {written ? (
         <>
           <p role="status">{reachOf(written)}</p>
-          {written.note && <p className="text-sm text-ink-muted">{written.note}</p>}
+          {written.message && <p className="text-sm text-ink-muted">{written.ok ? written.message : `Not done: ${written.message}`}</p>}
           <div className="flex justify-end">
             <button type="button" className="btn-primary" onClick={() => onDone(true)}>Done</button>
           </div>

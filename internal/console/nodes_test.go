@@ -430,3 +430,43 @@ func TestFlatLoadRefusesNoReport(t *testing.T) {
 		t.Errorf("a live node's report, an older node's without memory: %v %v", load, err)
 	}
 }
+
+// said is a management statement's answer as the node gives it (duckdb-acl spec 179): ok and message, a NULL message
+// when the call has nothing to say.
+func said(ok any, message any) *Result {
+	return &Result{Columns: []string{"ok", "message"}, Rows: [][]any{{ok, message}}}
+}
+
+// TestAnswerOf: the pair read by name, a STRUCT answer's own columns kept, an ok that is NULL or no boolean not ok,
+// anything else no answer.
+func TestAnswerOf(t *testing.T) {
+	for _, c := range []struct {
+		in   *Result
+		want Answer
+	}{
+		{said(true, nil), Answer{OK: true}},
+		{said(true, "2 sessions still open"), Answer{OK: true, Message: "2 sessions still open"}},
+		{said(false, "the node was not draining"), Answer{Message: "the node was not draining"}},
+		{said(nil, nil), Answer{}},
+		{said("true", "x"), Answer{Message: "x"}},
+	} {
+		got, err := AnswerOf(c.in)
+		if err != nil || got.OK != c.want.OK || got.Message != c.want.Message {
+			t.Errorf("%v: %+v %v", c.in.Rows, got, err)
+		}
+	}
+	cluster := &Result{Columns: []string{"ok", "message", "version", "class"}, Rows: [][]any{{true, nil, int64(3), "hot"}}}
+	if got, err := AnswerOf(cluster); err != nil || !got.OK || got.Fields["version"] != int64(3) || got.Fields["class"] != "hot" {
+		t.Errorf("a STRUCT answer's fields: %+v %v", got, err)
+	}
+	// the answers of before spec 179 - one column, the call's value - and no row are no answer: never read as done
+	for _, r := range []*Result{
+		{Columns: []string{"kill_session"}, Rows: [][]any{{true}}},
+		{Columns: []string{"ok", "message"}},
+		nil,
+	} {
+		if _, err := AnswerOf(r); err == nil {
+			t.Errorf("%v read as an answer", r)
+		}
+	}
+}

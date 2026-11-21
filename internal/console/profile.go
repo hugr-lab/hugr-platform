@@ -42,12 +42,13 @@ type ProfileChange struct {
 }
 
 // ProfileWritten is the node's answer: the profile's version after the write, how the change reaches the nodes (hot,
-// drain, restart), whether the answering node applied it, and its note.
+// drain, restart), whether the answering node applied it, and what it said (duckdb-acl spec 179: ok and message).
 type ProfileWritten struct {
 	Version     int64  `json:"version"`
 	Class       string `json:"class"`
 	AppliedHere bool   `json:"appliedHere"`
-	Note        string `json:"note"`
+	OK          bool   `json:"ok"`
+	Message     string `json:"message"`
 	// Node is the node that wrote it
 	Node string `json:"node"`
 }
@@ -202,22 +203,21 @@ func (s *Server) changeProfile(w http.ResponseWriter, r *http.Request, token str
 		nodeProblem(w, err)
 		return
 	}
-	out := ProfileWritten{Node: node.Label}
-	for _, record := range result.Records() {
-		for _, v := range record {
-			if m, ok := v.(map[string]any); ok {
-				out.Class, _ = m["class"].(string)
-				out.Note, _ = m["note"].(string)
-				out.AppliedHere, _ = m["applied_here"].(bool)
-				// a STRUCT's fields keep their types (Arrow's GetOneForMarshal): the BIGINT is an int64
-				switch v := m["version"].(type) {
-				case int64:
-					out.Version = v
-				case float64:
-					out.Version = int64(v)
-				}
-			}
-		}
+	// the CLUSTER answer: (ok, message) and its own fields after them as columns (duckdb-acl spec 179)
+	said, err := AnswerOf(result)
+	if err != nil {
+		problem(w, http.StatusBadGateway, "bad_answer", err.Error())
+		return
+	}
+	out := ProfileWritten{Node: node.Label, OK: said.OK, Message: said.Message}
+	out.Class, _ = said.Fields["class"].(string)
+	out.AppliedHere, _ = said.Fields["applied_here"].(bool)
+	// a column keeps its type (Arrow's GetOneForMarshal): the BIGINT is an int64
+	switch v := said.Fields["version"].(type) {
+	case int64:
+		out.Version = v
+	case float64:
+		out.Version = int64(v)
 	}
 	answer(w, out)
 }

@@ -1,10 +1,10 @@
 import { useState, type ReactNode } from 'react'
 import { CirclePause, Play } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
-import { Crumbs, Dialog, Out, Problem, Refresh, Status, messageOf } from '../../components/ui'
+import { Crumbs, Dialog, Glyph, Out, Problem, Refresh, Status, messageOf } from '../../components/ui'
 import { useApp, useLoad, type Loaded } from '../../lib/context'
-import { fill, linksOf } from '../../lib/format'
-import type { NodePage } from '../../lib/types'
+import { fill, linksOf, saidOf } from '../../lib/format'
+import type { Answer, NodePage } from '../../lib/types'
 import { nodeState } from '../Group'
 
 /** the node's page frame (spec 003 round 2): who it is, drain or resume, and the tabs its rights open */
@@ -14,15 +14,18 @@ export function NodeFrame({ label, children, alsoReload }: { label: string; chil
   const page = useLoad(() => api.node(label), [api, label])
   const [asking, setAsking] = useState(false)
   const [error, setError] = useState<string>()
+  const [said, setSaid] = useState<{ ok: boolean; text: string }>()
   const k = page.data?.kubernetes
   const load = page.data?.load
   const draining = load?.draining === true
   // a pod going away drains itself as it stops: a drain or a resume of it would be undone within the second
   const stopping = k?.pod?.state === 'stopping'
-  const act = async (run: () => Promise<unknown>) => {
+  const act = async (run: () => Promise<Answer>) => {
     setError(undefined)
+    setSaid(undefined)
     try {
-      await run()
+      // the node's answer as it is (duckdb-acl spec 179): drain's sessions still open, a resume that found nothing to do
+      setSaid(saidOf(await run()))
       page.reload()
     } catch (e) {
       setError(messageOf(e)) // the node judged again: its message
@@ -78,6 +81,11 @@ export function NodeFrame({ label, children, alsoReload }: { label: string; chil
         {rights.events && <NavLink to={`${base}/events`} className={tab}>Audit events</NavLink>}
       </nav>
       {error && <Problem error={new Error(error)} />}
+      {said && (
+        <p role="status" className="flex items-center gap-2 rounded-md border border-line px-6 py-4 text-sm">
+          <Glyph mark={said.ok ? 'ok' : 'half'} /> {said.text}
+        </p>
+      )}
       {draining && (
         <div role="status" className="rounded-md bg-navy px-6 py-4 text-white">
           <div className="font-semibold">This node drains</div>
