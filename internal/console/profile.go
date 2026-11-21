@@ -1,13 +1,13 @@
 package console
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
-	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
 )
 
@@ -260,19 +260,14 @@ func (s *Server) changeProfile(w http.ResponseWriter, r *http.Request, token str
 		problem(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	_, node, err := s.onNode(r.Context(), token, "SELECT 1")
-	if err != nil {
-		policyProblem(w, err)
-		return
-	}
-	s.writeProfile(w, r, node, token, statement)
+	s.writeProfile(w, r.Context(), token, statement)
 }
 
-// writeProfile runs one CLUSTER statement on the node, once, and answers what the node did.
-func (s *Server) writeProfile(w http.ResponseWriter, r *http.Request, node *fleet.Node, token, statement string) {
-	result, err := s.Nodes.Query(r.Context(), *node, token, statement)
+// writeProfile runs one CLUSTER statement on a node that writes (write), once, and answers what the node did.
+func (s *Server) writeProfile(w http.ResponseWriter, ctx context.Context, token, statement string) {
+	result, node, err := s.write(ctx, token, statement)
 	if err != nil {
-		nodeProblem(w, err)
+		policyProblem(w, err)
 		return
 	}
 	// the CLUSTER answer: (ok, message) and its own fields after them as columns (duckdb-acl spec 179)

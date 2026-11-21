@@ -162,10 +162,19 @@ bundle's) on a cluster node:
   the profile's ATTACH items the group's nodes may attach (the cluster's and the group's own), what a set may list.
 - **The check**: `platform.group_sources('<g>')`, the group a plain name the platform's group carries, written as a
   literal. Per source: the roles of the group that reach it, whether the set lists it, and for one left out the repair
-  the node writes. A slow read (45 s): it reads what exposes each source.
-- **A repair runs by hand** (`POST groups/{g}/sources/repair` with the source's alias, the infrastructure right). The
-  console reads the check again on the node that writes it and runs that row's repair, so the statement is the node's
-  as it stands, never a text from the browser. The dialog shows it before it runs, and the answer after.
+  the node writes. Another group's own source (one the profile does not attach for this group) is told apart: its
+  repair is an `ATTACH … IN GROUP`. A slow read (45 s): it reads what exposes each source. The set is read first and
+  on its own, so a check that fails (a resource group the policy lacks, a source whose exposures fail) still leaves
+  the set to see and to change, with the check's error beside it. A request stays within 55 s, under the console
+  server's write timeout.
+- **A repair runs by hand** (`POST groups/{g}/sources/repair` with the source's alias and the repair as shown, the
+  infrastructure right). The console reads the check again and runs that row's repair only while it is the text the
+  person saw (else 409: read the check again), so the statement is the node's as it stands, never a text from the
+  browser, and never one the person did not see. The dialog shows it before it runs, and the answer after.
+- **Writes go to a node that writes** (every write of the console, the group-policy ones of spec 006 too). A node of a
+  group whose set is a list refuses every write before it runs it (duckdb-acl spec 176), so the console tries a node
+  of another group that seats the person; when there is none, the node's refusal is the answer. The set dialog says
+  so when a list is chosen: if no other group serves the person, only `ACL NATIVE` changes the set back.
 - **The set changes by a form**: every source (`CLUSTER RESET SOURCES IN GROUP g`), these sources (`SET SOURCES (…)`),
   or every source lazy (`SET SOURCES ALL LAZY`), with `LAZY [IDLE '<interval>']`. A source's own ATTACH takes the same
   marks in the profile's dialog. The console refuses what the grammar does (all without lazy, an idle time without
@@ -174,8 +183,13 @@ bundle's) on a cluster node:
 - **Nothing changes the set by itself** (the owner, 2026-11-20): a grant's answer names what it leaves out, and the
   section says what the roles read outside the set.
 - Tests: `TestProfileStatement` (the new forms and refusals), `TestGroupSources`, `TestRepairGroupSource` (the
-  browser names a source, never a statement; a listed source has nothing to repair), the web console's
+  browser names a source, never a statement; a repair that changed is refused; a listed source has nothing to
+  repair), `TestGroupSourcesCheckFails`, `TestWriteAvoidsPartialNodes` (fails without the routing), the web console's
   `sources.test.tsx`.
+- **Found by its review, fixed**: a list set locked the console's writes out on that group's nodes; a repair could run
+  a text the person never saw; the check's 45 s plus the write's 15 s passed the server's 60 s; a failing check hid
+  the set and its editor; the set offered another group's own sources and a source twice in another case; another
+  group's source read as left out; the Repair buttons had one accessible name.
 
 ## Security
 

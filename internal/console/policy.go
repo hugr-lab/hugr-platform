@@ -61,6 +61,12 @@ func resourceGroupOf(group *v1alpha1.HugrNodeGroup) string {
 // statement retried on the next node may have run on the last (a timeout); a write goes to the node a read answered
 // (writeOn), once.
 func (s *Server) onNode(ctx context.Context, token string, statements ...string) ([]*Result, *fleet.Node, error) {
+	return s.onNodeAvoiding(ctx, token, nil, statements...)
+}
+
+// onNodeAvoiding is onNode on a node of no group in avoid.
+func (s *Server) onNodeAvoiding(ctx context.Context, token string, avoid map[string]bool,
+	statements ...string) ([]*Result, *fleet.Node, error) {
 	view, err := s.platformView(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -75,7 +81,7 @@ func (s *Server) onNode(ctx context.Context, token string, statements ...string)
 	for attempt := 0; attempt < rightsTries && pick == nil; attempt++ {
 		var n *fleet.Node
 		for _, c := range cands {
-			if !tried[c.Label] && (len(groups) == 0 || slices.Contains(groups, c.Group())) {
+			if !tried[c.Label] && !avoid[c.Group()] && (len(groups) == 0 || slices.Contains(groups, c.Group())) {
 				n = c
 				break
 			}
@@ -114,14 +120,43 @@ func (s *Server) onNode(ctx context.Context, token string, statements ...string)
 	return out, pick, nil
 }
 
-// writeOn runs the writes on the node, in order, each once: a failure stops there and is the person's to read.
-func (s *Server) writeOn(ctx context.Context, node *fleet.Node, token string, statements ...string) error {
-	for _, statement := range statements {
-		if _, err := s.Nodes.Query(ctx, *node, token, statement); err != nil {
-			return err
+// write runs the writes on a node that seats the person and writes, in order, each once: a failure stops there and
+// is the person's to read. A node whose group's source set is a list refuses every write before it runs it
+// (duckdb-acl spec 176) - then the writes go to a node of another group, and when every group that seats the person
+// has a list, the node's refusal says where to run them. The first statement's result is answered.
+func (s *Server) write(ctx context.Context, token string, statements ...string) (*Result, *fleet.Node, error) {
+	avoid := map[string]bool{}
+	var refused error
+	for {
+		_, node, err := s.onNodeAvoiding(ctx, token, avoid, "SELECT 1")
+		if err != nil {
+			if refused != nil {
+				return nil, nil, refused
+			}
+			return nil, nil, err
 		}
+		first, err := s.Nodes.Query(ctx, *node, token, statements[0])
+		if partialNode(err) && node.Group() != "" && !avoid[node.Group()] {
+			avoid[node.Group()], refused = true, err
+			continue
+		}
+		if err != nil {
+			return nil, node, err
+		}
+		for _, statement := range statements[1:] {
+			if _, err := s.Nodes.Query(ctx, *node, token, statement); err != nil {
+				return first, node, err
+			}
+		}
+		return first, node, nil
 	}
-	return nil
+}
+
+// partialNode: the node refused a write as a node of a group whose source set is a list (duckdb-acl spec 176) - a
+// refusal before anything ran, so the write may go to another node.
+func partialNode(err error) bool {
+	var refused *NodeError
+	return errors.As(err, &refused) && strings.Contains(refused.Message, "this node attaches the sources of group")
 }
 
 // policyState reads the group's place in the policy - the roles, the resource groups, their bindings - and names the
@@ -193,7 +228,7 @@ func (s *Server) addGroupToPolicy(w http.ResponseWriter, r *http.Request, token 
 		problem(w, http.StatusUnprocessableEntity, "refused", "the group's resource group has no name the policy takes")
 		return
 	}
-	state, node, err := s.policyState(r.Context(), token, name)
+	state, _, err := s.policyState(r.Context(), token, name)
 	if err != nil {
 		policyProblem(w, err)
 		return
@@ -227,7 +262,7 @@ func (s *Server) addGroupToPolicy(w http.ResponseWriter, r *http.Request, token 
 		answer(w, state)
 		return
 	}
-	if err := s.writeOn(r.Context(), node, token, statements...); err != nil {
+	if _, _, err := s.write(r.Context(), token, statements...); err != nil {
 		s.Log.Info("group not added to the policy", "group", group.Name, "by", p.subject, "error", err.Error())
 		policyProblem(w, err)
 		return
@@ -297,7 +332,7 @@ func (s *Server) removeGroupFromPolicy(w http.ResponseWriter, r *http.Request, t
 			" too: their nodes would drain")
 		return
 	}
-	state, node, err := s.policyState(r.Context(), token, name)
+	state, _, err := s.policyState(r.Context(), token, name)
 	if err != nil {
 		policyProblem(w, err)
 		return
@@ -311,7 +346,7 @@ func (s *Server) removeGroupFromPolicy(w http.ResponseWriter, r *http.Request, t
 			"policy first")
 		return
 	}
-	if err := s.writeOn(r.Context(), node, token, "DROP RESOURCE GROUP IF EXISTS "+target); err != nil {
+	if _, _, err := s.write(r.Context(), token, "DROP RESOURCE GROUP IF EXISTS "+target); err != nil {
 		policyProblem(w, err)
 		return
 	}

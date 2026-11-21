@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 )
 
@@ -74,8 +76,13 @@ func TestGroupSources(t *testing.T) {
 	rows := out["rows"].([]any)
 	crm := rows[1].(map[string]any)
 	if len(rows) != 3 || crm["source"] != "crm" || crm["listed"] != false || crm["repair"] != etlRepair ||
-		!reflect.DeepEqual(crm["roles"], []any{"analyst", "ops"}) || rows[0].(map[string]any)["repair"] != nil {
+		!reflect.DeepEqual(crm["roles"], []any{"analyst", "ops"}) || rows[0].(map[string]any)["repair"] != nil ||
+		crm["elsewhere"] != nil {
 		t.Errorf("the rows: %v", rows)
+	}
+	// another group's own source: not the profile's for etl
+	if other := rows[2].(map[string]any); other["elsewhere"] != true {
+		t.Errorf("another group's source: %v", other)
 	}
 	if len(asked) != 0 {
 		t.Errorf("a read wrote: %q", asked)
@@ -97,7 +104,8 @@ func TestRepairGroupSource(t *testing.T) {
 	h := newHarness(t, sourcesInfo, node("hugr-node-etl-a", "etl"))
 	var asked []string
 	sourcesNode(h, &asked)
-	code, out, body := h.do(t, "POST", APIPrefix+"groups/etl/sources/repair", opsToken, `{"source": "crm"}`)
+	shown := `{"source": "crm", "repair": "` + etlRepair + `"}`
+	code, out, body := h.do(t, "POST", APIPrefix+"groups/etl/sources/repair", opsToken, shown)
 	if code != 200 || out["version"] != float64(8) || out["ok"] != true || out["node"] != "hugr-node-etl-a" {
 		t.Fatalf("repair: %d %s", code, body)
 	}
@@ -105,11 +113,13 @@ func TestRepairGroupSource(t *testing.T) {
 		t.Errorf("the statement the node ran: %q", asked)
 	}
 	for body, want := range map[string]int{
-		`{"source": "sales"}`:                  http.StatusConflict,
-		`{"source": "nowhere"}`:                http.StatusNotFound,
-		`{"source": ""}`:                       http.StatusBadRequest,
-		`{"source": "crm", "statement": "x"}`:  http.StatusBadRequest,
-		`{"repair": "CLUSTER DETACH \"crm\""}`: http.StatusBadRequest,
+		`{"source": "sales", "repair": "x"}`:   http.StatusConflict,
+		`{"source": "nowhere", "repair": "x"}`: http.StatusNotFound,
+		// the repair the person saw is not the node's now: refused, never the node's new text run unseen
+		`{"source": "crm", "repair": "CLUSTER SET SOURCES (sales) IN GROUP etl"}`: http.StatusConflict,
+		`{"source": "crm"}`:                                  http.StatusBadRequest,
+		`{"source": "", "repair": "x"}`:                      http.StatusBadRequest,
+		`{"source": "crm", "repair": "x", "statement": "x"}`: http.StatusBadRequest,
 	} {
 		if code, _, _ := h.do(t, "POST", APIPrefix+"groups/etl/sources/repair", opsToken, body); code != want {
 			t.Errorf("%s: %d, want %d", body, code, want)
@@ -120,7 +130,74 @@ func TestRepairGroupSource(t *testing.T) {
 	}
 	// the cluster bundle's: an operator without it is refused before any node is asked
 	o := newHarness(t, operateInfo, node("hugr-node-etl-a", "etl"))
-	if code, _, _ := o.do(t, "POST", APIPrefix+"groups/etl/sources/repair", opsToken, `{"source": "crm"}`); code != http.StatusForbidden {
+	if code, _, _ := o.do(t, "POST", APIPrefix+"groups/etl/sources/repair", opsToken, shown); code != http.StatusForbidden {
 		t.Errorf("without the cluster bundle: %d", code)
+	}
+}
+
+// TestGroupSourcesCheckFails: a check the node refuses (a resource group not in the policy, a source whose exposures
+// fail) leaves the set answered - it is still to see and to change.
+func TestGroupSourcesCheckFails(t *testing.T) {
+	h := newHarness(t, sourcesInfo, node("hugr-node-etl-a", "etl"))
+	var asked []string
+	sourcesNode(h, &asked)
+	answer := h.nodes.answer
+	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
+		if statement == etlCheck {
+			return nil, &NodeError{Code: codes.InvalidArgument, Message: `acl: no resource group "etl"`}
+		}
+		return answer(n, statement)
+	}
+	code, out, body := h.do(t, "GET", APIPrefix+"groups/etl/sources", opsToken, "")
+	if code != 200 || out["checkError"] != `acl: no resource group "etl"` || out["set"] == nil ||
+		len(out["rows"].([]any)) != 0 {
+		t.Fatalf("a failed check: %d %s", code, body)
+	}
+}
+
+// TestWriteAvoidsPartialNodes: a node whose group's source set is a list refuses every write before it runs
+// (duckdb-acl spec 176), so the write goes to a node of another group; when every node that seats the person is such
+// a node, its refusal is the answer.
+func TestWriteAvoidsPartialNodes(t *testing.T) {
+	partial := func(group string) error {
+		return &NodeError{Code: codes.InvalidArgument, Message: `acl: this node attaches the sources of group "` + group +
+			`" only - run it on a node of a group that attaches every source`}
+	}
+	h := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"), node("hugr-node-general-a", "general"))
+	var wrote []string
+	answer := h.nodes.answer
+	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
+		if strings.HasPrefix(statement, "CLUSTER ") {
+			if n.Group() == "etl" {
+				return nil, partial("etl")
+			}
+			wrote = append(wrote, n.Label)
+			return &Result{Columns: []string{"ok", "message", "version", "class", "applied_here"},
+				Rows: [][]any{{true, nil, int64(5), "hot", true}}}, nil
+		}
+		return answer(n, statement)
+	}
+	change := `{"action": "reset-sources", "group": "etl"}`
+	for i := 0; i < 8; i++ { // whichever node a try picks first, the write lands on general's
+		code, out, body := h.do(t, "POST", APIPrefix+"cluster/profile", opsToken, change)
+		if code != 200 || out["node"] != "hugr-node-general-a" {
+			t.Fatalf("try %d: %d %s", i, code, body)
+		}
+	}
+	if len(wrote) != 8 {
+		t.Errorf("writes: %v", wrote)
+	}
+	// only partial nodes: the node's refusal, which says where to run it
+	p := newHarness(t, clusterInfo, node("hugr-node-etl-a", "etl"))
+	answer = p.nodes.answer
+	p.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
+		if strings.HasPrefix(statement, "CLUSTER ") {
+			return nil, partial("etl")
+		}
+		return answer(n, statement)
+	}
+	code, out, _ := p.do(t, "POST", APIPrefix+"cluster/profile", opsToken, change)
+	if code != http.StatusForbidden || !strings.Contains(out["message"].(string), "attaches the sources of group") {
+		t.Errorf("only partial nodes: %d %v", code, out)
 	}
 }

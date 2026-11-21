@@ -1,10 +1,12 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/hugr-lab/hugr-platform/pkg/nodeproto"
 )
@@ -19,6 +21,9 @@ type GroupSourcesAnswer struct {
 	ResourceGroup string        `json:"resourceGroup"`
 	Set           *SourceSet    `json:"set"`
 	Rows          []GroupSource `json:"rows"`
+	// CheckError: the check could not be read (a resource group the policy lacks, a source whose exposures fail, a
+	// node too slow) - the set is still answered, and may still be changed
+	CheckError string `json:"checkError,omitempty"`
 	// Profile: the sources the profile has for the group's nodes - the cluster's and the group's own ATTACH items,
 	// what a set may list
 	Profile []string `json:"profile"`
@@ -34,18 +39,30 @@ type SourceSet struct {
 }
 
 // GroupSource is one row of the check: a source the group's roles reach or its set lists. Listed is nil when the
-// group lists none (every source is attached), false when the set leaves it out - Repair is then what to run.
+// group's set lists none (no set, or all lazy), false when the group's nodes do not attach it - Repair is then what to
+// run. Elsewhere: another group's own source, which the profile does not attach for this group at all (its repair an
+// ATTACH … IN GROUP).
 type GroupSource struct {
-	Source string   `json:"source"`
-	Roles  []string `json:"roles"`
-	Listed *bool    `json:"listed"`
-	Repair string   `json:"repair,omitempty"`
+	Source    string   `json:"source"`
+	Roles     []string `json:"roles"`
+	Listed    *bool    `json:"listed"`
+	Elsewhere bool     `json:"elsewhere,omitempty"`
+	Repair    string   `json:"repair,omitempty"`
 }
 
-// SourceRepair is `POST groups/{group}/sources/repair`: the source whose row's repair to run.
+// SourceRepair is `POST groups/{group}/sources/repair`: the source whose row's repair to run, and the repair as the
+// person saw it - run only while the node still writes the same.
 type SourceRepair struct {
 	Source string `json:"source"`
+	Repair string `json:"repair"`
 }
+
+// sourcesBudget bounds a request of the section under the console server's write timeout (60 s): the check is slow
+// (it reads what exposes each source), and a repair still has its write to run after it.
+const (
+	sourcesBudget = 55 * time.Second
+	repairCheck   = 35 * time.Second
+)
 
 // stmtGroupSources is the check of one group: its name a literal of a name the platform's group carries (a plain
 // name, nodeproto.ValidPlainName).
@@ -72,20 +89,28 @@ func (s *Server) groupSources(w http.ResponseWriter, r *http.Request, token stri
 		problem(w, http.StatusUnprocessableEntity, "refused", "the group's resource group has no name the policy takes")
 		return
 	}
-	// the check reads what exposes each source: a slow read, never retried elsewhere once it timed out
-	results, _, err := s.onNode(withCallTimeout(r.Context(), slowCall), token, check, stmtItems)
+	ctx, cancel := context.WithTimeout(r.Context(), sourcesBudget)
+	defer cancel()
+	// the set first, on its own: a check that fails leaves the set to see and to change
+	results, node, err := s.onNode(ctx, token, stmtItems)
 	if err != nil {
 		policyProblem(w, err)
 		return
 	}
-	out := GroupSourcesAnswer{ResourceGroup: name, Rows: groupSourceRows(results[0])}
-	out.Set = sourceSetOf(results[1], name)
-	out.Profile = profileSources(results[1], name)
+	out := GroupSourcesAnswer{ResourceGroup: name, Rows: []GroupSource{}, Set: sourceSetOf(results[0], name),
+		Profile: profileSources(results[0], name)}
+	// the check reads what exposes each source: a slow read, on the same node, never retried elsewhere
+	if result, err := s.Nodes.Query(withCallTimeout(ctx, slowCall), *node, token, check); err != nil {
+		out.CheckError = personMessage(err)
+	} else {
+		out.Rows = groupSourceRows(result, out.Profile)
+	}
 	answer(w, out)
 }
 
-// groupSourceRows are the check's rows as the page reads them.
-func groupSourceRows(result *Result) []GroupSource {
+// groupSourceRows are the check's rows as the page reads them; a source the profile does not attach for the group is
+// another group's own.
+func groupSourceRows(result *Result, profile []string) []GroupSource {
 	out := []GroupSource{}
 	for _, row := range result.Records() {
 		source, _ := row["source"].(string)
@@ -101,6 +126,9 @@ func groupSourceRows(result *Result) []GroupSource {
 			g.Listed = &listed
 		}
 		g.Repair, _ = row["repair"].(string)
+		if _, ours := listed(profile, source, true); g.Listed != nil && !*g.Listed && !ours {
+			g.Elsewhere = true
+		}
 		out = append(out, g)
 	}
 	return out
@@ -159,12 +187,12 @@ func specMap(v any) map[string]string {
 	return out
 }
 
-// repairGroupSource runs the repair of one row of the group's check: read again on the node that will write it, so
-// the statement is the node's, as it stands now - never a text from the browser.
+// repairGroupSource runs the repair of one row of the group's check: the check read again, so the statement is the
+// node's as it stands now - never a text from the browser - and run only while it is the one the person saw.
 func (s *Server) repairGroupSource(w http.ResponseWriter, r *http.Request, token string, _ *person) {
 	var in SourceRepair
-	if err := decodeStrict(r, &in); err != nil || in.Source == "" {
-		problem(w, http.StatusBadRequest, "bad_request", "send {\"source\": alias}")
+	if err := decodeStrict(r, &in); err != nil || in.Source == "" || in.Repair == "" {
+		problem(w, http.StatusBadRequest, "bad_request", "send {\"source\": alias, \"repair\": the repair shown}")
 		return
 	}
 	_, group, ok := s.platformGroup(w, r)
@@ -176,20 +204,27 @@ func (s *Server) repairGroupSource(w http.ResponseWriter, r *http.Request, token
 		problem(w, http.StatusUnprocessableEntity, "refused", "the group's resource group has no name the policy takes")
 		return
 	}
-	results, node, err := s.onNode(withCallTimeout(r.Context(), slowCall), token, check)
+	ctx, cancel := context.WithTimeout(r.Context(), sourcesBudget)
+	defer cancel()
+	// the check within its own part of the budget: the write keeps the rest
+	results, _, err := s.onNode(withCallTimeout(ctx, repairCheck), token, check)
 	if err != nil {
 		policyProblem(w, err)
 		return
 	}
-	for _, row := range groupSourceRows(results[0]) {
+	for _, row := range groupSourceRows(results[0], nil) {
 		if row.Source != in.Source {
 			continue
 		}
-		if row.Repair == "" {
-			problem(w, http.StatusConflict, "nothing_to_repair", "the group's set does not leave "+in.Source+" out")
-			return
+		switch {
+		case row.Repair == "":
+			problem(w, http.StatusConflict, "nothing_to_repair", "the check has no repair for "+in.Source+" now")
+		case row.Repair != in.Repair:
+			problem(w, http.StatusConflict, "repair_changed", "the node's repair for "+in.Source+" changed since "+
+				"it was read: read the check again")
+		default:
+			s.writeProfile(w, ctx, token, row.Repair)
 		}
-		s.writeProfile(w, r, node, token, row.Repair)
 		return
 	}
 	problem(w, http.StatusNotFound, "not_found", "the group's check has no row for "+in.Source)

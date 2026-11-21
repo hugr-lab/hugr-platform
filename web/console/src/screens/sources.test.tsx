@@ -6,7 +6,7 @@ import type { Session } from '../lib/auth'
 import { AppContext } from '../lib/context'
 import { changeOf, changeProblem, lazyText } from '../lib/profile'
 import type { Config, Group, GroupSources, Rights } from '../lib/types'
-import { SourcesSection, setText } from './GroupSources'
+import { SourcesSection, onceEach, setText } from './GroupSources'
 
 // jsdom has no showModal: a <dialog> stays closed there, and its content is found with hidden: true
 
@@ -28,18 +28,20 @@ const page: GroupSources = {
   rows: [
     { source: 'sales', roles: ['analyst'], listed: true },
     { source: 'crm', roles: ['analyst', 'ops'], listed: false, repair: 'CLUSTER SET SOURCES (sales, crm) IN GROUP etl' },
+    { source: 'only_other', roles: ['ops'], listed: false, elsewhere: true,
+      repair: `CLUSTER ATTACH ':memory:' AS "only_other" (TYPE duckdb) IN GROUP etl` },
   ],
   profile: ['sales', 'crm', 'archive'],
 }
 
-function show(r: Rights = rights) {
+function show(r: Rights = rights, answer: GroupSources = page) {
   const sent: { url: string; body: unknown }[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === 'POST') {
       sent.push({ url, body: JSON.parse(String(init.body)) })
       return new Response(JSON.stringify({ version: 9, class: 'drain', appliedHere: false, ok: true, message: '', node: 'n1' }), { status: 200 })
     }
-    return new Response(JSON.stringify(page), { status: 200 })
+    return new Response(JSON.stringify(answer), { status: 200 })
   }))
   const api = new Api({ getToken: async () => 't' }, 'hugr-nodes')
   render(
@@ -75,24 +77,39 @@ describe("a group's sources (spec 007 stage 2b)", () => {
     expect(changeProblem(changeOf('attach', { path: ':memory:', alias: 'a', type: 'duckdb', idle: '30 min' }))).toMatch(/mark it lazy/)
   })
 
-  it('shows what the set leaves out, and a repair sends the source, never the statement', async () => {
+  it('shows what the set leaves out, and a repair sends the source with the repair shown', async () => {
     const sent = show()
     await waitFor(() => expect(screen.getByText('left out')).toBeTruthy())
     expect(screen.getByText('listed')).toBeTruthy()
     expect(screen.getByText(/crm is read by the group's roles and left out/)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Repair' }))
+    // another group's own source reads as such, not as left out of the set
+    expect(screen.getByText("another group's source")).toBeTruthy()
+    expect(screen.getByText(/only_other is read by the group's roles and attached only for another group/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Repair crm' }))
     expect(screen.getByText('CLUSTER SET SOURCES (sales, crm) IN GROUP etl')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Run', hidden: true }))
     await waitFor(() => expect(sent).toHaveLength(1))
     expect(sent[0].url).toMatch(/groups\/etl-k8s\/sources\/repair$/)
-    expect(sent[0].body).toEqual({ source: 'crm' })
+    expect(sent[0].body).toEqual({ source: 'crm', repair: 'CLUSTER SET SOURCES (sales, crm) IN GROUP etl' })
+  })
+
+  it('keeps the set and its editor when the check fails', async () => {
+    show(rights, { ...page, rows: [], checkError: 'acl: no resource group "etl"' })
+    await waitFor(() => expect(screen.getByText(/The check could not be read: acl: no resource group/)).toBeTruthy())
+    expect(screen.getByText(/sales: attached on its first read/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Change the set' })).toBeTruthy()
+  })
+
+  it('offers a source once, in the node\'s fold', () => {
+    expect(onceEach(['sales', 'Sales', 'crm', 'SALES', 'Crm'])).toEqual(['sales', 'crm'])
   })
 
   it('changes the set from the profile and the check', async () => {
     const sent = show()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Change the set' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Change the set' }))
-    // a source of the profile nobody reads yet is offered too
+    // a source of the profile nobody reads yet is offered too; another group's own is not
+    expect(screen.queryByLabelText('only_other')).toBeNull()
     fireEvent.click(screen.getByLabelText('archive'))
     fireEvent.click(screen.getByRole('button', { name: 'Write', hidden: true }))
     await waitFor(() => expect(sent).toHaveLength(1))

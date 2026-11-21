@@ -267,6 +267,8 @@ export interface GroupSources {
   rows: GroupSource[]
   /** the profile's sources for the group's nodes: the cluster's and the group's own - what a set may list */
   profile: string[]
+  /** the check could not be read: the set is still shown, and may still be changed */
+  checkError?: string
 }
 
 export interface SourceSet {
@@ -280,8 +282,10 @@ export interface SourceSet {
 export interface GroupSource {
   source: string
   roles: string[]
-  /** null: the group lists no set; false: the set leaves it out, and `repair` is the statement to run */
+  /** null: the group's set lists none (no set, or all lazy); false: its nodes do not attach it, `repair` what to run */
   listed: boolean | null
+  /** another group's own source: the profile does not attach it for this group (its repair an ATTACH … IN GROUP) */
+  elsewhere?: boolean
   repair?: string
 }
 
