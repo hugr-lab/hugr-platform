@@ -35,10 +35,11 @@ export function changeOf(action: Action, f: Partial<ProfileChange>, group?: stri
   if (action === 'install') keep(['extension', 'version', 'repository', 'comment'])
   if (action === 'update') keep(['extension', 'version'])
   if (action === 'remove') keep(['extension'])
-  if (action === 'attach') keep(['path', 'alias', 'type', 'secret', 'readOnly', 'lineage', 'dependsOn', 'comment'])
+  if (action === 'attach') keep(['path', 'alias', 'type', 'secret', 'readOnly', 'lazy', 'idle', 'lineage', 'dependsOn', 'comment'])
   if (action === 'detach') keep(['alias', 'cascade', 'force'])
   if (action === 'set') keep(['setting', 'value'])
   if (action === 'reset') keep(['setting'])
+  if (action === 'sources') keep(f.all ? ['all', 'lazy', 'idle'] : ['sources', 'lazy', 'idle'])
   if (group) out.group = group
   return out
 }
@@ -60,7 +61,7 @@ export function changeProblem(c: ProfileChange): string | undefined {
       if (!bare.test(c.type ?? '')) return 'Give its type (duckdb, postgres, mssql, ...).'
       if (c.secret && !bare.test(c.secret)) return 'A secret is a plain name.'
       if ((c.dependsOn ?? []).some((d) => !sourceName(d))) return 'A dependency names a source (its alias).'
-      return undefined
+      return lazyProblem(c)
     case 'detach':
       return sourceName(c.alias) ? undefined : 'Name the source (its alias): no comma, no space at its ends.'
     case 'set':
@@ -68,7 +69,35 @@ export function changeProblem(c: ProfileChange): string | undefined {
       return line(c.value) ? undefined : 'Give its value.'
     case 'reset':
       return bare.test(c.setting ?? '') ? undefined : 'Name the setting.'
+    case 'sources':
+      if (!c.group) return 'A source set is a group\'s.'
+      if (c.all) return c.lazy ? lazyProblem(c) : 'Every source attached at once is no set: reset the group\'s set instead.'
+      if ((c.sources ?? []).length === 0) return 'Pick the sources the group\'s nodes attach.'
+      if ((c.sources ?? []).some((d) => !sourceName(d))) return 'A source is named by its alias.'
+      return lazyProblem(c)
+    case 'reset-sources':
+      return c.group ? undefined : 'A source set is a group\'s.'
   }
+}
+
+/** an idle time is a lazy source's, one line ('30 min'); the node reads the interval and refuses one under a minute */
+function lazyProblem(c: ProfileChange): string | undefined {
+  if (c.idle && !c.lazy) return 'An idle time is a lazy source\'s: mark it lazy.'
+  if (c.idle && !line(c.idle)) return 'Give the idle time as an interval, such as 30 min.'
+  return undefined
+}
+
+/** how a set's laziness reads: attached on the first read, detached after an idle time (or never) */
+export function lazyText(lazy: boolean, idleSeconds: number): string {
+  if (!lazy) return 'attached at once'
+  if (idleSeconds <= 0) return 'attached on its first read, kept until the node stops (or its own idle time)'
+  return `attached on its first read, detached after ${duration(idleSeconds)} unused`
+}
+
+function duration(s: number): string {
+  if (s % 3600 === 0) return s === 3600 ? '1 hour' : `${s / 3600} hours`
+  if (s % 60 === 0) return s === 60 ? '1 minute' : `${s / 60} minutes`
+  return `${s} s`
 }
 
 /** how the change reaches the nodes, as the node classed it */

@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,7 +18,8 @@ import (
 // ProfileChange is `POST cluster/profile`: one statement's fields. Group, when set, scopes it to the nodes of one
 // resource group (IN GROUP).
 type ProfileChange struct {
-	// Action: install, update, remove (an extension), attach, detach (a source), set, reset (a setting).
+	// Action: install, update, remove (an extension), attach, detach (a source), set, reset (a setting), sources,
+	// reset-sources (a group's source set, hugr-node spec 035).
 	Action string `json:"action"`
 	// an extension's
 	Extension  string `json:"extension,omitempty"`
@@ -33,6 +35,13 @@ type ProfileChange struct {
 	DependsOn []string `json:"dependsOn,omitempty"`
 	Cascade   bool     `json:"cascade,omitempty"`
 	Force     bool     `json:"force,omitempty"`
+	// Lazy: a source attached on its first read, not at bootstrap; Idle, the interval after which an unused one is
+	// detached (duckdb reads it: '30 min'). An attach's marks, or a group's set's (they replace its sources' own).
+	Lazy bool   `json:"lazy,omitempty"`
+	Idle string `json:"idle,omitempty"`
+	// a group's source set: the aliases its nodes attach, or All (every source, which only LAZY makes a set)
+	Sources []string `json:"sources,omitempty"`
+	All     bool     `json:"all,omitempty"`
 	// a setting's
 	Setting string `json:"setting,omitempty"`
 	Value   string `json:"value,omitempty"`
@@ -121,6 +130,9 @@ func (c ProfileChange) statement() (string, error) {
 		if err == nil {
 			b.WriteString(")")
 		}
+		if err == nil {
+			err = c.lazyMarks(&b)
+		}
 		if err == nil && c.Lineage != "" {
 			b.WriteString(" LINEAGE ")
 			err = text("the lineage's name", c.Lineage)
@@ -156,8 +168,43 @@ func (c ProfileChange) statement() (string, error) {
 	case "reset":
 		b.WriteString("CLUSTER RESET ")
 		err = name("the setting", c.Setting)
+	case "sources":
+		// SET SOURCES (a, b) | ALL [LAZY [IDLE '…']] IN GROUP g: a group's, never the cluster's
+		b.WriteString("CLUSTER SET SOURCES ")
+		switch {
+		case c.Group == "":
+			err = errors.New("a source set is a group's: name the group")
+		case c.All && len(c.Sources) > 0:
+			err = errors.New("a set is either the sources it lists or all")
+		case c.All && !c.Lazy:
+			err = errors.New("every source attached at once is no set: reset the group's set instead")
+		case c.All:
+			b.WriteString("ALL")
+		case len(c.Sources) == 0:
+			err = errors.New("name the sources the group's nodes attach")
+		default:
+			b.WriteString("(")
+			for i, a := range c.Sources {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				if err = alias("a source", a); err != nil {
+					break
+				}
+			}
+			b.WriteString(")")
+		}
+		if err == nil {
+			err = c.lazyMarks(&b)
+		}
+	case "reset-sources":
+		b.WriteString("CLUSTER RESET SOURCES")
+		if c.Group == "" {
+			err = errors.New("a source set is a group's: name the group")
+		}
 	default:
-		return "", errors.New("the action is one of install, update, remove, attach, detach, set, reset")
+		return "", errors.New("the action is one of install, update, remove, attach, detach, set, reset, sources, " +
+			"reset-sources")
 	}
 	if err != nil {
 		return "", err
@@ -180,6 +227,26 @@ func (c ProfileChange) statement() (string, error) {
 	return b.String(), nil
 }
 
+// lazyMarks are `LAZY [IDLE '<interval>']`, when the change is lazy; an idle time alone is refused (the grammar's: a
+// source attached at bootstrap is never detached for idleness).
+func (c ProfileChange) lazyMarks(b *strings.Builder) error {
+	if !c.Lazy {
+		if c.Idle != "" {
+			return errors.New("an idle time is a lazy source's: mark it lazy")
+		}
+		return nil
+	}
+	b.WriteString(" LAZY")
+	if c.Idle != "" {
+		lit, ok := literal(c.Idle)
+		if !ok {
+			return errors.New("the idle time is one line of at most 1024 characters ('30 min')")
+		}
+		b.WriteString(" IDLE " + lit)
+	}
+	return nil
+}
+
 // changeProfile writes one CLUSTER statement on a node that seats the person (a read picks it; the write goes there,
 // once - never retried on another node, which a timed-out write may have reached) and answers what the node did.
 func (s *Server) changeProfile(w http.ResponseWriter, r *http.Request, token string, _ *person) {
@@ -193,14 +260,14 @@ func (s *Server) changeProfile(w http.ResponseWriter, r *http.Request, token str
 		problem(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	_, node, err := s.onNode(r.Context(), token, "SELECT 1")
+	s.writeProfile(w, r.Context(), token, statement)
+}
+
+// writeProfile runs one CLUSTER statement on a node that writes (write), once, and answers what the node did.
+func (s *Server) writeProfile(w http.ResponseWriter, ctx context.Context, token, statement string) {
+	result, node, err := s.write(ctx, token, statement)
 	if err != nil {
 		policyProblem(w, err)
-		return
-	}
-	result, err := s.Nodes.Query(r.Context(), *node, token, statement)
-	if err != nil {
-		nodeProblem(w, err)
 		return
 	}
 	// the CLUSTER answer: (ok, message) and its own fields after them as columns (duckdb-acl spec 179)

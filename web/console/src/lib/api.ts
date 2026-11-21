@@ -1,6 +1,6 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
-import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, Rights, SessionRow, ViewPage } from './types'
+import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, GroupSources, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, Rights, SessionRow, ViewPage } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -84,6 +84,11 @@ export class Api {
   // spec 010: what a node of the group starts with
   groupBootstrap = (group: string) => this.request<BootstrapPage>('GET', `groups/${part(group)}/bootstrap`)
   changeProfile = (change: ProfileChange) => this.request<ProfileWritten>('POST', 'cluster/profile', change)
+  // spec 007 stage 2b: a group's sources, and a repair the node wrote run by hand (the browser names the source only)
+  groupSources = (group: string) => this.request<GroupSources>('GET', `groups/${part(group)}/sources`)
+  // the repair as shown: the console runs the node's text only while it is the same
+  repairGroupSource = (group: string, source: string, repair: string) =>
+    this.request<ProfileWritten>('POST', `groups/${part(group)}/sources/repair`, { source, repair })
   addToPolicy = (group: string, roles: string[], isDefault: boolean) =>
     this.request<GroupPolicy>('POST', `groups/${part(group)}/policy`, isDefault ? { roles, default: true } : { roles })
   // the resource group the page shows: one that changed since (kubectl) is refused, never another dropped

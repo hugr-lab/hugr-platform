@@ -91,6 +91,10 @@ export function ProfileDialog({ group, onDone }: { group?: string; onDone: (chan
               <Text id="pc-lineage" title="Lineage name" value={s('lineage')} onChange={set('lineage')} hint="scheme://host:port[/database]" />
               <Text id="pc-depends" title="Depends on" value={depends} onChange={setDepends} hint="Aliases, comma separated." />
               <Check title="Read only" value={b('readOnly')} onChange={set('readOnly')} />
+              <Check title="Lazy: attached on its first read, not at the node's start" value={b('lazy')}
+                onChange={(v) => setF((x) => ({ ...x, lazy: v, idle: v ? x.idle : undefined }))} />
+              {b('lazy') && <Text id="pc-idle" title="Idle time" value={s('idle')} onChange={set('idle')}
+                hint="Detached after this long unused, such as 30 min; empty keeps it until the node stops." />}
             </div>
           )}
           {action === 'detach' && (

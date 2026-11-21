@@ -8,6 +8,7 @@ import type { NodeInfo } from '../lib/types'
 import { groupState, podReason, starting } from './Fleet'
 import { BootstrapRefused, BootstrapSection } from './Bootstrap'
 import { DeleteGroupDialog, EditGroupDialog, PolicySection } from './GroupActions'
+import { SourcesSection } from './GroupSources'
 
 export function nodeState(n: NodeInfo): { mark: 'ok' | 'half' | 'off'; text: string; why?: string } {
   // the pod first: a node a scale made is in the group before it serves - starting, or not starting and why
@@ -180,6 +181,7 @@ export function Group() {
             </p>
           </section>
           {rights.policy && <PolicySection group={group} read={fleet.at?.getTime()} onChanged={fleet.reload} />}
+          <SourcesSection group={group} read={fleet.at?.getTime()} />
           <BootstrapSection group={group} page={bootstrap} read={fleet.at?.getTime()} onChanged={fleet.reload} />
         </>
       )}
