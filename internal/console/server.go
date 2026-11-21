@@ -138,6 +138,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET "+APIPrefix+"groups/{group}/bootstrap", s.person(func(r Rights) bool { return r.Fleet }, s.groupBootstrap))
 	mux.Handle("POST "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.addGroupToPolicy))
 	mux.Handle("DELETE "+APIPrefix+"groups/{group}/policy", s.person(policyRight, s.removeGroupFromPolicy))
+	// spec 007 stage 2b: a group's sources - the set, the check of what its roles reach, a repair run by hand
+	mux.Handle("GET "+APIPrefix+"groups/{group}/sources", s.person(func(r Rights) bool { return r.Fleet }, s.groupSources))
+	mux.Handle("POST "+APIPrefix+"groups/{group}/sources/repair",
+		s.person(func(r Rights) bool { return r.Infrastructure }, s.repairGroupSource))
 	// spec 007: the policy's pages - each view and function checked against what the person reads, in the handler
 	mux.Handle("GET "+APIPrefix+"policy/views/{view}", s.person(nil, s.policyView))
 	mux.Handle("GET "+APIPrefix+"policy/sources", s.person(nil, s.policySources))

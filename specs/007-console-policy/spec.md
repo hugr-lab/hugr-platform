@@ -113,7 +113,15 @@ The same embedding is what the second stage's grids read from.
 ### Stage 2: the editors, the data, view-as (after the release unless time allows)
 
 - **Data shown as the DBeaver client shows it:** a plain grid of a result, nothing more.
-- **View-as:** maybe, and maybe the DBeaver client's alone (the owner, 2026-10-22).
+- **View-as:** the DBeaver client's alone (the owner, 2026-11-21).
+- **Where an edit is composed** (the owner, 2026-11-21): in the console's server, from the form's fields, and run over
+  Flight under the person's token, as the profile's forms are (spec 010). Names are checked against the node's own
+  lists. An expression field (a row filter, a mask, a computed column) is the person's SQL, placed in its clause as
+  written. The node judges it: one expression or a refusal (duckdb-acl spec 148), and Flight runs one statement. Not
+  through the page's DuckDB: that would need a quack door and the 34 MB engine for every editor.
+- **The order of the work** (each a PR, all after a hugr-node release carrying stage 2a's answers): 2b a group's
+  sources, 2c the grant editor, 2d the data grid, 2e roles / resource groups / mappings, 2f catalog objects and their
+  repair, 2g issuers / clients / function categories / admin bundles.
 - **The DBeaver client's editors,** in the same order spec 008 built them:
 
     1. The grant editor: catalog / schema / object grants with the row filter, an object grant's `COLUMNS` test and
@@ -144,13 +152,40 @@ GRANT's group-source hint, hugr-node spec 035) are shown the same way when the e
 `TestDrainAndResumeAnswer`, the kill / tracing / profile tests on the new shape (each fails on the old reading), the web
 console's `saidOf` and the node page's drain answer.
 
+#### Stage 2b: a group's sources (hugr-node spec 035, built 2026-11-21)
+
+The group's page has a Sources section, offered with `group_sources` among `console_info()`'s functions (the cluster
+bundle's) on a cluster node:
+
+- **The set** (`GET groups/{g}/sources`): the group's `sources` profile item read from `platform.cluster_items` - the
+  aliases it lists, or all, with its lazy marks - or none (every source of the cluster and of the group). Beside it,
+  the profile's ATTACH items the group's nodes may attach (the cluster's and the group's own), what a set may list.
+- **The check**: `platform.group_sources('<g>')`, the group a plain name the platform's group carries, written as a
+  literal. Per source: the roles of the group that reach it, whether the set lists it, and for one left out the repair
+  the node writes. A slow read (45 s): it reads what exposes each source.
+- **A repair runs by hand** (`POST groups/{g}/sources/repair` with the source's alias, the infrastructure right). The
+  console reads the check again on the node that writes it and runs that row's repair, so the statement is the node's
+  as it stands, never a text from the browser. The dialog shows it before it runs, and the answer after.
+- **The set changes by a form**: every source (`CLUSTER RESET SOURCES IN GROUP g`), these sources (`SET SOURCES (…)`),
+  or every source lazy (`SET SOURCES ALL LAZY`), with `LAZY [IDLE '<interval>']`. A source's own ATTACH takes the same
+  marks in the profile's dialog. The console refuses what the grammar does (all without lazy, an idle time without
+  lazy, a set of nothing, a cluster-wide set); the node judges the rest (an interval under a minute, a lazy source in a
+  DEPENDS ON chain).
+- **Nothing changes the set by itself** (the owner, 2026-11-20): a grant's answer names what it leaves out, and the
+  section says what the roles read outside the set.
+- Tests: `TestProfileStatement` (the new forms and refusals), `TestGroupSources`, `TestRepairGroupSource` (the
+  browser names a source, never a statement; a listed source has nothing to repair), the web console's
+  `sources.test.tsx`.
+
 ## Security
 
 - **Every read and write is the node's to judge**, under the person's own token. The console adds no right: it hides
   what `console_info()` says the person cannot read, and the node refuses the rest.
 - **SQL from the browser exists only on the SQL page**, typed by the person and sent by the page's own DuckDB through
-  the quack door, as any client's statement. Everywhere else names are matched against the node's own lists before they
-  are written.
+  the quack door, as any client's statement, **and in an editor's expression fields** (stage 2): a row filter, a mask,
+  a computed column, which are SQL by nature. The server places such a text in its clause, and the node judges it under
+  the person's token as one expression (duckdb-acl spec 148). Everywhere else names are matched against the node's own
+  lists before they are written, and a repair is the node's own text, read again where it runs.
 - **NATIVE is offered to `passthrough` only**, the node's own rule for it; the page's offer is a convenience, the node
   refuses it to anyone else.
 - **The browser is no boundary.** Nothing in the page enforces anything: a person who edits the page reaches the door
@@ -202,7 +237,7 @@ console's `saidOf` and the node page's drain answer.
 
 ## Follow-ups
 
-- Stage 2: the editors, the data grid, maybe view-as.
+- Stage 2: the editors (2c, 2e-2g) and the data grid (2d).
 - tresor in the browser (relayed to tresor 2026-10-22, verified in its code):
   - its wasm build still links OpenSSL and sockets (`tresor_sources.cmake`), and wasm is out of its distribution;
   - `FLOW 'token'` cannot renew or swap the token in an attached session;

@@ -37,6 +37,19 @@ func TestProfileStatement(t *testing.T) {
 		{ProfileChange{Action: "set", Setting: "memory_limit", Value: "8GB"}, "CLUSTER SET memory_limit = '8GB'"},
 		{ProfileChange{Action: "set", Setting: "s", Value: "x'; DROP TABLE t; --"}, "CLUSTER SET s = 'x''; DROP TABLE t; --'"},
 		{ProfileChange{Action: "reset", Setting: "threads", Group: "etl"}, `CLUSTER RESET threads IN GROUP "etl"`},
+		// spec 007 stage 2b (hugr-node spec 035): a lazy source, a group's source set
+		{ProfileChange{Action: "attach", Path: "s3://lake", Alias: "archive", Type: "ducklake", Lazy: true,
+			Idle: "30 min", Lineage: "s3://lake"},
+			`CLUSTER ATTACH 's3://lake' AS "archive" (TYPE ducklake) LAZY IDLE '30 min' LINEAGE 's3://lake'`},
+		{ProfileChange{Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb", Lazy: true},
+			`CLUSTER ATTACH ':memory:' AS "a" (TYPE duckdb) LAZY`},
+		{ProfileChange{Action: "sources", Sources: []string{"sales", "Crm"}, Group: "etl"},
+			`CLUSTER SET SOURCES ("sales", "Crm") IN GROUP "etl"`},
+		{ProfileChange{Action: "sources", Sources: []string{"sales"}, Lazy: true, Idle: "1 hour", Group: "etl"},
+			`CLUSTER SET SOURCES ("sales") LAZY IDLE '1 hour' IN GROUP "etl"`},
+		{ProfileChange{Action: "sources", All: true, Lazy: true, Group: "apps"},
+			`CLUSTER SET SOURCES ALL LAZY IN GROUP "apps"`},
+		{ProfileChange{Action: "reset-sources", Group: "etl"}, `CLUSTER RESET SOURCES IN GROUP "etl"`},
 	} {
 		got, err := tc.change.statement()
 		if err != nil || got != tc.want {
@@ -66,6 +79,15 @@ func TestProfileStatement(t *testing.T) {
 		"a group's quoted name":  {Action: "reset", Setting: "threads", Group: `"etl"`},
 		"a group with a space":   {Action: "reset", Setting: "threads", Group: "etl eu"},
 		"a comment's line break": {Action: "install", Extension: "x", Version: "1", Comment: "a\nb"},
+		"an idle time alone":     {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb", Idle: "30 min"},
+		"an idle line break":     {Action: "attach", Path: ":memory:", Alias: "a", Type: "duckdb", Lazy: true, Idle: "1\n"},
+		"a cluster's source set": {Action: "sources", Sources: []string{"sales"}},
+		"a cluster's reset":      {Action: "reset-sources"},
+		"a set of nothing":       {Action: "sources", Group: "etl"},
+		"all, not lazy":          {Action: "sources", All: true, Group: "etl"},
+		"all and a list":         {Action: "sources", All: true, Lazy: true, Sources: []string{"a"}, Group: "etl"},
+		"a set's comma":          {Action: "sources", Sources: []string{"a,b"}, Group: "etl"},
+		"a set's idle alone":     {Action: "sources", Sources: []string{"a"}, Idle: "1 hour", Group: "etl"},
 	} {
 		if got, err := c.statement(); err == nil {
 			t.Errorf("%s: written %q", name, got)

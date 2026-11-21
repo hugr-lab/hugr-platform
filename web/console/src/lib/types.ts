@@ -234,7 +234,7 @@ export interface BootstrapDocument {
 
 /** one change of the cluster's profile (spec 010 stage 2): a CLUSTER statement's fields; group scopes it to a resource group */
 export interface ProfileChange {
-  action: 'install' | 'update' | 'remove' | 'attach' | 'detach' | 'set' | 'reset'
+  action: 'install' | 'update' | 'remove' | 'attach' | 'detach' | 'set' | 'reset' | 'sources' | 'reset-sources'
   extension?: string
   version?: string
   repository?: string
@@ -247,10 +247,42 @@ export interface ProfileChange {
   dependsOn?: string[]
   cascade?: boolean
   force?: boolean
+  /** attached on its first read, not at bootstrap; detached after `idle` unused ('30 min') - an attach's or a set's */
+  lazy?: boolean
+  idle?: string
+  /** a group's source set (hugr-node spec 035): the aliases its nodes attach, or all (lazy only) */
+  sources?: string[]
+  all?: boolean
   setting?: string
   value?: string
   group?: string
   comment?: string
+}
+
+/** a group's sources (spec 007 stage 2b, hugr-node spec 035): its set - none = every source of the cluster and of the
+ * group - and the check: each source its roles reach or the set lists, with the node's repair for one left out */
+export interface GroupSources {
+  resourceGroup: string
+  set: SourceSet | null
+  rows: GroupSource[]
+  /** the profile's sources for the group's nodes: the cluster's and the group's own - what a set may list */
+  profile: string[]
+}
+
+export interface SourceSet {
+  all: boolean
+  names: string[]
+  lazy: boolean
+  /** 0 = never detached for idleness (or the source's own idle time) */
+  idleSeconds: number
+}
+
+export interface GroupSource {
+  source: string
+  roles: string[]
+  /** null: the group lists no set; false: the set leaves it out, and `repair` is the statement to run */
+  listed: boolean | null
+  repair?: string
 }
 
 /** what a management statement answers (duckdb-acl spec 179): ok, and what the node says beside it - a false says what
