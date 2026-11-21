@@ -211,8 +211,7 @@ check, duckdb-acl spec 122); the node judges every write. A row's role opens its
     (a, b) | COLUMNS (* EXCLUDE (a, b))] [MASK ("col" AS <expression>, …)] [VERSIONS …]` (duckdb-acl spec 158);
   - a revoke: `REVOKE CATALOG | SCHEMA | OBJECT … FROM ROLE r`.
 
-  Names are quoted identifiers; the row filter is a literal (the grammar takes one); a mask's expression and a
-  versions clause are the person's SQL in their clauses, which the node judges.
+  Names are quoted identifiers; the row filter, the masks and the versions are literals (spec 180).
 - **The write** (`POST policy/grant`) reads the grant again and composes the same statements only while its version is
   the form's (else 409: read it again; a new grant where one exists is the same), then runs them one at a time on one
   node that writes (stage 2b's routing), stopping at the first refusal. The answer is each statement's `(ok, message)` -
@@ -228,10 +227,12 @@ check, duckdb-acl spec 122); the node judges every write. A row's role opens its
   catalog grant carrying an older build's column list keeps it: its versions are not changed here (written again,
   the list would go). An existing catalog grant's versions change by the grant written again
   (`GRANT CATALOG … VERSIONS …`, which keeps its object grants); its other properties by `ALTER GRANT`.
-- **A clause stays its clause**: a mask's expression and a versions text take no `;` and no comment outside a quoted
-  string or a quoted name (`'…'`, `"…"`, `` `…` ``), their parentheses balanced, and no string this scan does not read
-  as duckdb's tokenizer does (`E'…'` anywhere, `$…$`: from the SQL page); a versions text is `CURRENT`, `ANY`, `AT (…)` whole or `BETWEEN … AND …`, naming no
-  other clause of a grant.
+- **Nothing the person types is SQL of the statement** (duckdb-acl spec 180, the owner, 2026-11-21: duckdb's
+  tokenizer, not a scanner of ours): a mask's items and a versions clause are written as literals (`MASK '<items>'`,
+  `VERSIONS '<clause>'`), as the row filter is, and the node reads them with duckdb's parser. Until spec 180 they were
+  placed in their clauses and kept there by a scanner of the console's own, which four review rounds found reading some
+  texts otherwise than duckdb's tokenizer (`E'…'`, `$$…$$`, backtick names). It needs hugr-node with duckdb-acl spec
+  180.
 - **Names**: a role is one the policy names (created or granted, and mapped where the person reads the mappings - the
   policy bundle's view) - a role no list names yet is created first (stage 2e); a table under a live alias schema
   (`<alias>.<table>`) is an object, as the node takes it, the alias in the node's spelling. The
@@ -259,9 +260,9 @@ check, duckdb-acl spec 122); the node judges every write. A row's role opens its
 - **Every read and write is the node's to judge**, under the person's own token. The console adds no right: it hides
   what `console_info()` says the person cannot read, and the node refuses the rest.
 - **SQL from the browser exists only on the SQL page**, typed by the person and sent by the page's own DuckDB through
-  the quack door, as any client's statement, **and in an editor's expression fields** (stage 2): a row filter, a mask,
-  a computed column, which are SQL by nature. The server places such a text in its clause, and the node judges it under
-  the person's token as one expression (duckdb-acl spec 148). Everywhere else names are matched against the node's own
+  the quack door, as any client's statement. An editor's expression fields (stage 2: a row filter, a mask, a versions
+  clause) are SQL by nature: the server writes them as literals, and the node reads them with duckdb's parser under the
+  person's token (duckdb-acl specs 148, 180). Everywhere else names are matched against the node's own
   lists before they are written, and a repair is the node's own text, read again where it runs.
 - **NATIVE is offered to `passthrough` only**, the node's own rule for it; the page's offer is a convenience, the node
   refuses it to anyone else.

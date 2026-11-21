@@ -22,7 +22,7 @@ func TestGrantStatements(t *testing.T) {
 	}{
 		{GrantForm{Level: "catalog", Role: "analyst", Catalog: "sales", Caps: capsOf("select", "insert"), Main: true,
 			RLS: "tenant = acl_claim('tenant')", Versions: "ANY"}, nil,
-			[]string{`GRANT CATALOG "sales" TO ROLE "analyst" WITH (select, insert) MAIN RLS 'tenant = acl_claim(''tenant'')' VERSIONS ANY`}},
+			[]string{`GRANT CATALOG "sales" TO ROLE "analyst" WITH (select, insert) MAIN RLS 'tenant = acl_claim(''tenant'')' VERSIONS 'ANY'`}},
 		{GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf()}, nil,
 			[]string{`GRANT CATALOG "c" TO ROLE "r" CAPS '{}'`}},
 		{GrantForm{Level: "catalog", Role: "r", Catalog: "c"}, nil, []string{`GRANT CATALOG "c" TO ROLE "r"`}},
@@ -45,7 +45,7 @@ func TestGrantStatements(t *testing.T) {
 			Columns: &ColumnTest{Mode: "except", Names: []string{"salary"}},
 			Masks:   []GrantMask{{Column: "ssn", Mask: "'***-**-' || right(ssn, 4)"}}, Versions: "AT (VERSION => 3)"},
 			&GrantForm{Level: "object"},
-			[]string{`GRANT OBJECT "c"."people" TO ROLE "analyst" COLUMNS (* EXCLUDE ("salary")) MASK ("ssn" AS '***-**-' || right(ssn, 4)) VERSIONS AT (VERSION => 3)`}},
+			[]string{`GRANT OBJECT "c"."people" TO ROLE "analyst" COLUMNS (* EXCLUDE ("salary")) MASK '"ssn" AS ''***-**-'' || right(ssn, 4)' VERSIONS 'AT (VERSION => 3)'`}},
 		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Caps: capsOf("select"), RLS: "a = 1",
 			Columns: &ColumnTest{Mode: "only", Names: []string{"id", "Odd name"}}}, nil,
 			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" WITH (select) RLS 'a = 1' COLUMNS ("id", "Odd name")`}},
@@ -56,17 +56,17 @@ func TestGrantStatements(t *testing.T) {
 		// an existing catalog grant's versions: the grant written again (it keeps its object grants)
 		{GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("select"), Main: true, Versions: "any"},
 			&GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("select"), Main: true},
-			[]string{`GRANT CATALOG "c" TO ROLE "r" WITH (select) MAIN VERSIONS any`}},
+			[]string{`GRANT CATALOG "c" TO ROLE "r" WITH (select) MAIN VERSIONS 'any'`}},
 		// an unreadable grant is still revoked
 		{GrantForm{Level: "object", Op: "revoke", Role: "r", Catalog: "c", Target: "t"}, &GrantForm{Unreadable: true},
 			[]string{`REVOKE OBJECT "c"."t" FROM ROLE "r"`}},
 		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
 			Versions: "BETWEEN TIMESTAMP '2026-01-01 MASK' AND now()"}, nil,
-			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" VERSIONS BETWEEN TIMESTAMP '2026-01-01 MASK' AND now()`}},
+			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" VERSIONS 'BETWEEN TIMESTAMP ''2026-01-01 MASK'' AND now()'`}},
 		// a name ending in e before a quote is no escape string; a $ inside a string is text
 		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
 			Masks: []GrantMask{{Column: "a", Mask: "concat(name, '$')"}}}, nil,
-			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" MASK ("a" AS concat(name, '$'))`}},
+			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" MASK '"a" AS concat(name, ''$'')'`}},
 		// a catalog grant's versions cleared: written again without the clause (the current version)
 		{GrantForm{Level: "catalog", Role: "r", Catalog: "c"},
 			&GrantForm{Level: "catalog", Role: "r", Catalog: "c", Versions: "ANY"},
@@ -74,7 +74,7 @@ func TestGrantStatements(t *testing.T) {
 		// a mask's own quotes and parentheses
 		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
 			Masks: []GrantMask{{Column: "a", Mask: "replace(a, ';', '(')"}}}, nil,
-			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" MASK ("a" AS replace(a, ';', '('))`}},
+			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" MASK '"a" AS replace(a, '';'', ''('')'`}},
 	} {
 		got, err := tc.form.statements(tc.current)
 		if err != nil || !reflect.DeepEqual(got, tc.want) {
@@ -85,37 +85,17 @@ func TestGrantStatements(t *testing.T) {
 		form    GrantForm
 		current *GrantForm
 	}{
-		"a capability with SQL":     {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("select) MAIN --")}, nil},
-		"a capability's capitals":   {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("Select")}, nil},
-		"a revoke of nothing":       {GrantForm{Level: "object", Op: "revoke", Role: "r", Catalog: "c", Target: "t"}, nil},
-		"another op":                {GrantForm{Level: "catalog", Op: "drop", Role: "r", Catalog: "c"}, nil},
-		"a role's line break":       {GrantForm{Level: "catalog", Role: "r\n", Catalog: "c"}, nil},
-		"no columns named":          {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Columns: &ColumnTest{Mode: "only"}}, nil},
-		"another column mode":       {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Columns: &ColumnTest{Mode: "x", Names: []string{"a"}}}, nil},
-		"an empty mask":             {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a"}}}, nil},
-		"into and virtual only":     {GrantForm{Level: "schema", Role: "r", Catalog: "c", Target: "s", Into: "p.s", VirtualOnly: true}, nil},
-		"a legacy list's versions":  {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Versions: "ANY"}, &GrantForm{LegacyColumns: true}},
-		"an unreadable grant":       {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t"}, &GrantForm{Unreadable: true}},
-		"a mask's second statement": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: "1); DROP ROLE x; --"}}}, nil},
-		"a mask's comment":          {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: "1 -- x"}}}, nil},
-		"a mask's open parenthesis": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: "upper(a"}}}, nil},
-		"a mask's open quote":       {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: "'x"}}}, nil},
-		"versions with a clause":    {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Versions: "ANY MASK (a AS 1)"}, nil},
-		"versions not a version":    {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Versions: "RLS (true)"}, nil},
-		"between and a clause": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
-			Versions: "BETWEEN '2026-01-01' AND now() COLUMNS (a)"}, nil},
-		"at and more": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Versions: "AT (VERSION => 1) (x)"}, nil},
-		// strings this scan does not read as duckdb's tokenizer does
-		"an escape string": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
-			Masks: []GrantMask{{Column: "a", Mask: `E'\'' ) ; REVOKE CATALOG c FROM ROLE r ; SELECT (E'\''`}}}, nil},
-		"a dollar string": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
-			Masks: []GrantMask{{Column: "a", Mask: `$$'$$ ) ; X ; SELECT ($$'$$`}}}, nil},
-		"a backtick name": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
-			Masks: []GrantMask{{Column: "a", Mask: "`'` ) ; GRANT CATALOG c TO ROLE r MAIN ; GRANT OBJECT c.t TO ROLE r MASK (\"b\" AS `'`"}}}, nil},
-		"an escape string after a digit": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
-			Masks: []GrantMask{{Column: "a", Mask: `1E'\'' ) ; X ; Y (1E'\''`}}}, nil},
-		"versions' escape string": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
-			Versions: `AT (TIMESTAMP => e'\'' ) MASK (a AS 1) --')`}, nil},
+		"a capability with SQL":    {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("select) MAIN --")}, nil},
+		"a capability's capitals":  {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("Select")}, nil},
+		"a revoke of nothing":      {GrantForm{Level: "object", Op: "revoke", Role: "r", Catalog: "c", Target: "t"}, nil},
+		"another op":               {GrantForm{Level: "catalog", Op: "drop", Role: "r", Catalog: "c"}, nil},
+		"a role's line break":      {GrantForm{Level: "catalog", Role: "r\n", Catalog: "c"}, nil},
+		"no columns named":         {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Columns: &ColumnTest{Mode: "only"}}, nil},
+		"another column mode":      {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Columns: &ColumnTest{Mode: "x", Names: []string{"a"}}}, nil},
+		"an empty mask":            {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a"}}}, nil},
+		"into and virtual only":    {GrantForm{Level: "schema", Role: "r", Catalog: "c", Target: "s", Into: "p.s", VirtualOnly: true}, nil},
+		"a legacy list's versions": {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Versions: "ANY"}, &GrantForm{LegacyColumns: true}},
+		"an unreadable grant":      {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t"}, &GrantForm{Unreadable: true}},
 	} {
 		if got, err := tc.form.statements(tc.current); err == nil {
 			t.Errorf("%s: written %q", name, got)
@@ -327,6 +307,25 @@ func TestGrantMappedRole(t *testing.T) {
 		form := `{"form": {"level": "catalog", "role": "` + tc.role + `", "catalog": "Sales", "caps": null}, "version": ""}`
 		if code, out, _ := h.do(t, "POST", APIPrefix+"policy/grant/preview", opsToken, form); code != tc.want {
 			t.Errorf("%+v: %d %v", tc, code, out)
+		}
+	}
+}
+
+// TestGrantTextIsAValue: a mask's expression and a versions clause are the person's text written as one literal
+// (duckdb-acl spec 180) - whatever it holds (a second statement, a comment, a backtick, an escape or dollar string, an
+// unbalanced parenthesis) is a value the node reads with duckdb's parser, never SQL of the statement.
+func TestGrantTextIsAValue(t *testing.T) {
+	for _, text := range []string{
+		"1); DROP ROLE x; --", "1 -- x", "upper(a", "'x", "`'` ) ; GRANT CATALOG c TO ROLE r MAIN ; --",
+		`E'\'' ) ; REVOKE CATALOG c FROM ROLE r ; SELECT (E'\''`, `$$'$$ ) ; X ; SELECT ($$'$$`, `1E'\'' ) ; X`,
+	} {
+		lit, _ := textLiteral("", text)
+		got, err := GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: text}},
+			Versions: text}.statements(nil)
+		mask, _ := textLiteral("", `"a" AS `+text)
+		want := `GRANT OBJECT "c"."t" TO ROLE "r" MASK ` + mask + ` VERSIONS ` + lit
+		if err != nil || len(got) != 1 || got[0] != want {
+			t.Errorf("%q:\n got %q (%v)\nwant %q", text, got, err, want)
 		}
 	}
 }
