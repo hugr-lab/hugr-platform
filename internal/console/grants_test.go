@@ -110,6 +110,10 @@ func TestGrantStatements(t *testing.T) {
 			Masks: []GrantMask{{Column: "a", Mask: `E'\'' ) ; REVOKE CATALOG c FROM ROLE r ; SELECT (E'\''`}}}, nil},
 		"a dollar string": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
 			Masks: []GrantMask{{Column: "a", Mask: `$$'$$ ) ; X ; SELECT ($$'$$`}}}, nil},
+		"a backtick name": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Masks: []GrantMask{{Column: "a", Mask: "`'` ) ; GRANT CATALOG c TO ROLE r MAIN ; GRANT OBJECT c.t TO ROLE r MASK (\"b\" AS `'`"}}}, nil},
+		"an escape string after a digit": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Masks: []GrantMask{{Column: "a", Mask: `1E'\'' ) ; X ; Y (1E'\''`}}}, nil},
 		"versions' escape string": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
 			Versions: `AT (TIMESTAMP => e'\'' ) MASK (a AS 1) --')`}, nil},
 	} {

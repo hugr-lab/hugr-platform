@@ -264,7 +264,11 @@ func (s *Server) readGrant(ctx context.Context, token string, f *GrantForm) (*gr
 	}
 	if _, known := listed(n.roles, f.Role, false); !known {
 		// a mapped role: asked only when needed, and a refusal (the mappings are the policy bundle's) names none
-		if mapped, err := s.Nodes.Query(ctx, *node, token, stmtMappedRoles); err == nil {
+		mapped, err := s.Nodes.Query(ctx, *node, token, stmtMappedRoles)
+		if err != nil && !errors.As(err, new(*NodeError)) {
+			return nil, err // a node that did not answer, not "no such role"
+		}
+		if err == nil {
 			for _, row := range mapped.Records() {
 				n.roles = append(n.roles, str(row["name"]))
 			}
@@ -411,10 +415,11 @@ func clause(field, v string) (string, error) {
 			if c == quote {
 				quote = 0 // a doubled quote closes and opens again: the same
 			}
-		case c == '\'' && i > 0 && (v[i-1] == 'E' || v[i-1] == 'e') && (i == 1 || !identChar(v[i-2])):
-			// an escape string reads a backslash-escaped quote, which this scan does not: from the SQL page
+		case c == '\'' && i > 0 && (v[i-1] == 'E' || v[i-1] == 'e'):
+			// an escape string reads a backslash-escaped quote, which this scan does not (after a name, a digit or
+			// alone): from the SQL page
 			return "", fmt.Errorf("%s writes no E'…' string here", field)
-		case c == '\'' || c == '"':
+		case c == '\'' || c == '"' || c == '`':
 			quote = c
 		case c == '$':
 			// a dollar-quoted string ($$…$$) likewise
@@ -438,10 +443,6 @@ func clause(field, v string) (string, error) {
 	return v, nil
 }
 
-func identChar(c byte) bool {
-	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
-}
-
 // versionsClause checks a VERSIONS clause's form (duckdb-acl spec 167): CURRENT, ANY, AT (…) whole, or BETWEEN … AND
 // …, naming no other clause of a grant outside a quoted string - the clause stays the versions.
 func versionsClause(v string) error {
@@ -455,7 +456,7 @@ func versionsClause(v string) error {
 				quote = 0
 			}
 			bare[i] = ' '
-		case c == '\'' || c == '"':
+		case c == '\'' || c == '"' || c == '`':
 			quote = c
 			bare[i] = ' '
 		}

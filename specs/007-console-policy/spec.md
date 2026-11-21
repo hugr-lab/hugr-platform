@@ -229,8 +229,8 @@ check, duckdb-acl spec 122); the node judges every write. A row's role opens its
   the list would go). An existing catalog grant's versions change by the grant written again
   (`GRANT CATALOG … VERSIONS …`, which keeps its object grants); its other properties by `ALTER GRANT`.
 - **A clause stays its clause**: a mask's expression and a versions text take no `;` and no comment outside a quoted
-  string, their parentheses balanced, and no string this scan does not read as duckdb's tokenizer does (`E'…'`,
-  `$…$`: from the SQL page); a versions text is `CURRENT`, `ANY`, `AT (…)` whole or `BETWEEN … AND …`, naming no
+  string or a quoted name (`'…'`, `"…"`, `` `…` ``), their parentheses balanced, and no string this scan does not read
+  as duckdb's tokenizer does (`E'…'` anywhere, `$…$`: from the SQL page); a versions text is `CURRENT`, `ANY`, `AT (…)` whole or `BETWEEN … AND …`, naming no
   other clause of a grant.
 - **Names**: a role is one the policy names (created or granted, and mapped where the person reads the mappings - the
   policy bundle's view) - a role no list names yet is created first (stage 2e); a table under a live alias schema
@@ -251,7 +251,8 @@ check, duckdb-acl spec 122); the node judges every write. A row's role opens its
   and a statement with no answer as not done; a revoke's button and its warning; a 409 with no way to read again. Its
   re-review: `E'…'` and `$$…$$` strings slipped past the clause check; the mappings read for every editor (refused
   below the policy bundle); an existing catalog grant's versions were not editable, and cleared ones wrote an empty
-  clause; an alias's spelling was the person's; one 409 code for three cases.
+  clause; an alias's spelling was the person's; one 409 code for three cases. Its last pass: a backtick name and an
+  `E'…'` after a digit slipped past the clause check.
 
 ## Security
 
