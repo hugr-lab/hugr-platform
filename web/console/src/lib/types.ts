@@ -289,6 +289,45 @@ export interface GroupSource {
   repair?: string
 }
 
+/** a grant as the editor writes it (spec 007 stage 2c): a catalog, schema or object grant; caps null = unstated */
+export interface GrantForm {
+  level: 'catalog' | 'schema' | 'object'
+  op?: 'write' | 'revoke'
+  role: string
+  catalog: string
+  /** the schema's path or the object's name in the catalog */
+  target?: string
+  caps: string[] | null
+  main?: boolean
+  rls?: string
+  versions?: string
+  /** an object grant's COLUMNS test (duckdb-acl spec 158): all, only these, every one but these */
+  columns?: { mode: 'all' | 'only' | 'except'; names: string[] }
+  masks?: { column: string; mask: string }[]
+  into?: string
+  virtualOnly?: boolean
+  comment?: string
+  /** read only: COLUMNS or MASK the node could not read - written anew it would widen, so it is only revoked */
+  unreadable?: boolean
+  /** read only: a catalog grant's column list of an older build */
+  legacyColumns?: boolean
+}
+
+export interface GrantRead {
+  exists: boolean
+  grant: GrantForm
+  version: string
+}
+
+/** the statements an edit writes, what each answered, and the one the node refused */
+export interface GrantWritten {
+  statements: string[]
+  /** null: the statement ran and the node answered no (ok, message) - never read as done */
+  answers: (Answer | null)[]
+  /** unknown: the node did not answer in time or was not reached for it - it may have been written */
+  refused?: { index: number; message: string; unknown?: boolean }
+}
+
 /** what a management statement answers (duckdb-acl spec 179): ok, and what the node says beside it - a false says what
  * did not happen (a resume of a node that was not draining), a message a count or a hint */
 export interface Answer {

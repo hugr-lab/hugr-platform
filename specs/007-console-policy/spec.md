@@ -193,6 +193,67 @@ bundle's) on a cluster node:
   deadline says it may have been written; a node that is down is said as down, not as the partial node's "run it
   elsewhere"; a repair whose text changed offers to read the check again.
 
+#### Stage 2c: the grant editor (built 2026-11-21)
+
+A catalog's page edits its grants, offered with `check_grant` among `console_info()`'s functions (who may grant may
+check, duckdb-acl spec 122); the node judges every write. A row's role opens its grant, a button a new one.
+
+- **Read first** (`GET policy/grant?level&role&catalog[&target]`): the grant as the node holds it now, from
+  `platform.grants` / `schema_grants` (not an inherited row) / `object_grants`, and its version (a digest of it). The
+  role, the catalog and the schema or object are taken from the node's lists (`roles` and the grants' roles,
+  `catalogs`, `schemas`, `relations` + `functions`), in the node's spelling.
+- **The statements** are the server's, from the form, shown before they run (`POST policy/grant/preview`):
+  - a catalog grant: `GRANT CATALOG c TO ROLE r [WITH (…) | CAPS '{}'] [MAIN] [RLS '<filter>'] [VERSIONS …]`; one
+    that exists changes property by property (`ALTER GRANT CATALOG … SET CAPS | MAIN | RLS`), keeping its object
+    grants, and its versions are written with it;
+  - a schema grant: `GRANT SCHEMA c.path TO ROLE r [caps] [INTO db.schema | VIRTUAL ONLY] [COMMENT '…']`;
+  - an object grant, written whole (a GRANT replaces it): `GRANT OBJECT c.n TO ROLE r [caps] [RLS '<filter>'] [COLUMNS
+    (a, b) | COLUMNS (* EXCLUDE (a, b))] [MASK ("col" AS <expression>, …)] [VERSIONS …]` (duckdb-acl spec 158);
+  - a revoke: `REVOKE CATALOG | SCHEMA | OBJECT … FROM ROLE r`.
+
+  Names are quoted identifiers; the row filter is a literal (the grammar takes one); a mask's expression and a
+  versions clause are the person's SQL in their clauses, which the node judges.
+- **The write** (`POST policy/grant`) reads the grant again and composes the same statements only while its version is
+  the form's (else 409: read it again; a new grant where one exists is the same), then runs them one at a time on one
+  node that writes (stage 2b's routing), stopping at the first refusal. The answer is each statement's `(ok, message)` -
+  a grant's group-source hint (hugr-node spec 035) among them - and the refused one with the node's reason.
+- **Check with the node** (`POST policy/grant/check`): `platform.check_grant(role, catalog, object, rls, columns,
+  caps :=, masks :=)`, every argument a literal - what the write would say, written nowhere.
+- **What runs is what was shown**: the write carries the statements the preview showed, and runs only while the form
+  composes exactly those (else 409); the form is locked while the node is asked.
+- **The version check is best-effort**: read, compare, then write are separate calls, so two editors who both read
+  the same version may both write it (the last wins). A compare-and-set needs the node's support (a follow-up).
+- **A grant the node cannot read is only revoked**: an object grant whose `COLUMNS` or `MASK` the view answers NULL
+  (the node could not read them) would show what they hide if written anew, so the editor offers its revoke alone. A
+  catalog grant carrying an older build's column list keeps it: its versions are not changed here (written again,
+  the list would go). An existing catalog grant's versions change by the grant written again
+  (`GRANT CATALOG … VERSIONS …`, which keeps its object grants); its other properties by `ALTER GRANT`.
+- **A clause stays its clause**: a mask's expression and a versions text take no `;` and no comment outside a quoted
+  string or a quoted name (`'…'`, `"…"`, `` `…` ``), their parentheses balanced, and no string this scan does not read
+  as duckdb's tokenizer does (`E'…'` anywhere, `$…$`: from the SQL page); a versions text is `CURRENT`, `ANY`, `AT (…)` whole or `BETWEEN … AND …`, naming no
+  other clause of a grant.
+- **Names**: a role is one the policy names (created or granted, and mapped where the person reads the mappings - the
+  policy bundle's view) - a role no list names yet is created first (stage 2e); a table under a live alias schema
+  (`<alias>.<table>`) is an object, as the node takes it, the alias in the node's spelling. The
+  physical schema of `INTO`, the column names of `COLUMNS` and a mask's column are quoted and the node checks them; a
+  column whose name holds a comma is written from the SQL page.
+- **Outcomes**: a statement that ran but answered no `(ok, message)` reads "ran", never done; one the node did not
+  answer in time (or was not reached for) is "unknown" - it may have been written; a revoke of a catalog grant says
+  that the role's object grants in the catalog go with it.
+- The DBeaver client's object grant editor still writes the pre-158 column list: its fix is acl-clients' own.
+- Tests: `TestGrantStatements` (each level, an existing catalog grant's ALTERs, the refusals), `TestGrantEditor` (the
+  read with its version, preview, write and its hint, a stale form and a new grant over one refused, names the node
+  does not list), `TestGrantRefusedHalfWay`, `TestGrantCheck` (a filter that would close the call stays a literal),
+  the web console's `grants.test.tsx`.
+- **Found by its review, fixed**: an unreadable grant widened by an edit; a preview the write was not bound to; an
+  existing catalog grant's versions refused with advice that would drop its object grants; a table under a live alias
+  and a mapped role not taken; a mask or a versions text that could leave its clause; a timeout shown as a refusal
+  and a statement with no answer as not done; a revoke's button and its warning; a 409 with no way to read again. Its
+  re-review: `E'…'` and `$$…$$` strings slipped past the clause check; the mappings read for every editor (refused
+  below the policy bundle); an existing catalog grant's versions were not editable, and cleared ones wrote an empty
+  clause; an alias's spelling was the person's; one 409 code for three cases. Its last pass: a backtick name and an
+  `E'…'` after a digit slipped past the clause check.
+
 ## Security
 
 - **Every read and write is the node's to judge**, under the person's own token. The console adds no right: it hides

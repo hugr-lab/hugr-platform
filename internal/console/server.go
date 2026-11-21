@@ -146,6 +146,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET "+APIPrefix+"policy/views/{view}", s.person(nil, s.policyView))
 	mux.Handle("GET "+APIPrefix+"policy/sources", s.person(nil, s.policySources))
 	mux.Handle("GET "+APIPrefix+"policy/functions/{function}", s.person(nil, s.policyCall))
+	// spec 007 stage 2c: the grant editor - read a grant, see its statements, write them, check them; the node judges
+	mux.Handle("GET "+APIPrefix+"policy/grant", s.person(nil, s.grantRead))
+	mux.Handle("POST "+APIPrefix+"policy/grant/preview", s.person(nil, s.grantPreview))
+	mux.Handle("POST "+APIPrefix+"policy/grant", s.person(nil, s.grantWrite))
+	mux.Handle("POST "+APIPrefix+"policy/grant/check", s.person(nil, s.grantCheck))
 	// the quack door for the SQL page's DuckDB: a person signed in to the console, whatever their rights - the door
 	// judges the session
 	for _, path := range quackPaths {
@@ -544,6 +549,10 @@ func personMessage(err error) string {
 	}
 	if errors.Is(err, errNoLoad) {
 		return errNoLoad.Error()
+	}
+	if errors.Is(err, errWriteUnknown) {
+		return "the node did not answer in time: the change may have been written - read it again before writing it " +
+			"once more"
 	}
 	if errors.Is(err, errTimedOut) {
 		return "the node did not answer in time"
