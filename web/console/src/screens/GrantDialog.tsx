@@ -4,6 +4,7 @@
 // while the grant is as it was read.
 import { useEffect, useState } from 'react'
 import { Dialog, Status, messageOf } from '../components/ui'
+import { ApiError } from '../lib/api'
 import { Rows } from '../components/ViewTable'
 import { useApp } from '../lib/context'
 import { calls } from '../lib/policy'
@@ -44,6 +45,9 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
   const [written, setWritten] = useState<GrantWritten>()
   const [check, setCheck] = useState<ViewPage>()
   const [columns, setColumns] = useState('')
+  // a 409: the grant changed since it was read - read it again (the form starts from it anew)
+  const [stale, setStale] = useState(false)
+  const [reads, setReads] = useState(0)
   // the grant as it stands: an edit starts from it, and is written only while it is as read
   useEffect(() => {
     if (!editing) {
@@ -54,8 +58,10 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
       setForm({ ...r.grant, level })
       setColumns(r.grant.columns?.names.join(', ') ?? '')
       setVersion(r.version)
+      setPreview(undefined)
+      setCheck(undefined)
     }, (e) => setError(messageOf(e)))
-  }, [api, level, role, catalog, target, editing])
+  }, [api, level, role, catalog, target, editing, reads])
   const set = (patch: Partial<GrantForm>) => {
     setForm((f) => ({ ...f, ...patch }))
     setPreview(undefined)
@@ -69,6 +75,7 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
     try {
       await what()
     } catch (e) {
+      setStale(e instanceof ApiError && e.code === 'grant_changed')
       setError(messageOf(e))
     } finally {
       setBusy(false)
@@ -90,8 +97,12 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
   return (
     <Dialog open title={title} onClose={() => onDone(false)}>
       {version === undefined && !error && <p className="text-sm text-ink-muted">Reading the grant on a node…</p>}
+      {form.unreadable && (
+        <p role="alert" className="rounded-md border border-line px-4 py-3 text-sm">The node could not read this grant's columns or masks. Written anew it would show what they hide, so here it can only be revoked; write it whole from the SQL page.</p>
+      )}
       {version !== undefined && (
-        <div className="flex flex-col gap-4">
+        // the form stays as shown while the node is asked: what runs is what was shown
+        <fieldset disabled={busy || form.unreadable} className="flex flex-col gap-4">
           {!editing && (
             <div className="grid grid-cols-2 gap-4">
               <Text id="g-role" title="Role" value={form.role} onChange={(v) => set({ role: v })} />
@@ -121,7 +132,7 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
                 </label>
               ))}
               {form.columns && <Text id="g-names" title="Columns" value={columns}
-                onChange={(v) => { setColumns(v); setPreview(undefined) }} hint="Names of the object's columns, comma separated." />}
+                onChange={(v) => { setColumns(v); setPreview(undefined); setCheck(undefined) }} hint="Names of the object's columns, comma separated (a name with a comma: from the SQL page)." />}
             </fieldset>
           )}
           {level === 'object' && <Masks masks={form.masks ?? []} onChange={(masks) => set({ masks })} />}
@@ -129,7 +140,7 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
             <p className="text-sm text-ink-muted">Versions: {form.versions || 'current'} (written with the grant).</p>
           ) : (
             <Text id="g-versions" title="Versions" value={form.versions ?? ''} onChange={(v) => set({ versions: v })}
-              hint="Of a time-travel table: CURRENT, ANY, AT (VERSION => 3), BETWEEN … AND …; empty: the current one." />
+              hint={`Of a time-travel table: CURRENT, ANY, AT (VERSION => 3), BETWEEN … AND …; empty: ${level === 'object' ? "the catalog grant's" : 'the current one'}.`} />
           ))}
           {level === 'schema' && (
             <div className="grid grid-cols-2 gap-4">
@@ -154,25 +165,31 @@ export function GrantDialog({ level, catalog, role = '', target = '', onDone }: 
               {preview.statements.length > 0 && (
                 <pre className="overflow-x-auto rounded-md bg-surface-soft p-4 font-mono text-[13px] leading-[22px]"><code>{preview.statements.join(';\n')}</code></pre>
               )}
+              {op === 'revoke' && level === 'catalog' && (
+                <p role="alert" className="text-sm">Revoking the catalog grant also takes the role's object grants in {catalog}.</p>
+              )}
             </div>
           )}
-        </div>
+        </fieldset>
       )}
       {problem && version !== undefined && <p className="text-sm text-ink-muted">{problem}</p>}
       {error && <p role="alert" className="rounded-md bg-surface-soft px-4 py-3 text-sm font-medium">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className="btn-outline" disabled={busy} onClick={() => onDone(false)}>Cancel</button>
+        {stale && <button type="button" className="btn-outline" disabled={busy}
+          onClick={() => { setStale(false); setError(undefined); setVersion(undefined); setReads((n) => n + 1) }}>Read it again</button>}
+        {preview && <button type="button" className="btn-quiet" disabled={busy} onClick={() => setPreview(undefined)}>Back</button>}
         {editing && version && !preview && <button type="button" className="btn-quiet" disabled={busy} onClick={() => show('revoke')}>Revoke</button>}
-        {level !== 'schema' && calls(rights, 'check_grant') && !preview && (
+        {level !== 'schema' && calls(rights, 'check_grant') && !preview && !form.unreadable && (
           <button type="button" className="btn-outline" disabled={!!problem || busy || version === undefined}
             onClick={() => run(async () => setCheck(await api.grantCheck(out)))}>Check with the node</button>
         )}
         {preview ? (
           <button type="button" className="btn-primary" disabled={busy || preview.statements.length === 0}
-            onClick={() => run(async () => setWritten(await api.grantWrite({ ...out, op }, version ?? '')))}>
-            Run
+            onClick={() => run(async () => setWritten(await api.grantWrite({ ...out, op }, version ?? '', preview.statements)))}>
+            {op === 'revoke' ? 'Revoke' : 'Run'}
           </button>
-        ) : (
+        ) : !form.unreadable && (
           <button type="button" className="btn-primary" disabled={!!problem || busy || version === undefined}
             onClick={() => show('write')}>Show the statements</button>
         )}
@@ -191,16 +208,21 @@ export function Written({ written }: { written: GrantWritten }) {
         return (
           <li key={i} className="flex flex-col gap-1">
             <code className="mono break-all text-[13px]">{s}</code>
-            {a ? (
+            {i < written.answers.length ? (a ? (
               <div role="status" className="flex items-start gap-2 text-sm">
                 <Status mark={a.ok ? 'ok' : 'half'}>{a.ok ? 'Done' : 'Not done'}</Status>
                 {a.message && <span className="break-words text-ink-muted">{a.message}</span>}
               </div>
-            ) : refused ? (
-              <div role="alert" className="flex items-start gap-2 text-sm">
-                <Status mark="off">Refused</Status><span className="break-words">{written.refused!.message}</span>
+            ) : (
+              <div role="status" className="flex items-start gap-2 text-sm">
+                <Status mark="half">Ran</Status><span className="text-ink-muted">the node answered nothing of what it did: read the grant again</span>
               </div>
-            ) : <div className="text-sm text-ink-muted">Not run: a statement before it was refused.</div>}
+            )) : refused ? (
+              <div role="alert" className="flex items-start gap-2 text-sm">
+                <Status mark={written.refused!.unknown ? 'half' : 'off'}>{written.refused!.unknown ? 'Unknown' : 'Refused'}</Status>
+                <span className="break-words">{written.refused!.message}</span>
+              </div>
+            ) : <div className="text-sm text-ink-muted">Not run: a statement before it was not written.</div>}
           </li>
         )
       })}

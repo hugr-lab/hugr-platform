@@ -307,6 +307,10 @@ export interface GrantForm {
   into?: string
   virtualOnly?: boolean
   comment?: string
+  /** read only: COLUMNS or MASK the node could not read - written anew it would widen, so it is only revoked */
+  unreadable?: boolean
+  /** read only: a catalog grant's column list of an older build */
+  legacyColumns?: boolean
 }
 
 export interface GrantRead {
@@ -318,8 +322,10 @@ export interface GrantRead {
 /** the statements an edit writes, what each answered, and the one the node refused */
 export interface GrantWritten {
   statements: string[]
-  answers: Answer[]
-  refused?: { index: number; message: string }
+  /** null: the statement ran and the node answered no (ok, message) - never read as done */
+  answers: (Answer | null)[]
+  /** unknown: the node did not answer in time or was not reached for it - it may have been written */
+  refused?: { index: number; message: string; unknown?: boolean }
 }
 
 /** what a management statement answers (duckdb-acl spec 179): ok, and what the node says beside it - a false says what

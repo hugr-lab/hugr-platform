@@ -118,7 +118,9 @@ export class Api {
   grantRead = (level: string, role: string, catalog: string, target = '') =>
     this.request<GrantRead>('GET', `policy/grant?${query({ level, role, catalog, ...(target ? { target } : {}) })}`)
   grantPreview = (form: GrantForm, version: string) => this.request<GrantWritten>('POST', 'policy/grant/preview', { form, version })
-  grantWrite = (form: GrantForm, version: string) => this.request<GrantWritten>('POST', 'policy/grant', { form, version })
+  // the statements shown: written only while the form composes exactly those
+  grantWrite = (form: GrantForm, version: string, statements: string[]) =>
+    this.request<GrantWritten>('POST', 'policy/grant', { form, version, statements })
   grantCheck = (form: GrantForm) => this.request<ViewPage>('POST', 'policy/grant/check', form)
   policySources = () => this.request<{ sources: string[] }>('GET', 'policy/sources')
   policyCall = (fn: string, args: Record<string, string>, limit = 5000) =>

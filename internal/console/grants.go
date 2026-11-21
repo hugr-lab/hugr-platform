@@ -47,6 +47,11 @@ type GrantForm struct {
 	Into        string `json:"into,omitempty"`
 	VirtualOnly bool   `json:"virtualOnly,omitempty"`
 	Comment     string `json:"comment,omitempty"`
+	// read only: an object grant whose COLUMNS or MASK the node could not read (the view answers NULL), or a catalog
+	// grant carrying a list stored by an older build - written anew it would widen, so it is only revoked here
+	Unreadable bool `json:"unreadable,omitempty"`
+	// read only: a catalog grant's legacy column list (duckdb-acl spec 158: it refuses every read under the grant)
+	LegacyColumns bool `json:"legacyColumns,omitempty"`
 }
 
 // ColumnTest is an object grant's COLUMNS: all (no clause), only these, or every one but these.
@@ -61,10 +66,12 @@ type GrantMask struct {
 	Mask   string `json:"mask"`
 }
 
-// GrantEdit is what the editor sends: the form, and the version of the grant it was made from ("" = a new grant).
+// GrantEdit is what the editor sends: the form, the version of the grant it was made from ("" = a new grant), and -
+// to write - the statements it was shown: written only while the form composes exactly those.
 type GrantEdit struct {
-	Form    GrantForm `json:"form"`
-	Version string    `json:"version"`
+	Form       GrantForm `json:"form"`
+	Version    string    `json:"version"`
+	Statements []string  `json:"statements,omitempty"`
 }
 
 // GrantRead is `GET policy/grant`: the grant as the node holds it now (none: Exists false), and its version.
@@ -74,37 +81,47 @@ type GrantRead struct {
 	Version string    `json:"version"`
 }
 
-// GrantWritten is what the statements answered, up to the one the node refused.
+// GrantWritten is what the statements answered, up to the one the node refused: an answer nil when the statement ran
+// and the node answered no (ok, message) - never read as done.
 type GrantWritten struct {
-	Statements []string `json:"statements"`
-	Answers    []Answer `json:"answers"`
+	Statements []string  `json:"statements"`
+	Answers    []*Answer `json:"answers"`
 	// Refused: the statement the node refused (its index) and why; the ones before it were written
 	Refused *GrantRefusal `json:"refused,omitempty"`
 }
 
-// GrantRefusal is the statement the node refused and its message.
+// GrantRefusal is the statement the node refused and its message; Unknown: the node did not answer in time or could not
+// be reached for it, so it may have been written.
 type GrantRefusal struct {
 	Index   int    `json:"index"`
 	Message string `json:"message"`
+	Unknown bool   `json:"unknown,omitempty"`
 }
 
 var (
 	errGrantChanged = errors.New("the grant changed since it was read: read it again")
+	errGrantExists  = errors.New("the role holds this grant already: open it from its row to change it")
+	errNotShown     = errors.New("the statements are not the ones shown: show them again")
 	// a capability is a word (duckdb-acl spec 012)
 	capWord = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 )
 
 // the views the editor reads: the grants of each level, and the names a form may name
 const (
-	stmtGrantRows       = `SELECT "role", catalog, is_main, caps, rls, versions FROM platform.grants LIMIT 100001`
+	stmtGrantRows       = `SELECT "role", catalog, is_main, caps, rls, versions, columns FROM platform.grants LIMIT 100001`
 	stmtSchemaGrantRows = `SELECT "role", catalog, schema_path, caps, inherited, "into", virtual_only, comment ` +
 		`FROM platform.schema_grants LIMIT 100001`
 	stmtObjectGrantRows = `SELECT "role", catalog, object, caps, rls, columns, masks, versions FROM platform.object_grants ` +
 		`LIMIT 100001`
-	stmtSchemaNames = `SELECT catalog, path AS name FROM platform.schemas LIMIT 100001`
+	stmtSchemaNames = `SELECT catalog, path AS name, phys_path FROM platform.schemas LIMIT 100001`
 	stmtObjectNames = `SELECT catalog, name FROM platform.relations UNION ALL SELECT catalog, name FROM platform.functions ` +
 		`LIMIT 100001`
 )
+
+// stmtGrantRoles: a grant may name a role the policy never created (an IdP's role) - the roles the policy names
+// anywhere: created, granted, mapped
+var stmtGrantRoles = argumentLists["role"] + ` UNION SELECT "role" FROM platform.role_mappings ` +
+	`UNION SELECT "role" FROM platform.schema_grants UNION SELECT "role" FROM platform.object_grants`
 
 // grantBody reads the editor's request: a form with its masks may pass decodeStrict's 4 KiB.
 func grantBody(r *http.Request, v any) error {
@@ -158,11 +175,18 @@ func formOf(level string, row map[string]any) GrantForm {
 	case "catalog":
 		f.Main, _ = row["is_main"].(bool)
 		f.RLS, f.Versions = str(row["rls"]), str(row["versions"])
+		if legacy, ok := row["columns"].([]any); ok && len(legacy) > 0 {
+			f.LegacyColumns = true
+		}
 	case "schema":
 		f.Target, f.Into, f.Comment = str(row["schema_path"]), str(row["into"]), str(row["comment"])
 		f.VirtualOnly, _ = row["virtual_only"].(bool)
 	case "object":
 		f.Target, f.RLS, f.Versions = str(row["object"]), str(row["rls"]), str(row["versions"])
+		// a readable list or set of masks is never NULL (columns all, masks []): NULL is one the node could not read
+		_, hasColumns := row["columns"].(map[string]any)
+		_, hasMasks := row["masks"].([]any)
+		f.Unreadable = !hasColumns || !hasMasks
 		if c, ok := row["columns"].(map[string]any); ok {
 			test := &ColumnTest{Mode: str(c["mode"]), Names: []string{}}
 			if names, ok := c["names"].([]any); ok {
@@ -221,9 +245,12 @@ func (s *Server) readGrant(ctx context.Context, token string, f *GrantForm) (*gr
 	if !ok {
 		return nil, errors.New("the level is catalog, schema or object")
 	}
-	statements := []string{argumentLists["role"], argumentLists["catalog"], rows}
+	statements := []string{stmtGrantRoles, argumentLists["catalog"], rows}
 	if targets != "" {
 		statements = append(statements, targets)
+	}
+	if f.Level == "object" {
+		statements = append(statements, stmtSchemaNames) // a live alias's tables are no relation of their own
 	}
 	results, _, err := s.onNode(ctx, token, statements...)
 	if err != nil {
@@ -253,6 +280,9 @@ func (s *Server) readGrant(ctx context.Context, token string, f *GrantForm) (*gr
 	f.Role, f.Catalog = role, catalog
 	if targets != "" {
 		target, ok := listed(n.targets[asciiFold(catalog)], f.Target, true)
+		if !ok && f.Level == "object" && underAlias(results[4], catalog, f.Target) {
+			target, ok = f.Target, true // the node judges the table under the alias
+		}
 		if !ok {
 			return nil, fmt.Errorf("the catalog %s has no %s %s", catalog, f.Level, f.Target)
 		}
@@ -270,6 +300,32 @@ func (s *Server) readGrant(ctx context.Context, token string, f *GrantForm) (*gr
 		}
 	}
 	return n, nil
+}
+
+// underAlias: the key names an object under a live alias schema of the catalog (a schema with a physical path) -
+// `<alias path>.<table>`, which the node takes as a grant's object (duckdb-acl spec 158).
+func underAlias(schemas *Result, catalog, key string) bool {
+	parts := keyParts(key)
+	for _, row := range schemas.Records() {
+		if asciiFold(str(row["catalog"])) != asciiFold(catalog) || str(row["phys_path"]) == "" {
+			continue
+		}
+		alias := keyParts(str(row["name"]))
+		if len(alias) == 0 || len(parts) <= len(alias) {
+			continue
+		}
+		same := true
+		for i := range alias {
+			if asciiFold(alias[i]) != asciiFold(parts[i]) {
+				same = false
+				break
+			}
+		}
+		if same {
+			return true
+		}
+	}
+	return false
 }
 
 // capsClause is a GRANT's capabilities: unstated no clause, none CAPS '{}', else WITH (…).
@@ -315,14 +371,94 @@ func textLiteral(field, v string) (string, error) {
 	return "'" + strings.ReplaceAll(v, "'", "''") + "'", nil
 }
 
-// clause checks a text placed in a clause as the person wrote it: one or more lines, no NUL.
+// clause checks a text placed in a clause as the person wrote it: it stays in its clause - no ';' and no comment
+// outside a quoted string, its parentheses balanced (the node judges the rest; this keeps one statement as shown).
 func clause(field, v string) (string, error) {
 	v = strings.TrimSpace(v)
 	if len(v) > 64<<10 || strings.ContainsRune(v, 0) {
 		return "", fmt.Errorf("%s is too long", field)
 	}
+	depth := 0
+	var quote byte
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0 // a doubled quote closes and opens again: the same
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth < 0 {
+				return "", fmt.Errorf("%s closes a parenthesis it did not open", field)
+			}
+		case c == ';':
+			return "", fmt.Errorf("%s is one expression: no ';'", field)
+		case (c == '-' || c == '/') && i+1 < len(v) && (v[i+1] == '-' && c == '-' || v[i+1] == '*' && c == '/'):
+			return "", fmt.Errorf("%s holds no comment", field)
+		}
+	}
+	if quote != 0 || depth != 0 {
+		return "", fmt.Errorf("%s leaves a quote or a parenthesis open", field)
+	}
 	return v, nil
 }
+
+// versionsClause checks a VERSIONS clause's form (duckdb-acl spec 167): CURRENT, ANY, AT (…) whole, or BETWEEN … AND
+// …, naming no other clause of a grant outside a quoted string - the clause stays the versions.
+func versionsClause(v string) error {
+	bare := []byte(v) // the text with its quoted strings blanked
+	var quote byte
+	for i := range bare {
+		c := bare[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+			bare[i] = ' '
+		case c == '\'' || c == '"':
+			quote = c
+			bare[i] = ' '
+		}
+	}
+	text := strings.ToUpper(string(bare))
+	if grantClauseWord.MatchString(text) {
+		return errors.New("the versions name another clause of the grant")
+	}
+	switch {
+	case text == "CURRENT" || text == "ANY":
+		return nil
+	case versionsAt.MatchString(text):
+		// the parenthesis after AT closes at the end
+		depth := 0
+		for i := strings.IndexByte(text, '('); i < len(text); i++ {
+			switch text[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 && i != len(text)-1 {
+					return errors.New("AT (…) is the whole clause")
+				}
+			}
+		}
+		return nil
+	case versionsBetween.MatchString(text):
+		return nil
+	}
+	return errors.New("the versions are CURRENT, ANY, AT (…) or BETWEEN … AND …")
+}
+
+var (
+	grantClauseWord = regexp.MustCompile(`\b(RLS|COLUMNS|MASK|VERSIONS|WITH|CAPS|MAIN|TO|ROLE|INTO|COMMENT)\b`)
+	versionsAt      = regexp.MustCompile(`^AT\s*\(.*\)$`)
+	versionsBetween = regexp.MustCompile(`^BETWEEN\s+\S.*\s+AND\s+\S`)
+)
 
 // columnsClause is an object grant's COLUMNS, and its text as check_grant takes it.
 func columnsClause(c *ColumnTest) (clauseText, checkText string, err error) {
@@ -410,6 +546,15 @@ func (f GrantForm) statements(current *GrantForm) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if versions != "" {
+		if err := versionsClause(versions); err != nil {
+			return nil, err
+		}
+	}
+	if current != nil && current.Unreadable {
+		return nil, errors.New("the node could not read this grant's columns or masks: written anew it would show what " +
+			"they hide, so revoke it, or write it from the SQL page")
+	}
 	head := "GRANT " + word + " " + target + " TO ROLE " + role
 	switch f.Level {
 	case "catalog":
@@ -426,10 +571,21 @@ func (f GrantForm) statements(current *GrantForm) ([]string, error) {
 			}
 			return []string{out}, nil
 		}
-		// a catalog grant changes property by property, keeping the rest (its object grants too)
+		// a catalog grant changes property by property, keeping the rest (its object grants too); its versions only
+		// by the grant written again, which keeps its object grants but would drop a legacy column list - a widening
 		if versions != strings.TrimSpace(current.Versions) {
-			return nil, errors.New("a catalog grant's versions are written with it: revoking it takes its object " +
-				"grants too, so change them with the grant written anew")
+			if current.LegacyColumns {
+				return nil, errors.New("this catalog grant carries a column list of an older build: its versions are " +
+					"not changed here (written again, the list would go)")
+			}
+			out := head + caps
+			if f.Main {
+				out += " MAIN"
+			}
+			if strings.TrimSpace(f.RLS) != "" {
+				out += " RLS " + rls
+			}
+			return []string{out + " VERSIONS " + versions}, nil
 		}
 		alter := "ALTER GRANT CATALOG " + cat + " TO ROLE " + role + " SET "
 		var out []string
@@ -533,6 +689,9 @@ func (s *Server) composed(ctx context.Context, token string, edit *GrantEdit) ([
 		return nil, err
 	}
 	if version(names.current) != edit.Version {
+		if edit.Version == "" {
+			return nil, errGrantExists
+		}
 		return nil, errGrantChanged
 	}
 	return edit.Form.statements(names.current)
@@ -549,7 +708,7 @@ func (s *Server) grantPreview(w http.ResponseWriter, r *http.Request, token stri
 		grantProblem(w, err)
 		return
 	}
-	answer(w, GrantWritten{Statements: statements, Answers: []Answer{}})
+	answer(w, GrantWritten{Statements: statements, Answers: []*Answer{}})
 }
 
 // grantWrite runs the edit's statements one at a time on one node, stopping at the first the node refuses, and
@@ -561,11 +720,14 @@ func (s *Server) grantWrite(w http.ResponseWriter, r *http.Request, token string
 		return
 	}
 	statements, err := s.composed(r.Context(), token, &edit)
+	if err == nil && !slices.Equal(statements, edit.Statements) {
+		err = errNotShown // what runs is what the person saw, or nothing
+	}
 	if err != nil {
 		grantProblem(w, err)
 		return
 	}
-	out := GrantWritten{Statements: statements, Answers: []Answer{}}
+	out := GrantWritten{Statements: statements, Answers: []*Answer{}}
 	if len(statements) == 0 {
 		answer(w, out)
 		return
@@ -574,18 +736,21 @@ func (s *Server) grantWrite(w http.ResponseWriter, r *http.Request, token string
 	for _, result := range results {
 		said, aerr := AnswerOf(result)
 		if aerr != nil {
-			said = Answer{OK: false, Message: "the node answered no (ok, message)"}
+			out.Answers = append(out.Answers, nil) // it ran; what it did the node did not say
+			continue
 		}
 		said.Fields = nil
-		out.Answers = append(out.Answers, said)
+		out.Answers = append(out.Answers, &said)
 	}
 	if err != nil {
 		if len(results) == 0 && !errors.As(err, new(*NodeError)) {
-			policyProblem(w, err) // nothing ran: the node could not be reached
+			// the first statement: no node seated the person, or it did not answer (in time: it may have run)
+			policyProblem(w, err)
 			return
 		}
 		s.Log.Info("a grant not written", "level", edit.Form.Level, "by", p.subject, "error", err.Error())
-		out.Refused = &GrantRefusal{Index: len(results), Message: personMessage(err)}
+		out.Refused = &GrantRefusal{Index: len(results), Message: personMessage(err),
+			Unknown: !errors.As(err, new(*NodeError))}
 	}
 	answer(w, out)
 }
@@ -662,7 +827,7 @@ func (f GrantForm) checkStatement() (string, error) {
 func grantProblem(w http.ResponseWriter, err error) {
 	var refused *NodeError
 	switch {
-	case errors.Is(err, errGrantChanged):
+	case errors.Is(err, errGrantChanged), errors.Is(err, errGrantExists), errors.Is(err, errNotShown):
 		problem(w, http.StatusConflict, "grant_changed", err.Error())
 	case errors.As(err, &refused), errors.Is(err, errNoNode), errors.Is(err, errUnreachable):
 		policyProblem(w, err)

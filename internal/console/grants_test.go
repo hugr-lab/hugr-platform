@@ -53,6 +53,20 @@ func TestGrantStatements(t *testing.T) {
 			[]string{`REVOKE OBJECT "c"."t" FROM ROLE "r"`}},
 		{GrantForm{Level: "catalog", Op: "revoke", Role: "r", Catalog: "c"}, &GrantForm{},
 			[]string{`REVOKE CATALOG "c" FROM ROLE "r"`}},
+		// an existing catalog grant's versions: the grant written again (it keeps its object grants)
+		{GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("select"), Main: true, Versions: "any"},
+			&GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("select"), Main: true},
+			[]string{`GRANT CATALOG "c" TO ROLE "r" WITH (select) MAIN VERSIONS any`}},
+		// an unreadable grant is still revoked
+		{GrantForm{Level: "object", Op: "revoke", Role: "r", Catalog: "c", Target: "t"}, &GrantForm{Unreadable: true},
+			[]string{`REVOKE OBJECT "c"."t" FROM ROLE "r"`}},
+		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Versions: "BETWEEN TIMESTAMP '2026-01-01 MASK' AND now()"}, nil,
+			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" VERSIONS BETWEEN TIMESTAMP '2026-01-01 MASK' AND now()`}},
+		// a mask's own quotes and parentheses
+		{GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Masks: []GrantMask{{Column: "a", Mask: "replace(a, ';', '(')"}}}, nil,
+			[]string{`GRANT OBJECT "c"."t" TO ROLE "r" MASK ("a" AS replace(a, ';', '('))`}},
 	} {
 		got, err := tc.form.statements(tc.current)
 		if err != nil || !reflect.DeepEqual(got, tc.want) {
@@ -63,16 +77,26 @@ func TestGrantStatements(t *testing.T) {
 		form    GrantForm
 		current *GrantForm
 	}{
-		"a capability with SQL":    {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("select) MAIN --")}, nil},
-		"a capability's capitals":  {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("Select")}, nil},
-		"a revoke of nothing":      {GrantForm{Level: "object", Op: "revoke", Role: "r", Catalog: "c", Target: "t"}, nil},
-		"another op":               {GrantForm{Level: "catalog", Op: "drop", Role: "r", Catalog: "c"}, nil},
-		"a role's line break":      {GrantForm{Level: "catalog", Role: "r\n", Catalog: "c"}, nil},
-		"no columns named":         {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Columns: &ColumnTest{Mode: "only"}}, nil},
-		"another column mode":      {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Columns: &ColumnTest{Mode: "x", Names: []string{"a"}}}, nil},
-		"an empty mask":            {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a"}}}, nil},
-		"into and virtual only":    {GrantForm{Level: "schema", Role: "r", Catalog: "c", Target: "s", Into: "p.s", VirtualOnly: true}, nil},
-		"a catalog's new versions": {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Versions: "ANY"}, &GrantForm{}},
+		"a capability with SQL":     {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("select) MAIN --")}, nil},
+		"a capability's capitals":   {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Caps: capsOf("Select")}, nil},
+		"a revoke of nothing":       {GrantForm{Level: "object", Op: "revoke", Role: "r", Catalog: "c", Target: "t"}, nil},
+		"another op":                {GrantForm{Level: "catalog", Op: "drop", Role: "r", Catalog: "c"}, nil},
+		"a role's line break":       {GrantForm{Level: "catalog", Role: "r\n", Catalog: "c"}, nil},
+		"no columns named":          {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Columns: &ColumnTest{Mode: "only"}}, nil},
+		"another column mode":       {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Columns: &ColumnTest{Mode: "x", Names: []string{"a"}}}, nil},
+		"an empty mask":             {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a"}}}, nil},
+		"into and virtual only":     {GrantForm{Level: "schema", Role: "r", Catalog: "c", Target: "s", Into: "p.s", VirtualOnly: true}, nil},
+		"a legacy list's versions":  {GrantForm{Level: "catalog", Role: "r", Catalog: "c", Versions: "ANY"}, &GrantForm{LegacyColumns: true}},
+		"an unreadable grant":       {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t"}, &GrantForm{Unreadable: true}},
+		"a mask's second statement": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: "1); DROP ROLE x; --"}}}, nil},
+		"a mask's comment":          {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: "1 -- x"}}}, nil},
+		"a mask's open parenthesis": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: "upper(a"}}}, nil},
+		"a mask's open quote":       {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Masks: []GrantMask{{Column: "a", Mask: "'x"}}}, nil},
+		"versions with a clause":    {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Versions: "ANY MASK (a AS 1)"}, nil},
+		"versions not a version":    {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Versions: "RLS (true)"}, nil},
+		"between and a clause": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t",
+			Versions: "BETWEEN '2026-01-01' AND now() COLUMNS (a)"}, nil},
+		"at and more": {GrantForm{Level: "object", Role: "r", Catalog: "c", Target: "t", Versions: "AT (VERSION => 1) (x)"}, nil},
 	} {
 		if got, err := tc.form.statements(tc.current); err == nil {
 			t.Errorf("%s: written %q", name, got)
@@ -85,7 +109,7 @@ func grantsNode(h *harness, wrote *[]string, refuse string) {
 	answer := h.nodes.answer
 	h.nodes.answer = func(n fleet.Node, statement string) (*Result, error) {
 		switch statement {
-		case argumentLists["role"]:
+		case stmtGrantRoles:
 			return &Result{Columns: []string{"name"}, Rows: [][]any{{"analyst"}, {"ops"}}}, nil
 		case argumentLists["catalog"]:
 			return &Result{Columns: []string{"name"}, Rows: [][]any{{"Sales"}}}, nil
@@ -96,7 +120,12 @@ func grantsNode(h *harness, wrote *[]string, refuse string) {
 			return &Result{Columns: []string{"role", "catalog", "object", "caps", "rls", "columns", "masks", "versions"},
 				Rows: [][]any{{"analyst", "Sales", "people", nil, nil,
 					map[string]any{"mode": "except", "names": []any{"salary"}},
-					[]any{map[string]any{"column": "ssn", "mask": "CAST(('***') AS VARCHAR)"}}, nil}}}, nil
+					[]any{map[string]any{"column": "ssn", "mask": "CAST(('***') AS VARCHAR)"}}, nil},
+					// a grant whose masks the node could not read: the view answers NULL
+					{"ops", "Sales", "orders", nil, nil, map[string]any{"mode": "all", "names": []any{}}, nil, nil}}}, nil
+		case stmtSchemaNames:
+			return &Result{Columns: []string{"catalog", "name", "phys_path"}, Rows: [][]any{
+				{"Sales", "pg", "pg.public"}, {"Sales", "raw", nil}}}, nil
 		case stmtObjectNames:
 			return &Result{Columns: []string{"catalog", "name"}, Rows: [][]any{{"Sales", "people"}, {"Sales", "orders"}}}, nil
 		}
@@ -140,19 +169,29 @@ func TestGrantEditor(t *testing.T) {
 	if len(wrote) != 0 {
 		t.Errorf("a preview wrote: %q", wrote)
 	}
-	code, out, body = h.do(t, "POST", APIPrefix+"policy/grant", opsToken, edit)
+	// the write carries the statements shown: none, or others, and nothing is written
+	if code, _, _ := h.do(t, "POST", APIPrefix+"policy/grant", opsToken, edit); code != http.StatusConflict {
+		t.Errorf("a write without the statements shown: %d", code)
+	}
+	other := strings.Replace(edit, `"version"`, `"statements": ["ALTER GRANT CATALOG \"Sales\" TO ROLE \"analyst\" SET RLS 'true'"], "version"`, 1)
+	if code, _, _ := h.do(t, "POST", APIPrefix+"policy/grant", opsToken, other); code != http.StatusConflict {
+		t.Errorf("a write of other statements: %d", code)
+	}
+	shown := strings.Replace(edit, `"version"`, `"statements": ["ALTER GRANT CATALOG \"Sales\" TO ROLE \"analyst\" SET RLS 'a > 2'"], "version"`, 1)
+	code, out, body = h.do(t, "POST", APIPrefix+"policy/grant", opsToken, shown)
 	answers := out["answers"].([]any)
 	if code != 200 || len(wrote) != 1 || len(answers) != 1 || answers[0].(map[string]any)["ok"] != true ||
 		!strings.Contains(answers[0].(map[string]any)["message"].(string), "CLUSTER SET SOURCES") || out["refused"] != nil {
 		t.Fatalf("write: %d %s %q", code, body, wrote)
 	}
 	// a form made from another version of the grant: refused, nothing written
-	stale := strings.Replace(edit, v, "0123", 1)
+	stale := strings.Replace(shown, v, "0123", 1)
 	if code, _, _ := h.do(t, "POST", APIPrefix+"policy/grant", opsToken, stale); code != http.StatusConflict {
 		t.Errorf("a stale form: %d", code)
 	}
 	// a new grant where one exists: the same refusal
-	if code, _, _ := h.do(t, "POST", APIPrefix+"policy/grant", opsToken, strings.Replace(edit, v, "", 1)); code != http.StatusConflict {
+	if code, out, _ := h.do(t, "POST", APIPrefix+"policy/grant", opsToken, strings.Replace(shown, v, "", 1)); code != http.StatusConflict ||
+		!strings.Contains(out["message"].(string), "holds this grant already") {
 		t.Errorf("a new grant over one: %d", code)
 	}
 	// names the node does not list
@@ -177,6 +216,32 @@ func TestGrantEditor(t *testing.T) {
 		!reflect.DeepEqual(o["masks"], []any{map[string]any{"column": "ssn", "mask": "CAST(('***') AS VARCHAR)"}}) {
 		t.Errorf("an object grant: %d %v", code, o)
 	}
+	// one whose masks the node could not read: read as such, and only revoked - written anew it would show them
+	code, out, _ = h.do(t, "GET", APIPrefix+"policy/grant?level=object&role=ops&catalog=sales&target=orders", opsToken, "")
+	if code != 200 || out["grant"].(map[string]any)["unreadable"] != true {
+		t.Fatalf("an unreadable grant: %d %v", code, out)
+	}
+	uv := out["version"].(string)
+	caps := `{"form": {"level": "object", "role": "ops", "catalog": "Sales", "target": "orders", "caps": ["select"]}, "version": "` + uv + `"}`
+	if code, out, _ := h.do(t, "POST", APIPrefix+"policy/grant/preview", opsToken, caps); code != http.StatusUnprocessableEntity ||
+		!strings.Contains(out["message"].(string), "could not read") {
+		t.Errorf("an unreadable grant written anew: %d %v", code, out)
+	}
+	revoke := `{"form": {"level": "object", "op": "revoke", "role": "ops", "catalog": "Sales", "target": "orders", "caps": null}, "version": "` + uv + `"}`
+	if code, out, _ := h.do(t, "POST", APIPrefix+"policy/grant/preview", opsToken, revoke); code != 200 ||
+		!reflect.DeepEqual(out["statements"], []any{`REVOKE OBJECT "Sales"."orders" FROM ROLE "ops"`}) {
+		t.Errorf("an unreadable grant revoked: %d %v", code, out)
+	}
+	// a table under a live alias schema is an object the node takes; under a declared schema it is not one
+	alias := `{"form": {"level": "object", "role": "analyst", "catalog": "Sales", "target": "PG.orders", "caps": null}, "version": ""}`
+	if code, out, _ := h.do(t, "POST", APIPrefix+"policy/grant/preview", opsToken, alias); code != 200 ||
+		!reflect.DeepEqual(out["statements"], []any{`GRANT OBJECT "Sales"."PG"."orders" TO ROLE "analyst"`}) {
+		t.Errorf("a table under an alias: %d %v", code, out)
+	}
+	notAlias := strings.Replace(alias, "PG.orders", "raw.orders", 1)
+	if code, _, _ := h.do(t, "POST", APIPrefix+"policy/grant/preview", opsToken, notAlias); code != http.StatusUnprocessableEntity {
+		t.Errorf("a table under a declared schema: %d", code)
+	}
 }
 
 // TestGrantRefusedHalfWay: the statements run in order and stop at the one the node refuses; what ran before it is
@@ -187,7 +252,9 @@ func TestGrantRefusedHalfWay(t *testing.T) {
 	grantsNode(h, &wrote, "SET MAIN")
 	_, out, _ := h.do(t, "GET", APIPrefix+"policy/grant?level=catalog&role=analyst&catalog=Sales", opsToken, "")
 	v := out["version"].(string)
-	edit := `{"form": {"level": "catalog", "role": "analyst", "catalog": "Sales", "caps": [], "main": false, "rls": "a > 1"}, "version": "` + v + `"}`
+	edit := `{"form": {"level": "catalog", "role": "analyst", "catalog": "Sales", "caps": [], "main": false, "rls": "a > 1"}, ` +
+		`"statements": ["ALTER GRANT CATALOG \"Sales\" TO ROLE \"analyst\" SET CAPS '{}'", "ALTER GRANT CATALOG \"Sales\" TO ROLE \"analyst\" SET MAIN false"], ` +
+		`"version": "` + v + `"}`
 	code, out, body := h.do(t, "POST", APIPrefix+"policy/grant", opsToken, edit)
 	refused, _ := out["refused"].(map[string]any)
 	if code != 200 || len(wrote) != 1 || len(out["answers"].([]any)) != 1 || refused == nil ||

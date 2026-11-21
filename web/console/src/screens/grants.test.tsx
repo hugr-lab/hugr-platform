@@ -5,7 +5,7 @@ import { Api } from '../lib/api'
 import type { Session } from '../lib/auth'
 import { AppContext } from '../lib/context'
 import type { Config, GrantForm, Rights } from '../lib/types'
-import { GrantDialog, formProblem, namesOf } from './GrantDialog'
+import { GrantDialog, Written, formProblem, namesOf } from './GrantDialog'
 
 // jsdom has no showModal: a <dialog> stays closed there, and its content is found with hidden: true
 
@@ -48,6 +48,14 @@ function show(props: Omit<Parameters<typeof GrantDialog>[0], 'onDone'>, read?: o
 }
 
 describe('the grant editor (spec 007 stage 2c)', () => {
+  it('tells a statement with no answer and one that may have run from a refusal', () => {
+    render(<Written written={{ statements: ['A', 'B', 'C'], answers: [{ ok: true, message: '' }, null],
+      refused: { index: 2, message: 'the node did not answer in time', unknown: true } }} />)
+    expect(screen.getByText('Ran')).toBeTruthy()
+    expect(screen.getByText('Unknown')).toBeTruthy()
+    expect(screen.queryByText('Refused')).toBeNull()
+  })
+
   it('says what a form lacks', () => {
     const f: GrantForm = { level: 'object', role: 'r', catalog: 'c', target: 't', caps: null }
     expect(formProblem({ ...f, role: ' ' })).toMatch(/role/)
@@ -74,6 +82,8 @@ describe('the grant editor (spec 007 stage 2c)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run', hidden: true }))
     await waitFor(() => expect(screen.getByText(hint)).toBeTruthy())
     expect(sent[1].url).toMatch(/policy\/grant$/)
+    // the write carries the statements shown: the server runs them only while the form composes exactly those
+    expect(sent[1].body).toMatchObject({ version: '', statements: ['GRANT OBJECT "c"."t" TO ROLE "r"'] })
     expect(screen.getAllByText('Done')).toHaveLength(2) // the statement's status and the dialog's button
   })
 
@@ -86,8 +96,19 @@ describe('the grant editor (spec 007 stage 2c)', () => {
     expect(sent[0].url).toMatch(/grant\/check$/)
     fireEvent.click(screen.getByRole('button', { name: 'Revoke', hidden: true }))
     await waitFor(() => expect(screen.getByText('REVOKE OBJECT "c"."t" FROM ROLE "r"')).toBeTruthy())
-    fireEvent.click(screen.getByRole('button', { name: 'Run', hidden: true }))
+    // the button says what it does
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke', hidden: true }))
     await waitFor(() => expect(sent).toHaveLength(3))
-    expect(sent[2].body).toMatchObject({ version: 'v1', form: { op: 'revoke', role: 'r', target: 't' } })
+    expect(sent[2].body).toMatchObject({ version: 'v1', form: { op: 'revoke', role: 'r', target: 't' },
+      statements: ['REVOKE OBJECT "c"."t" FROM ROLE "r"'] })
+  })
+
+  it('offers only the revoke of a grant the node could not read', async () => {
+    const read = { exists: true, version: 'v2', grant: { level: 'object', role: 'r', catalog: 'c', target: 't', caps: null, unreadable: true } }
+    show({ level: 'object', catalog: 'c', role: 'r', target: 't' }, read)
+    await waitFor(() => expect(screen.getByText(/could not read this grant's columns or masks/)).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Show the statements', hidden: true })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Check with the node', hidden: true })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Revoke', hidden: true })).toBeTruthy()
   })
 })
