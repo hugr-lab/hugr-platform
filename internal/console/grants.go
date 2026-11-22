@@ -399,101 +399,15 @@ func textLiteral(field, v string) (string, error) {
 	return "'" + strings.ReplaceAll(v, "'", "''") + "'", nil
 }
 
-// clause checks a text placed in a clause as the person wrote it: it stays in its clause - no ';' and no comment
-// outside a quoted string, its parentheses balanced (the node judges the rest; this keeps one statement as shown).
-func clause(field, v string) (string, error) {
+// trimmed is a form's text as the node will read it: trimmed, bounded, no NUL - the node reads it (with duckdb's parser)
+// from the literal it is written as.
+func trimmed(field, v string) (string, error) {
 	v = strings.TrimSpace(v)
 	if len(v) > 64<<10 || strings.ContainsRune(v, 0) {
 		return "", fmt.Errorf("%s is too long", field)
 	}
-	depth := 0
-	var quote byte
-	for i := 0; i < len(v); i++ {
-		c := v[i]
-		switch {
-		case quote != 0:
-			if c == quote {
-				quote = 0 // a doubled quote closes and opens again: the same
-			}
-		case c == '\'' && i > 0 && (v[i-1] == 'E' || v[i-1] == 'e'):
-			// an escape string reads a backslash-escaped quote, which this scan does not (after a name, a digit or
-			// alone): from the SQL page
-			return "", fmt.Errorf("%s writes no E'…' string here", field)
-		case c == '\'' || c == '"' || c == '`':
-			quote = c
-		case c == '$':
-			// a dollar-quoted string ($$…$$) likewise
-			return "", fmt.Errorf("%s writes no $ outside a quoted string", field)
-		case c == '(':
-			depth++
-		case c == ')':
-			depth--
-			if depth < 0 {
-				return "", fmt.Errorf("%s closes a parenthesis it did not open", field)
-			}
-		case c == ';':
-			return "", fmt.Errorf("%s is one expression: no ';'", field)
-		case (c == '-' || c == '/') && i+1 < len(v) && (v[i+1] == '-' && c == '-' || v[i+1] == '*' && c == '/'):
-			return "", fmt.Errorf("%s holds no comment", field)
-		}
-	}
-	if quote != 0 || depth != 0 {
-		return "", fmt.Errorf("%s leaves a quote or a parenthesis open", field)
-	}
 	return v, nil
 }
-
-// versionsClause checks a VERSIONS clause's form (duckdb-acl spec 167): CURRENT, ANY, AT (…) whole, or BETWEEN … AND
-// …, naming no other clause of a grant outside a quoted string - the clause stays the versions.
-func versionsClause(v string) error {
-	bare := []byte(v) // the text with its quoted strings blanked
-	var quote byte
-	for i := range bare {
-		c := bare[i]
-		switch {
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			}
-			bare[i] = ' '
-		case c == '\'' || c == '"' || c == '`':
-			quote = c
-			bare[i] = ' '
-		}
-	}
-	text := strings.ToUpper(string(bare))
-	if grantClauseWord.MatchString(text) {
-		return errors.New("the versions name another clause of the grant")
-	}
-	switch {
-	case text == "CURRENT" || text == "ANY":
-		return nil
-	case versionsAt.MatchString(text):
-		// the parenthesis after AT closes at the end
-		depth := 0
-		for i := strings.IndexByte(text, '('); i < len(text); i++ {
-			switch text[i] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-				if depth == 0 && i != len(text)-1 {
-					return errors.New("AT (…) is the whole clause")
-				}
-			}
-		}
-		return nil
-	case versionsBetween.MatchString(text):
-		return nil
-	}
-	return errors.New("the versions are CURRENT, ANY, AT (…) or BETWEEN … AND …")
-}
-
-var (
-	grantClauseWord = regexp.MustCompile(`\b(RLS|COLUMNS|MASK|VERSIONS|WITH|CAPS|MAIN|TO|ROLE|INTO|COMMENT)\b`)
-	versionsAt      = regexp.MustCompile(`^AT\s*\(.*\)$`)
-	versionsBetween = regexp.MustCompile(`^BETWEEN\s+\S.*\s+AND\s+\S`)
-)
 
 // columnsClause is an object grant's COLUMNS, and its text as check_grant takes it.
 func columnsClause(c *ColumnTest) (clauseText, checkText string, err error) {
@@ -529,7 +443,7 @@ func masksText(masks []GrantMask) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("a mask's column: %q", m.Column)
 		}
-		expr, err := clause("a mask", m.Mask)
+		expr, err := trimmed("a mask", m.Mask)
 		if err != nil {
 			return "", err
 		}
@@ -577,14 +491,14 @@ func (f GrantForm) statements(current *GrantForm) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	versions, err := clause("the versions", f.Versions)
+	versions, err := trimmed("the versions", f.Versions)
 	if err != nil {
 		return nil, err
 	}
-	if versions != "" {
-		if err := versionsClause(versions); err != nil {
-			return nil, err
-		}
+	// the versions clause as one literal (duckdb-acl spec 180): the node reads and normalizes it
+	versionsLit, err := textLiteral("the versions", versions)
+	if err != nil {
+		return nil, err
 	}
 	if current != nil && current.Unreadable {
 		return nil, errors.New("the node could not read this grant's columns or masks: written anew it would show what " +
@@ -602,7 +516,7 @@ func (f GrantForm) statements(current *GrantForm) ([]string, error) {
 				out += " RLS " + rls
 			}
 			if versions != "" {
-				out += " VERSIONS " + versions
+				out += " VERSIONS " + versionsLit
 			}
 			return []string{out}, nil
 		}
@@ -621,7 +535,7 @@ func (f GrantForm) statements(current *GrantForm) ([]string, error) {
 				out += " RLS " + rls
 			}
 			if versions != "" {
-				out += " VERSIONS " + versions // none: the current version (duckdb-acl spec 168)
+				out += " VERSIONS " + versionsLit // none: the current version (duckdb-acl spec 168)
 			}
 			return []string{out}, nil
 		}
@@ -680,10 +594,15 @@ func (f GrantForm) statements(current *GrantForm) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
-			out += " MASK (" + m + ")"
+			// the items as one literal (duckdb-acl spec 180): the node reads them with duckdb's parser
+			ml, err := textLiteral("the masks", m)
+			if err != nil {
+				return nil, err
+			}
+			out += " MASK " + ml
 		}
 		if versions != "" {
-			out += " VERSIONS " + versions
+			out += " VERSIONS " + versionsLit
 		}
 		return []string{out}, nil
 	}
