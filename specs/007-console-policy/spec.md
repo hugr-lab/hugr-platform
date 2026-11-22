@@ -231,8 +231,8 @@ check, duckdb-acl spec 122); the node judges every write. A row's role opens its
   tokenizer, not a scanner of ours): a mask's items and a versions clause are written as literals (`MASK '<items>'`,
   `VERSIONS '<clause>'`), as the row filter is, and the node reads them with duckdb's parser. Until spec 180 they were
   placed in their clauses and kept there by a scanner of the console's own, which four review rounds found reading some
-  texts otherwise than duckdb's tokenizer (`E'…'`, `$$…$$`, backtick names). It needs hugr-node with duckdb-acl spec
-  180.
+  texts otherwise than duckdb's tokenizer (`E'…'`, `$$…$$`, backtick names). It needs hugr-node v0.4.1 (duckdb-acl
+  6ee182d), which the charts pin.
 - **Names**: a role is one the policy names (created or granted, and mapped where the person reads the mappings - the
   policy bundle's view) - a role no list names yet is created first (stage 2e); a table under a live alias schema
   (`<alias>.<table>`) is an object, as the node takes it, the alias in the node's spelling. The

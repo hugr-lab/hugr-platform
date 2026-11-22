@@ -58,7 +58,7 @@ platform:
   name: hugr
   spec:
     node:
-      image: ghcr.io/hugr-lab/hugr-node:v0.4.0
+      image: ghcr.io/hugr-lab/hugr-node:v0.4.1
       # what the release says of that image (spec 008): its DuckDB release, and the policy catalog's schema its build
       # reads and writes and the oldest build that reads what it writes. An upgrade checks the repository and orders
       # the catalog's migration by them; change them with the image.

@@ -22,7 +22,7 @@ hugr-platform:
     dnsNames: [hugr.example]
   platform:
     spec:
-      node: {image: ghcr.io/hugr-lab/hugr-node:v0.4.0}
+      node: {image: ghcr.io/hugr-lab/hugr-node:v0.4.1}
       front: {replicas: 2}
       console:
         clientID: hugr-console
