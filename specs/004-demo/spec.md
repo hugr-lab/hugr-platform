@@ -284,6 +284,11 @@ they run once per `up` (`all` does both).
     The grant is `RLS 'region = ''north'''`, `* EXCLUDE (id)`, `amount` masked. analyst_a then reads 2 rows, an amount
     of 0 and no id. It reads back as written. Statements not shown, a new grant over it and a stale edit are refused
     (409). Revoked through the editor, analyst_a reads the 3 rows again.
+16. **Resource groups from the console** (spec 013). Group a's resource group gets `max_result_rows 100` from the
+    editor. analyst_a's next session gets 100 of a 243-row cross join and then the
+    refusal; with the limit cleared, all 243 rows.
+    adhoc, which no group of nodes serves, is made with a limit, a comment and analyst_b, read back, and dropped.
+    Dropping a is refused, since its nodes would drain.
 
 Then the secrets scan (Security).
 

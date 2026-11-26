@@ -380,3 +380,36 @@ export interface ClusterPage {
   lineage: { node: string; row?: Record<string, unknown>; error?: string }[]
   links: Link[]
 }
+
+/** spec 013: a resource group's limits, each a whole number as text (a BIGINT: a number rounds past 2^53) - null is
+ * unnamed, the node's setting */
+export interface ResourceGroupLimits {
+  window_start: string | null
+  window_max: string | null
+  batch_bytes: string | null
+  max_result_rows: string | null
+  queue_priority: string | null
+  max_sessions: string | null
+}
+
+/** a resource group as the editor writes it, and as the console reads one back */
+export interface ResourceGroupForm {
+  name: string
+  limits: ResourceGroupLimits
+  comment: string
+  default: boolean
+  roles: string[]
+  op?: 'write' | 'drop'
+}
+
+/** the group as the node holds it (with its version), the roles the policy has, the default group, the groups of nodes
+ * serving it */
+export interface ResourceGroupRead {
+  exists: boolean
+  group: ResourceGroupForm
+  version: string
+  roles: string[]
+  defaultIs?: string
+  nodeGroups: string[]
+}
+

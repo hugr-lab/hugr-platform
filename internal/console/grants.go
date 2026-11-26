@@ -684,12 +684,26 @@ func (s *Server) grantWrite(w http.ResponseWriter, r *http.Request, token string
 		grantProblem(w, err)
 		return
 	}
-	out := GrantWritten{Statements: statements, Answers: []*Answer{}}
-	if len(statements) == 0 {
-		answer(w, out)
+	out, err := s.writeAnswered(r.Context(), token, statements)
+	if err != nil {
+		policyProblem(w, err)
 		return
 	}
-	results, _, err := s.write(r.Context(), token, statements...)
+	if out.Refused != nil {
+		s.Log.Info("a grant not written", "level", edit.Form.Level, "by", p.subject, "error", out.Refused.Message)
+	}
+	answer(w, out)
+}
+
+// writeAnswered runs the statements one at a time on one node that writes, stopping at the first the node refuses, and
+// answers what each said. An error is the first statement's when no node seated the person or it did not answer (in
+// time: it may have run); a refusal past it is the answer's.
+func (s *Server) writeAnswered(ctx context.Context, token string, statements []string) (*GrantWritten, error) {
+	out := &GrantWritten{Statements: statements, Answers: []*Answer{}}
+	if len(statements) == 0 {
+		return out, nil
+	}
+	results, _, err := s.write(ctx, token, statements...)
 	for _, result := range results {
 		said, aerr := AnswerOf(result)
 		if aerr != nil {
@@ -701,15 +715,12 @@ func (s *Server) grantWrite(w http.ResponseWriter, r *http.Request, token string
 	}
 	if err != nil {
 		if len(results) == 0 && !errors.As(err, new(*NodeError)) {
-			// the first statement: no node seated the person, or it did not answer (in time: it may have run)
-			policyProblem(w, err)
-			return
+			return nil, err
 		}
-		s.Log.Info("a grant not written", "level", edit.Form.Level, "by", p.subject, "error", err.Error())
 		out.Refused = &GrantRefusal{Index: len(results), Message: personMessage(err),
 			Unknown: !errors.As(err, new(*NodeError))}
 	}
-	answer(w, out)
+	return out, nil
 }
 
 // grantCheck asks platform.check_grant what writing a catalog or object grant would say, written nowhere.

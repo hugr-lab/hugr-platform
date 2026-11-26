@@ -5,6 +5,7 @@ import { CircleAlert } from 'lucide-react'
 import { Chip, Dialog, Problem, messageOf } from '../components/ui'
 import { useApp, useLoad } from '../lib/context'
 import type { Fleet, Group, GroupPatch } from '../lib/types'
+import { ResourceGroupDialog } from './ResourceGroupDialog'
 
 const field = 'h-11 w-full rounded-sm border border-ink-muted bg-surface px-3 text-base text-ink'
 const label = 'text-sm font-semibold'
@@ -237,10 +238,12 @@ export function PolicySection({ group, read, onChanged }: { group: Group; read?:
   const policy = useLoad(() => api.groupPolicy(group.name), [api, group.name, read])
   const [adding, setAdding] = useState(false)
   const [removing, setRemoving] = useState(false)
+  const [editing, setEditing] = useState(false)
   const p = policy.data
   const done = (changed: boolean) => {
     setAdding(false)
     setRemoving(false)
+    setEditing(false)
     if (changed) onChanged() // the page reads the fleet again, and this section with it
   }
   return (
@@ -269,11 +272,13 @@ export function PolicySection({ group, read, onChanged }: { group: Group; read?:
             {(!p.inPolicy || p.roles.some((r) => !p.bound.includes(r))) && (
               <button type="button" className="btn-outline" onClick={() => setAdding(true)}>{p.inPolicy ? 'Bind roles' : 'Add to the policy'}</button>
             )}
+            {p.inPolicy && <button type="button" className="btn-outline" onClick={() => setEditing(true)}>Limits and roles</button>}
             {p.inPolicy && !p.default && <button type="button" className="btn-quiet" onClick={() => setRemoving(true)}>Remove from the policy</button>}
           </div>
         </div>
       )}
       {adding && p && <AddToPolicyDialog group={group.name} policy={p} onDone={done} />}
+      {editing && p && <ResourceGroupDialog name={p.resourceGroup} onDone={done} />}
       {removing && p && <RemoveFromPolicyDialog group={group.name} resourceGroup={p.resourceGroup} onDone={done} />}
     </section>
   )

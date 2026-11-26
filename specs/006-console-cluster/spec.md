@@ -73,8 +73,9 @@ These are the same management statements the DBeaver client sends. The node judg
 
 - **No name from the browser becomes SQL as typed.** The console reads the roles on the node first and binds only roles
   in that list. Every name is written as a double-quoted identifier.
-- **The resource group is created with no limits.** Its limits and the default flag of an existing group are set with
-  the policy (spec 007): `default` asked for a group the policy has already is refused, never dropped silently.
+- **The resource group is created with no limits.** Its limits, comment, default flag and later bindings are set in
+  the resource group's editor (spec 013, "Limits and roles"): `default` asked here for a group the policy has already
+  is refused, never dropped silently.
 - **The statements go to a serving node first.** The group's own nodes drain themselves, so they are asked last, and
   a placement refusal sends the call to one of the groups it names.
 - **A repeat finishes a cut call.** A known resource group is never created again; binding a role again replaces the
