@@ -1,6 +1,6 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
-import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, GrantForm, GrantRead, GrantWritten, GroupSources, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, Rights, SessionRow, ViewPage } from './types'
+import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, GrantForm, GrantRead, GrantWritten, GroupSources, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, ResourceGroupForm, ResourceGroupRead, Rights, SessionRow, ViewPage } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -122,6 +122,12 @@ export class Api {
   grantWrite = (form: GrantForm, version: string, statements: string[]) =>
     this.request<GrantWritten>('POST', 'policy/grant', { form, version, statements })
   grantCheck = (form: GrantForm) => this.request<ViewPage>('POST', 'policy/grant/check', form)
+  // spec 013: a resource group - read with its version, its statements shown, then written as shown
+  resourceGroupRead = (name: string) => this.request<ResourceGroupRead>('GET', `policy/resource-group?${query({ name })}`)
+  resourceGroupPreview = (form: ResourceGroupForm, version: string) =>
+    this.request<GrantWritten>('POST', 'policy/resource-group/preview', { form, version })
+  resourceGroupWrite = (form: ResourceGroupForm, version: string, statements: string[]) =>
+    this.request<GrantWritten>('POST', 'policy/resource-group', { form, version, statements })
   policySources = () => this.request<{ sources: string[] }>('GET', 'policy/sources')
   policyCall = (fn: string, args: Record<string, string>, limit = 5000) =>
     this.request<ViewPage>('GET', `policy/functions/${part(fn)}?${query({ ...args, limit: String(limit) })}`)

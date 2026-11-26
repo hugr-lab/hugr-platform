@@ -8,6 +8,7 @@ import { useApp, useLoad } from '../lib/context'
 import { calls, caps, grantColumns, grantMasks, policyParts, reads } from '../lib/policy'
 import type { GrantForm, ViewPage } from '../lib/types'
 import { GrantDialog } from './GrantDialog'
+import { ResourceGroupDialog } from './ResourceGroupDialog'
 
 const enc = encodeURIComponent
 
@@ -229,10 +230,21 @@ export function FunctionCategories() {
 
 export function ResourceGroups() {
   const { rights } = useApp()
+  // spec 013: the policy bundle edits them (the node judges each write: an unrestricted manage)
+  const [editing, setEditing] = useState<string>()
+  const [written, setWritten] = useState(0)
+  const edits = rights.policy
   return (
     <Frame title="Resource groups">
-      {reads(rights, 'resource_groups') && <ViewTable view="resource_groups" title="Resource groups" />}
-      {reads(rights, 'role_resource_groups') && <ViewTable view="role_resource_groups" title="Roles in them" />}
+      {edits && <div><button type="button" className="btn-outline" onClick={() => setEditing('')}>New resource group</button></div>}
+      {reads(rights, 'resource_groups') && <ViewTable key={`r${written}`} view="resource_groups" title="Resource groups"
+        link={(c, row) => edits && c === 'group' ? (
+          <button type="button" className="link text-left" aria-label={`Edit the resource group ${String(row.group)}`}
+            onClick={() => setEditing(String(row.group))}>{String(row.group)}</button>
+        ) : undefined} />}
+      {reads(rights, 'role_resource_groups') && <ViewTable key={`b${written}`} view="role_resource_groups" title="Roles in them" />}
+      {editing !== undefined && <ResourceGroupDialog name={editing}
+        onDone={(changed) => { setEditing(undefined); if (changed) setWritten((n) => n + 1) }} />}
     </Frame>
   )
 }

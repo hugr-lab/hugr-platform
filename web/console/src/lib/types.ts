@@ -380,3 +380,35 @@ export interface ClusterPage {
   lineage: { node: string; row?: Record<string, unknown>; error?: string }[]
   links: Link[]
 }
+
+/** spec 013: a resource group's limits - null is unnamed, the node's setting */
+export interface ResourceGroupLimits {
+  window_start: number | null
+  window_max: number | null
+  batch_bytes: number | null
+  max_result_rows: number | null
+  queue_priority: number | null
+  max_sessions: number | null
+}
+
+/** a resource group as the editor writes it, and as the console reads one back */
+export interface ResourceGroupForm {
+  name: string
+  limits: ResourceGroupLimits
+  comment: string
+  default: boolean
+  roles: string[]
+  op?: 'write' | 'drop'
+}
+
+/** the group as the node holds it (with its version), the roles the policy has, the default group, the groups of nodes
+ * serving it */
+export interface ResourceGroupRead {
+  exists: boolean
+  group: ResourceGroupForm
+  version: string
+  roles: string[]
+  defaultIs?: string
+  nodeGroups: string[]
+}
+

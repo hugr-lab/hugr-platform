@@ -897,6 +897,75 @@ check_console_grants() {
 	ok "revoked through the editor: analyst_a reads demo.orders whole again (3 rows)"
 }
 
+# rg_edit <path> <form json> <version> [statements json]: the resource group editor's request body sent as the admin
+rg_edit() {
+	local body
+	body=$(json_body 'dict(form=json.loads(a[0]), version=a[1], **({"statements": json.loads(a[2])} if a[2] else {}))' "$2" "$3" "${4:-}")
+	console_api admin POST "$1" "$body"
+}
+# rg_write <form json> <version>: previewed, then written as shown; the write's answer
+rg_write() {
+	local out statements
+	out="$(rg_edit policy/resource-group/preview "$1" "$2")" || return 1
+	statements="$(json_get "$out" "json.dumps(r['statements'])")"
+	rg_edit policy/resource-group "$1" "$2" "$statements"
+}
+# rg_read <name>: the resource group as the console reads it
+rg_read() { console_api admin GET "policy/resource-group?name=$1"; }
+
+# check_console_resource_groups: spec 013 - a resource group edited from the console: a's limit written, and the next
+# session of analyst_a's runs under it; cleared, it reads as before; a group no group of nodes serves made, a role bound,
+# then dropped; a's own drop refused (its nodes would drain)
+check_console_resource_groups() {
+	step "16. resource groups from the console (spec 013): a limit, a group of no nodes, a drop refused"
+	local out version form pod body
+	pod="$(first_pod a)"
+	if ! refused_with 403 analyst-a GET "policy/resource-group?name=a"; then fail "analyst_a read a resource group: $(cat "$WORK/console.err")"; fi
+	out="$(rg_read a)" || fail "resource group a"
+	json_true "$out" "r['exists'] and r['nodeGroups'] == ['a'] and 'analyst_a' in r['group']['roles'] and r['version']" ||
+		fail "resource group a: $out"
+	version="$(json_get "$out" "r['version']")"
+	form="$(json_get "$out" "json.dumps(dict(r['group'], limits=dict(r['group']['limits'], max_result_rows=2)))")"
+	out="$(rg_write "$form" "$version")" || fail "a's limit written"
+	json_true "$out" "not r.get('refused') and len(r['statements']) == 1 and r['statements'][0].startswith('CREATE OR REPLACE RESOURCE GROUP \"a\"') and 'max_result_rows 2' in r['statements'][0] and r['answers'][0]['ok']" ||
+		fail "a's limit written: $out"
+	# a session resolves its groups when it opens: the next one of analyst_a's hands out 2 rows, then refuses
+	eventually 60 "analyst_a's next session under max_result_rows 2" refuses_rows analyst-a "$pod" "SELECT id FROM orders"
+	[ "$(as analyst-a "$pod" "SELECT count(*) FROM orders")" = 3 ] || fail "analyst_a's count under the limit"
+	out="$(rg_read a)" || fail "resource group a read again"
+	json_true "$out" "r['group']['limits']['max_result_rows'] == 2" || fail "a read back: $out"
+	version="$(json_get "$out" "r['version']")"
+	form="$(json_get "$out" "json.dumps(dict(r['group'], limits=dict(r['group']['limits'], max_result_rows=None)))")"
+	out="$(rg_write "$form" "$version")" || fail "a's limit cleared"
+	json_true "$out" "not r.get('refused') and r['answers'][0]['ok']" || fail "a's limit cleared: $out"
+	eventually 60 "analyst_a reads every row again" reads_rows analyst-a "$pod" "SELECT id FROM orders" 3
+	ok "a's max_result_rows 2 written from the console: analyst_a's next session got 2 rows and the refusal; cleared, 3 rows again"
+
+	out="$(rg_read adhoc)" || fail "resource group adhoc"
+	json_true "$out" "not r['exists'] and r['nodeGroups'] == [] and 'analyst_b' in r['roles']" || fail "resource group adhoc: $out"
+	out="$(rg_write '{"name": "adhoc", "limits": {"max_sessions": 3}, "comment": "a night'"'"'s batch", "default": false, "roles": ["analyst_b"]}' "")" ||
+		fail "adhoc made"
+	json_true "$out" "not r.get('refused') and len(r['answers']) == 2 and all(x['ok'] for x in r['answers'])" || fail "adhoc made: $out"
+	out="$(rg_read adhoc)" || fail "adhoc read back"
+	json_true "$out" "r['exists'] and r['group']['limits']['max_sessions'] == 3 and r['group']['comment'] == a[0] and r['group']['roles'] == ['analyst_b']" "a night's batch" ||
+		fail "adhoc read back: $out"
+	version="$(json_get "$out" "r['version']")"
+	# a over again with the version read: its groups of nodes serve it, so its drop is refused
+	body="$(rg_read a)" || fail "resource group a"
+	body=$(json_body '{"form": {"name": "a", "op": "drop", "limits": {}, "comment": "", "default": False, "roles": []}, "version": json.loads(a[0])["version"], "statements": ["DROP RESOURCE GROUP \"a\""]}' "$body")
+	if ! refused_with 409 admin POST policy/resource-group "$body"; then fail "a's drop: $(cat "$WORK/console.err")"; fi
+	grep -q '"served"' "$WORK/console.err" || fail "a's drop: $(cat "$WORK/console.err")"
+	out="$(rg_write "$(json_get "$out" "json.dumps(dict(r['group'], op='drop'))")" "$version")" || fail "adhoc dropped"
+	json_true "$out" "r['statements'] == [a[0]] and r['answers'][0]['ok']" 'DROP RESOURCE GROUP "adhoc"' || fail "adhoc dropped: $out"
+	out="$(rg_read adhoc)" || fail "adhoc after its drop"
+	json_true "$out" "not r['exists']" || fail "adhoc after its drop: $out"
+	ok "adhoc, served by no nodes, made with a limit, a comment and analyst_b, read back, dropped; a's drop refused (its nodes would drain)"
+}
+# refuses_rows <principal> <pod> <sql>: the statement fails (a result past the principal's row limit)
+refuses_rows() { ! as "$1" "$2" "$3" >/dev/null 2>&1; }
+# reads_rows <principal> <pod> <sql> <n>: the statement answers n rows
+reads_rows() { [ "$(as "$1" "$2" "$3" | wc -l | tr -d ' ')" = "$4" ]; }
+
 # check_rollout: a new node image - the same build under another name - rolls group by group (spec 008): the default
 # group a is the canary, b waits on its image until a is done, then moves; the status ends Complete and the fleet
 # serves
@@ -958,6 +1027,7 @@ run_checks() {
 	check_console_group
 	check_console_sources
 	check_console_grants
+	check_console_resource_groups
 	check_no_secrets
 	echo
 	echo "PASS: the platform in one cluster ($PROVIDER)"

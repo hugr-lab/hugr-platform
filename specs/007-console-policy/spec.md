@@ -120,14 +120,14 @@ The same embedding is what the second stage's grids read from.
   written. The node judges it: one expression or a refusal (duckdb-acl spec 148), and Flight runs one statement. Not
   through the page's DuckDB: that would need a quack door and the 34 MB engine for every editor.
 - **The order of the work** (each a PR; hugr-node v0.4.0 carries stage 2a's answers): 2b a group's
-  sources, 2c the grant editor, 2d the data grid, 2e roles / resource groups / mappings, 2f catalog objects and their
+  sources, 2c the grant editor, 2d the data grid, 2e roles / mappings (resource groups: spec 013), 2f catalog objects and their
   repair, 2g issuers / clients / function categories / admin bundles.
 - **The DBeaver client's editors,** in the same order spec 008 built them:
 
     1. The grant editor: catalog / schema / object grants with the row filter, an object grant's `COLUMNS` test and
        `MASK` items (duckdb-acl spec 158) and "Check with the node" (`check_grant`), saved as `GRANT` / `ALTER GRANT`
        statements.
-    2. Roles, resource groups, role mappings.
+    2. Roles and role mappings (resource groups are spec 013's).
     3. Catalog objects (tables, views, schemas, functions, references) and repair from `check_catalog`.
     4. Issuers, clients, function categories and admin bundles.
 

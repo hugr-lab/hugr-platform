@@ -147,6 +147,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET "+APIPrefix+"policy/sources", s.person(nil, s.policySources))
 	mux.Handle("GET "+APIPrefix+"policy/functions/{function}", s.person(nil, s.policyCall))
 	// spec 007 stage 2c: the grant editor - read a grant, see its statements, write them, check them; the node judges
+	// spec 013: a resource group's limits, comment, default mark and roles - with or without a group of nodes
+	mux.Handle("GET "+APIPrefix+"policy/resource-group", s.person(policyRight, s.resourceGroupRead))
+	mux.Handle("POST "+APIPrefix+"policy/resource-group/preview", s.person(policyRight, s.resourceGroupPreview))
+	mux.Handle("POST "+APIPrefix+"policy/resource-group", s.person(policyRight, s.resourceGroupWrite))
 	mux.Handle("GET "+APIPrefix+"policy/grant", s.person(nil, s.grantRead))
 	mux.Handle("POST "+APIPrefix+"policy/grant/preview", s.person(nil, s.grantPreview))
 	mux.Handle("POST "+APIPrefix+"policy/grant", s.person(nil, s.grantWrite))
