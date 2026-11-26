@@ -45,6 +45,20 @@ provider_load() {
 	[ "$here" = "$there" ] || fail "minikube holds another $1 than the one built here"
 }
 
+# provider_volumes_gone <namespace>...: the volumes of namespaces the teardown deleted. minikube's hostpath provisioner
+# keeps a volume's directory when its claim goes (the PV stays Released), and a new claim of the same name in the same
+# namespace gets that directory back: kista refused the last run's blob store ("marked for another deployment")
+provider_volumes_gone() {
+	local ns pv
+	for ns in "$@"; do
+		for pv in $(k get pv -o jsonpath="{range .items[?(@.spec.claimRef.namespace=='$ns')]}{.metadata.name}{' '}{end}"); do
+			k delete pv "$pv" --wait=false >/dev/null 2>&1 || true
+		done
+		minikube -p "$DEMO_PROFILE" ssh -- sudo rm -rf "/tmp/hostpath-provisioner/$ns" >/dev/null 2>&1 ||
+			fail "the last run's volumes in $ns"
+	done
+}
+
 # the end of a run: the namespaces go, the profile stays for the next run (HUGR_DEMO_DELETE=1 deletes it)
 provider_down() {
 	if [ -n "${HUGR_DEMO_DELETE:-}" ]; then

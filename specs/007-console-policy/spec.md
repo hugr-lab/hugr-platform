@@ -241,7 +241,8 @@ check, duckdb-acl spec 122); the node judges every write. A row's role opens its
 - **Outcomes**: a statement that ran but answered no `(ok, message)` reads "ran", never done; one the node did not
   answer in time (or was not reached for) is "unknown" - it may have been written; a revoke of a catalog grant says
   that the role's object grants in the catalog go with it.
-- The DBeaver client's object grant editor still writes the pre-158 column list: its fix is acl-clients' own.
+- The DBeaver client's object grant editor writes duckdb-acl spec 158's test and masks since acl-clients spec 011
+  (#28, #29).
 - Tests: `TestGrantStatements` (each level, an existing catalog grant's ALTERs, the refusals), `TestGrantEditor` (the
   read with its version, preview, write and its hint, a stale form and a new grant over one refused, names the node
   does not list), `TestGrantRefusedHalfWay`, `TestGrantCheck` (a filter that would close the call stays a literal),
@@ -254,6 +255,22 @@ check, duckdb-acl spec 122); the node judges every write. A row's role opens its
   below the policy bundle); an existing catalog grant's versions were not editable, and cleared ones wrote an empty
   clause; an alias's spelling was the person's; one 409 code for three cases. Its last pass: a backtick name and an
   `E'…'` after a digit slipped past the clause check.
+
+#### Stages 2b and 2c on the demo (2026-11-26)
+
+The demo runs both against a cluster since this date (spec 004, checks 14 and 15). Running them there found three
+things:
+
+- **An object grant's excluded names read as none** (fixed). arrow-go hands a STRUCT as a map whose LIST field is
+  still JSON, and the console unwrapped only the top level (`plain`). An `EXCLUDE` or `only` grant read back with no
+  names: the editor showed it so, and refused to write it again. `plain` now unwraps at every depth
+  (`TestPlainStructWithList` fails without it). The unit tests had handed the server decoded JSON, never Arrow's own
+  values.
+- **A minikube run reused the last run's volumes** (fixed). The hostpath provisioner keeps a volume's directory, and a
+  claim of the same name gets it back, so kista refused its blob store as another deployment's. The teardown now
+  deletes the volumes of the namespaces it deleted (`provider_volumes_gone`).
+- **The profile's ATTACH form takes no empty path** (open). The demo's own `sales` is written `ATTACH ''` with a
+  SECRET; the check writes `dbname=sales`.
 
 ## Security
 
