@@ -56,7 +56,8 @@ export function changeProblem(c: ProfileChange): string | undefined {
     case 'remove':
       return bare.test(c.extension ?? '') ? undefined : 'Name the extension (letters, digits, _).'
     case 'attach':
-      if (!line(c.path)) return 'Give the source\'s path.'
+      // a source its secret names has no path (a postgres source: ATTACH '' … SECRET s)
+      if (!(c.path === undefined && c.secret) && !line(c.path)) return 'Give the source\'s path, or the secret that names it.'
       if (!sourceName(c.alias)) return 'Name the source (its alias): no comma, no space at its ends.'
       if (!bare.test(c.type ?? '')) return 'Give its type (duckdb, postgres, mssql, ...).'
       if (c.secret && !bare.test(c.secret)) return 'A secret is a plain name.'
