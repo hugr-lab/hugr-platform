@@ -298,6 +298,16 @@ they run once per `up` (`all` does both).
     - 12 on b's grow b, and a holds: its 12 sessions on two nodes stay above 30%.
     - With a's sessions ended, a shrinks back through a drain while b holds. With b's ended, b shrinks too.
     - Both groups go back to manual at the counts found, with the nodes' own session limit.
+18. **Platform B as a source of A** (spec 014). B is a second release in `hugr-b`: one group of one node, its quack
+    door open, on A's services. B's seed makes its source `sales_b`, its catalog `shared`, and its consumer: the
+    client `consumer_a` for the token A's tresor mints, with A's nodes' role mapped to `platform_a`, which reads the
+    north only.
+    - A's link is a `hugr` secret in A's tresor (`mint+exchange://hugr-b`) and an ATTACH from the console.
+    - analyst_a reads B's rows 1 and 3 through `demo.orders_b`, and B lists platform_a's sessions.
+19. **The link's token** (spec 014):
+    - A's own token is refused at B.
+    - Past the minted token's 2 minutes, B ends the link's sessions, and the next read connects on a fresh token.
+    - B revokes `consumer_a`: the link fails and A's own source serves. Recreated, the link serves again.
 
 Then the secrets scan (Security).
 

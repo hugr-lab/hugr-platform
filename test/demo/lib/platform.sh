@@ -103,6 +103,12 @@ YAML
 # databases and logins; the cluster, the IdP, the vault, the PostgreSQL server and the images stay. An older run's
 # layout (the umbrella's own services and its OpenBao, a kustomize install) goes too.
 teardown() {
+	# platform B (spec 014): its groups and its release, before A's - they share the CRDs
+	if k get crd hugrnodegroups.platform.hugr.io >/dev/null 2>&1; then
+		k -n hugr-b delete hng --all --wait --timeout=300s >/dev/null 2>&1 || true
+		k -n hugr-b delete hugrplatform --all --wait --timeout=120s >/dev/null 2>&1 || true
+	fi
+	helm_ uninstall hugr-b -n hugr-b --wait --timeout 300s >/dev/null 2>&1 || true
 	if k get crd hugrnodegroups.platform.hugr.io >/dev/null 2>&1; then
 		k -n hugr delete hng --all --wait --timeout=300s >/dev/null 2>&1 || true
 		k -n hugr delete hugrplatform --all --wait --timeout=120s >/dev/null 2>&1 || true
@@ -119,11 +125,11 @@ teardown() {
 	k kustomize "$HERE/overlay" | k delete -f - --ignore-not-found --timeout=300s >/dev/null 2>&1 || true
 	k delete -k "$ROOT/config/policy" --ignore-not-found >/dev/null 2>&1 || true
 	k delete clusterrolebinding hugr-demo-tresor-issuer-discovery --ignore-not-found >/dev/null 2>&1 || true
-	k delete namespace hugr "$TRESOR_NS" "$KISTA_NS" hugr-openbao tresor kista --ignore-not-found --wait --timeout=300s \
+	k delete namespace hugr hugr-b "$TRESOR_NS" "$KISTA_NS" hugr-openbao tresor kista --ignore-not-found --wait --timeout=300s \
 		>/dev/null ||
 		fail "the last run's namespaces are still being deleted"
 	# a provider whose volumes outlive their claims (minikube) clears them: the next install starts empty
-	! declare -F provider_volumes_gone >/dev/null || provider_volumes_gone hugr "$TRESOR_NS" "$KISTA_NS" hugr-openbao tresor kista
+	! declare -F provider_volumes_gone >/dev/null || provider_volumes_gone hugr hugr-b "$TRESOR_NS" "$KISTA_NS" hugr-openbao tresor kista
 	drop_databases
 }
 

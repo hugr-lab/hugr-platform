@@ -69,6 +69,12 @@ YAML
 	k -n db exec deploy/pg -- psql -qU postgres -v ON_ERROR_STOP=1 -d sales -c "CREATE TABLE IF NOT EXISTS orders (id int
 		PRIMARY KEY, region text, amount numeric); INSERT INTO orders VALUES (1, 'north', 10), (2, 'south', 20),
 		(3, 'north', 30) ON CONFLICT DO NOTHING" >/dev/null || fail "the source's table"
+	# platform B's own source (spec 014): another database, the same shape, its own rows
+	k -n db exec deploy/pg -- sh -c 'psql -qU postgres -tc "SELECT 1 FROM pg_database WHERE datname = '"'"'sales_b'"'"'" |
+		grep -q 1 || psql -qU postgres -c "CREATE DATABASE sales_b"' >/dev/null || fail "B's source's database"
+	k -n db exec deploy/pg -- psql -qU postgres -v ON_ERROR_STOP=1 -d sales_b -c "CREATE TABLE IF NOT EXISTS orders (id int
+		PRIMARY KEY, region text, amount numeric); INSERT INTO orders VALUES (1, 'north', 100), (2, 'south', 200),
+		(3, 'north', 300), (4, 'west', 400) ON CONFLICT DO NOTHING" >/dev/null || fail "B's source's table"
 	# the source's login, not the superuser: a reader of its one table. The password goes on stdin, never on a command
 	# line.
 	k -n db exec -i deploy/pg -- psql -qU postgres -v ON_ERROR_STOP=1 >/dev/null <<SQL || fail "PostgreSQL's logins"
@@ -82,6 +88,12 @@ GRANT CONNECT ON DATABASE sales TO sales_reader;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO sales_reader;
 GRANT SELECT ON orders TO sales_reader;
+REVOKE ALL ON DATABASE sales_b FROM PUBLIC;
+GRANT CONNECT ON DATABASE sales_b TO sales_reader;
+\\c sales_b
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO sales_reader;
+GRANT SELECT ON orders TO sales_reader;
 SQL
 	ok "PostgreSQL in db, TLS by the run's CA: the source sales.orders (sales_reader); tresor's and kista's databases are their installs', the catalog's hugr-init's"
 }
@@ -90,7 +102,7 @@ SQL
 # afresh (hugr-init and services.sh make them again)
 drop_databases() {
 	local name
-	for name in hugr:hugr_catalog tresor:tresor kista:kista openbao:openbao; do
+	for name in hugr:hugr_catalog hugr_b:hugr_b_catalog tresor:tresor kista:kista openbao:openbao; do
 		# PGOPTIONS: no NOTICE for a name already gone
 		k -n db exec deploy/pg -- env PGOPTIONS=--client-min-messages=warning psql -qU postgres \
 			-c "DROP DATABASE IF EXISTS ${name%%:*} WITH (FORCE)" -c "DROP ROLE IF EXISTS ${name##*:}" >/dev/null ||

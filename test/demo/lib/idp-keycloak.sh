@@ -57,7 +57,7 @@ install_idp() {
 	secret_file person-operator openssl rand -hex 16 >/dev/null
 	# the secrets are read from their files: neither an argument nor the environment carries one
 	python3 - "$WORK/realm.json" "$WORK/secrets" "$sa_issuer" "https://127.0.0.1:$STAND_CONSOLE_PORT" \
-		"system:serviceaccount:$TRESOR_NS:tresor" "${IDENTITIES_[@]}" <<'PY'
+		"system:serviceaccount:$TRESOR_NS:tresor" "${IDENTITIES_[@]}" "${B_GROUPS_[@]/#/$B_NS/}" <<'PY'
 import json, os, sys
 out, secrets, sa_issuer, console, tresor_sa, groups = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6:]
 # console: the console stand's forwarded origin (stand.sh)
@@ -74,8 +74,12 @@ def caller(cid, secret, *audiences):
 groups_claim = {"name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
                 "config": {"claim.name": "groups", "full.path": "false", "access.token.claim": "true"}}
 nodes, node_users = [], []
-for g in groups:
-    subject = f"system:serviceaccount:hugr:hugr-node-{g}"
+for entry in groups:
+    # a group of platform A's (namespace hugr), or <namespace>/<group> of platform B's (spec 014): B's nodes are a
+    # Keycloak group of their own, so tresor never hands them A's catalog
+    ns, g = entry.split("/", 1) if "/" in entry else ("hugr", entry)
+    prefix = "hugr" if ns == "hugr" else ns
+    subject = f"system:serviceaccount:{ns}:hugr-node-{g}"
     # the client is named by its subject: the flow sends client_id, and Keycloak's federated authentication takes
     # only the assertion's sub there
     nodes.append({"clientId": subject, "publicClient": False, "standardFlowEnabled": False,
@@ -84,13 +88,13 @@ for g in groups:
                   "protocolMappers": [aud("duckdb-secrets"), groups_claim, client_id]})
     # every node's identity is in one group: tresor grants the nodes' secrets to it (the owner, 2026-10-18)
     # and holds the nodes' role, the one tresor's actor rule names (tresor-server 0.7.5): only these accounts hold it
-    node_users.append({"username": f"service-account-hugr-node-{g}", "enabled": True, "serviceAccountClientId": subject,
-                       "groups": ["/hugr-nodes"], "realmRoles": ["hugr_node"]})
+    node_users.append({"username": f"service-account-{prefix}-node-{g}", "enabled": True, "serviceAccountClientId": subject,
+                       "groups": [f"/{prefix}-nodes"], "realmRoles": ["hugr_node"]})
 realm = {
     "realm": "hugr", "enabled": True, "eventsEnabled": True, "enabledEventTypes": ["CLIENT_LOGIN", "CLIENT_LOGIN_ERROR"],
     "roles": {"realm": [{"name": n} for n in ["hugr_node", "analyst_a", "analyst_b", "platform_admin", "node_breakglass",
                                               "demo_seeder", "secrets_admin"]]},
-    "groups": [{"name": "hugr-nodes", "path": "/hugr-nodes"}],
+    "groups": [{"name": "hugr-nodes", "path": "/hugr-nodes"}, {"name": "hugr-b-nodes", "path": "/hugr-b-nodes"}],
     # the cluster's ServiceAccount issuer: Keycloak reads its keys with its own ServiceAccount token
     "identityProviders": [{"alias": "k8s", "providerId": "kubernetes", "enabled": True, "config": {"issuer": sa_issuer}}],
     "clients": nodes + [
@@ -98,7 +102,8 @@ realm = {
         caller("demo-analyst-a", secret("analyst-a"), "hugr"),
         caller("demo-analyst-b", secret("analyst-b"), "hugr"),
         # the admin reads the doors' secret through the console's /tresor too, as the SQL page does (spec 009)
-        caller("demo-admin", secret("admin"), "hugr", "duckdb-secrets"),
+        # ... and administers platform B (spec 014): B's first policy's platform_admin, by B's audience
+        caller("demo-admin", secret("admin"), "hugr", "duckdb-secrets", "hugr-b"),
         caller("demo-breakglass", secret("breakglass"), "hugr"),
         {"clientId": "hugr-console", "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
          "redirectUris": [console + "/*"], "webOrigins": [console],
@@ -110,12 +115,18 @@ realm = {
         # audience, the client hugr here: the minted token's azp is duckdb-secrets, the policy's client tresor
         {"clientId": "duckdb-secrets", "publicClient": False, "standardFlowEnabled": False,
          "serviceAccountsEnabled": False, "clientAuthenticatorType": "federated-jwt",
+         # spec 014: the tokens it mints live 2 minutes - a link to platform B must outlive its token (reconnects)
          "attributes": {"jwt.credential.issuer": "k8s", "jwt.credential.sub": tresor_sa,
-                        "standard.token.exchange.enabled": "true"},
+                        "standard.token.exchange.enabled": "true", "access.token.lifespan": "120"},
          "protocolMappers": [{"name": "aud-hugr-client", "protocol": "openid-connect",
                               "protocolMapper": "oidc-audience-mapper",
-                              "config": {"included.client.audience": "hugr", "access.token.claim": "true"}}]},
+                              "config": {"included.client.audience": "hugr", "access.token.claim": "true"}},
+                             # spec 014: platform B's audience, for the link A's node holds to B
+                             {"name": "aud-hugr-b-client", "protocol": "openid-connect",
+                              "protocolMapper": "oidc-audience-mapper",
+                              "config": {"included.client.audience": "hugr-b", "access.token.claim": "true"}}]},
         {"clientId": "hugr", "publicClient": False, "standardFlowEnabled": False},
+        {"clientId": "hugr-b", "publicClient": False, "standardFlowEnabled": False},
     ],
     # the console's public client (spec 003): a browser signs a person in by PKCE on this machine's forwarded port; the
     # token carries the nodes' audience and tresor's (Keycloak puts both in one token)

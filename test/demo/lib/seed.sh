@@ -4,12 +4,12 @@
 # unprefixed, on the node's image: the source's secret, the roles, a virtual catalog over the source, the groups'
 # bindings, the first profile.
 
-# tresor_job <name> <sql file>: the SQL in a Job of its own process on the node's image, as the seeder (tresor's
+# tresor_job <name> <sql file>: the SQL in a Job of its own process on the node's image (in TJ_NS, default hugr), as the seeder (tresor's
 # administrator) - the file carries the run's secrets: it goes into a Secret of the demo's cluster, never a
 # ConfigMap or a log, and is removed here. It trusts what a node trusts: the platform's CA bundle (the operator's -
 # the system roots, the internal CA, tresor's and kista's, the database's). Its log is left in $WORK/<name>.log
 tresor_job() {
-	local name="$1" sql="$2" scope=""
+	local name="$1" sql="$2" scope="" ns="${TJ_NS:-hugr}"
 	[ -z "$TRESOR_SCOPE" ] || scope=", OAUTH_SCOPE '$TRESOR_SCOPE'"
 	{
 		cat <<SQL
@@ -24,14 +24,14 @@ SQL
 		cat "$sql"
 	} >"$WORK/$name.sql"
 	rm -f "$sql"
-	k -n hugr delete secret "$name" --ignore-not-found >/dev/null
-	k -n hugr create secret generic "$name" --from-file=job.sql="$WORK/$name.sql" >/dev/null
+	k -n "$ns" delete secret "$name" --ignore-not-found >/dev/null
+	k -n "$ns" create secret generic "$name" --from-file=job.sql="$WORK/$name.sql" >/dev/null
 	rm -f "$WORK/$name.sql"
-	k -n hugr delete job "$name" --ignore-not-found --wait >/dev/null
+	k -n "$ns" delete job "$name" --ignore-not-found --wait >/dev/null
 	k apply -f - >/dev/null <<YAML
 apiVersion: batch/v1
 kind: Job
-metadata: {name: $name, namespace: hugr}
+metadata: {name: $name, namespace: $ns}
 spec:
   backoffLimit: 0
   template:
@@ -53,10 +53,10 @@ spec:
         - {name: home, emptyDir: {}}
 YAML
 	local done=1
-	k -n hugr wait --for=condition=complete "job/$name" --timeout=300s >/dev/null 2>&1 || done=""
+	k -n "$ns" wait --for=condition=complete "job/$name" --timeout=300s >/dev/null 2>&1 || done=""
 	# the SQL is needed no longer than its Job: the Secret holding the run's passwords goes, whatever the outcome
-	k -n hugr delete secret "$name" --ignore-not-found >/dev/null
-	k -n hugr logs "job/$name" >"$WORK/$name.log" 2>&1 || true
+	k -n "$ns" delete secret "$name" --ignore-not-found >/dev/null
+	k -n "$ns" logs "job/$name" >"$WORK/$name.log" 2>&1 || true
 	if [ -z "$done" ]; then
 		tail -60 "$WORK/$name.log" | redact >&2 || true
 		fail "the Job $name did not complete"
