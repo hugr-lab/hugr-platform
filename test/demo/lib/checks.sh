@@ -930,23 +930,25 @@ check_console_resource_groups() {
 	step "16. resource groups from the console (spec 013): a limit, a group of no nodes, a drop refused"
 	local out version form pod body
 	pod="$(first_pod a)"
+	# 3^5 = 243 rows: above the limit set below, which stays above what the console reads
+	local wide="SELECT o1.id FROM orders o1, orders o2, orders o3, orders o4, orders o5"
 	if ! refused_with 403 analyst-a GET "policy/resource-group?name=a"; then fail "analyst_a read a resource group: $(cat "$WORK/console.err")"; fi
 	out="$(rg_read a)" || fail "resource group a"
 	json_true "$out" "r['exists'] and r['nodeGroups'] == ['a'] and 'analyst_a' in r['group']['roles'] and r['version']" ||
 		fail "resource group a: $out"
 	version="$(json_get "$out" "r['version']")"
-	form="$(json_get "$out" "json.dumps(dict(r['group'], limits=dict(r['group']['limits'], max_result_rows='2')))")"
+	form="$(json_get "$out" "json.dumps(dict(r['group'], limits=dict(r['group']['limits'], max_result_rows='100')))")"
 	out="$(rg_write "$form" "$version")" || fail "a's limit written"
-	json_true "$out" "not r.get('refused') and len(r['statements']) == 1 and r['statements'][0].startswith('CREATE OR REPLACE RESOURCE GROUP \"a\"') and 'max_result_rows 2' in r['statements'][0] and r['answers'][0]['ok']" ||
+	json_true "$out" "not r.get('refused') and len(r['statements']) == 1 and r['statements'][0].startswith('CREATE OR REPLACE RESOURCE GROUP \"a\"') and 'max_result_rows 100' in r['statements'][0] and r['answers'][0]['ok']" ||
 		fail "a's limit written: $out"
-	# a session resolves its groups when it opens: the next one of analyst_a's hands out 2 rows, then refuses
-	eventually 60 "analyst_a's next session under max_result_rows 2" refuses_rows analyst-a "$pod" "SELECT id FROM orders"
+	# a session resolves its groups when it opens: the next one of analyst_a's hands out 100 rows, then refuses
+	eventually 60 "analyst_a's next session under max_result_rows 100" refuses_rows analyst-a "$pod" "$wide"
 	[ "$(as analyst-a "$pod" "SELECT count(*) FROM orders")" = 3 ] || fail "analyst_a's count under the limit"
-	# the admin is in a too: on a's nodes the console's own reads run under the limit and are refused (a policy view
-	# holds more than 2 rows) - cleared through a node of b, where a's limits do not apply (duckdb-acl spec 096)
-	eventually 180 "a's limit cleared from the console (through a node of b)" rg_clear_limit a max_result_rows
-	eventually 60 "analyst_a reads every row again" reads_rows analyst-a "$pod" "SELECT id FROM orders" 3
-	ok "a's max_result_rows 2 written from the console: analyst_a's next session got 2 rows and the refusal; cleared, 3 rows again"
+	# the admin is in a too, and on a's nodes the console's own reads run under a's limits (duckdb-acl spec 096): 100
+	# rows is above every policy view the editor reads here, so the console reads on any node
+	eventually 60 "a's limit cleared from the console" rg_clear_limit a max_result_rows
+	eventually 60 "analyst_a reads every row again" reads_rows analyst-a "$pod" "$wide" 243
+	ok "a's max_result_rows 100 written from the console: analyst_a's next session got 100 of 243 rows and the refusal; cleared, all 243"
 
 	out="$(rg_read adhoc)" || fail "resource group adhoc"
 	json_true "$out" "not r['exists'] and r['nodeGroups'] == [] and 'analyst_b' in r['roles']" || fail "resource group adhoc: $out"

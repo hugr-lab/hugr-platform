@@ -74,7 +74,8 @@ It works like the grant editor (spec 007 stage 2c):
 - **The person's own reads obey the limits.** The console reads as the person, and on a node of a group only that
   group's limits apply (duckdb-acl spec 096). A `max_result_rows` below a policy view's rows on a group the person is
   in therefore refuses the console's own reads on that group's nodes; the console then works through another group's
-  node. The editor says so; the demo's check 16 met it (the admin is in every group).
+  node. The editor says so; the demo's check 16 met it (the admin is in every group) and sets a limit above what the
+  console reads there.
 
 Its review found the second default, the comment, the BIGINT limits and an unavailable platform answered as the
 edit's refusal (now 503): all fixed as above.
