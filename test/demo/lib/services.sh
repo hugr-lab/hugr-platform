@@ -104,6 +104,7 @@ EXCHANGE
     # person (spec 003: tresor's console mounted)
     admins:
       - "subject:$CLUSTER_ISSUER|system:serviceaccount:hugr:hugr-init"
+      - "subject:$CLUSTER_ISSUER|system:serviceaccount:hugr-b:hugr-init"
       - role:demo_seeder
       - role:secrets_admin
     # the nodes act for their sessions (ACT_FOR_SESSIONS): one rule by the role every group's identity carries, the

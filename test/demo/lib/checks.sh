@@ -1143,6 +1143,8 @@ run_checks() {
 	check_console_grants
 	check_console_resource_groups
 	check_autoscale_load
+	check_federation_link
+	check_federation_token
 	check_no_secrets
 	echo
 	echo "PASS: the platform in one cluster ($PROVIDER)"

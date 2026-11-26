@@ -50,6 +50,7 @@ trap 'stop_forwards' EXIT
 . "$HERE/lib/platform.sh"
 . "$HERE/lib/checks.sh"
 . "$HERE/lib/stand.sh"
+. "$HERE/lib/federation.sh"
 . "$HERE/lib/provider-$PROVIDER.sh"
 if [ "$PROVIDER" = aks ]; then
 	. "$HERE/lib/idp-entra.sh"
@@ -86,6 +87,9 @@ up() {
 	stage platform || return 0
 	seed
 	stage seed || return 0
+	install_platform_b
+	seed_b
+	stage platform-b || return 0
 }
 
 case "$COMMAND" in

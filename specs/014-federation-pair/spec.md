@@ -1,6 +1,6 @@
 # Spec 014: a platform as a source of another - the token kept, the pair in the demo
 
-- **Status**: draft
+- **Status**: implemented (2026-11-26; the demo's checks 18 and 19 green on minikube)
 - **Date**: 2026-11-26
 
 ## Summary
@@ -95,7 +95,8 @@ The token's life in the demo is short: the `hugr-b` client's access token lifesp
    answers).
 4. **Revoked.** The client `consumer_a` is dropped on B, so the next connect fails with the attach's error. A's other
    sources keep serving. Recreated, the link serves again.
-5. **No token anywhere**: not in either platform's logs, events or `platform.*` views, and none in the demo's output.
+5. **No token anywhere**: the demo's secrets scan (`check_no_secrets`) covers the run's output and A's nodes' logs.
+   B's logs are not followed yet.
 
 ## Security
 
@@ -118,8 +119,34 @@ The token's life in the demo is short: the `hugr-b` client's access token lifesp
   brings. The owner chose two platforms.
 - **A console page or a CRD for consumers and links.** The owner chose none: B is a source like any other.
 
+## As built (2026-11-26)
+
+- **The exchanged token** Keycloak mints for A's node carries `azp` = tresor's exchange client (`duckdb-secrets`),
+  `aud` = `hugr-b`, and the node user's realm roles (`hugr_node`). B's client `consumer_a` (`AUDIENCES ('hugr-b') AZP
+  'duckdb-secrets' ROLES FROM ('realm_access.roles')`) takes it, and `MAP CLAIM 'hugr_node' … TO ROLE platform_a`
+  places it. B therefore sees the node of A, never the person whose statement read B: the read ran inside analyst_a's
+  session, and platform_a is mapped from a role no person holds.
+- **Kept fresh, as checked**:
+  - past the token's 2 minutes, B ended the link's sessions and the next read connected again;
+  - B's `connect` binding judges `exp` when a session opens, so the new session proves a token minted afresh;
+  - B dropping `consumer_a` failed the link while A's own sources served, and recreating it brought the link back.
+- **B's install needed**:
+  - a console client of its own: a first policy requires one, since that is how an administrator gets in;
+  - a `demo` client for the checks' admin on B, as A's seed has.
+
+  Its CA is the run's, as A's is, so A's bundle trusts B's front with no `caBundle` entry.
+- **Found: a new secret is not the node's for 30 s.** A node's tresor catalog caches the list of the secrets it may use
+  for 30 s (tresor spec 004), so an ATTACH written right after the secret was made is refused with "no secret b the
+  node may use". The check retries. The owner (2026-11-26): the node should refresh that list itself when it applies
+  the policy, rather than refuse. A `<tresor>.secrets()` call refreshes it on one node by hand. Follow-up in hugr-node:
+  - a profile item, or the write's check, naming a secret the node does not list refreshes the list once before
+    refusing;
+  - applying a new profile version refreshes it too.
+
 ## Open
 
-- What an exchanged Keycloak token carries for the mapping on B (`azp`, `sub`, roles) is read in the first run and
-  written here.
-- Whether kind's 4-core runner fits B. If it does not, check 18 runs on minikube only, and CI runs A alone.
+- Whether kind's 4-core runner fits B (its node requests 250m). The kind demo answers it; if not, checks 18 and 19
+  run on minikube only.
+- With the `hugr-b` mapper on tresor's exchange client, does a token minted for A's doors carry `hugr-b` too? It
+  would then pass at B. Keycloak's standard token exchange narrows the audience to the one asked for, so it should
+  not, but no check reads it yet.
