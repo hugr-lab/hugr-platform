@@ -21,7 +21,7 @@
 #                     be the image's duckdb's)
 #   HUGR_NODE_DIR     a checkout of hugr-node instead of the release's tag (its scripts read the extensions; its
 #                     Dockerfile builds HUGR_NODE_DIST's image)
-#   HUGR_DEMO_ONLY    up to a step: images, db, idp, vault, chart, platform, seed (for working on one); every run
+#   HUGR_DEMO_ONLY    up to a step: images, db, idp, vault, chart, platform, seed, platform-b (for working on one); every run
 #                     installs the chart afresh - the services' state and the catalog with it
 #   HUGR_DEMO_NODE_CPU  a node's CPU request (1; CI's 4-core runner: 250m - the node rounds it up to 1 thread)
 set -euo pipefail
@@ -87,8 +87,11 @@ up() {
 	stage platform || return 0
 	seed
 	stage seed || return 0
-	install_platform_b
-	seed_b
+	# platform B (spec 014): Keycloak's realm carries B's audience and nodes; on Entra (AKS) it is not set up yet
+	if [ "$IDP_NAME" = Keycloak ]; then
+		install_platform_b
+		seed_b
+	fi
 	stage platform-b || return 0
 }
 
