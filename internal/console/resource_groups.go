@@ -23,24 +23,25 @@ import (
 // server composes the statements from the form, shows them, and runs them only while the group is as it was read, as
 // the grant editor does (spec 007 stage 2c).
 
-// ResourceGroupLimits are the limits a resource group may name; nil is unnamed - the node's setting.
+// ResourceGroupLimits are the limits a resource group may name, each a whole number as text (a BIGINT: a browser's
+// number rounds past 2^53); nil is unnamed - the node's setting.
 type ResourceGroupLimits struct {
-	WindowStart   *int64 `json:"window_start"`
-	WindowMax     *int64 `json:"window_max"`
-	BatchBytes    *int64 `json:"batch_bytes"`
-	MaxResultRows *int64 `json:"max_result_rows"`
-	QueuePriority *int64 `json:"queue_priority"`
-	MaxSessions   *int64 `json:"max_sessions"`
+	WindowStart   *string `json:"window_start"`
+	WindowMax     *string `json:"window_max"`
+	BatchBytes    *string `json:"batch_bytes"`
+	MaxResultRows *string `json:"max_result_rows"`
+	QueuePriority *string `json:"queue_priority"`
+	MaxSessions   *string `json:"max_sessions"`
 }
 
 // named are the limits in the grammar's order, each with its name.
 func (l ResourceGroupLimits) named() []struct {
 	name  string
-	value *int64
+	value *string
 } {
 	return []struct {
 		name  string
-		value *int64
+		value *string
 	}{{"window_start", l.WindowStart}, {"window_max", l.WindowMax}, {"batch_bytes", l.BatchBytes},
 		{"max_result_rows", l.MaxResultRows}, {"queue_priority", l.QueuePriority}, {"max_sessions", l.MaxSessions}}
 }
@@ -102,9 +103,10 @@ func (s *Server) readResourceGroups(ctx context.Context, token string) (*resourc
 			st.roles = append(st.roles, role)
 		}
 	}
-	limit := func(v any) *int64 {
+	limit := func(v any) *string {
 		if n, ok := v.(int64); ok {
-			return &n
+			s := strconv.FormatInt(n, 10)
+			return &s
 		}
 		return nil
 	}
@@ -169,10 +171,14 @@ func (l ResourceGroupLimits) clause() (string, error) {
 		if x.value == nil {
 			continue
 		}
-		if *x.value < 0 && x.name != "queue_priority" {
+		n, err := strconv.ParseInt(strings.TrimSpace(*x.value), 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("%s is a whole number", x.name)
+		}
+		if n < 0 && x.name != "queue_priority" {
 			return "", fmt.Errorf("%s is 0 or more (0: unlimited, or none)", x.name)
 		}
-		items = append(items, x.name+" "+strconv.FormatInt(*x.value, 10))
+		items = append(items, x.name+" "+strconv.FormatInt(n, 10))
 	}
 	if len(items) == 0 {
 		return "", nil
@@ -205,13 +211,24 @@ func (f ResourceGroupForm) statements(current *ResourceGroupForm, roles []string
 	if err != nil {
 		return nil, err
 	}
-	comment := ""
-	if c := strings.TrimSpace(f.Comment); c != "" {
+	// the comment as written: checked only where a statement writes it (a stored one SQL wrote may be any text)
+	comment := func() (string, error) {
+		c := f.Comment
+		if current == nil || c != current.Comment {
+			c = strings.TrimSpace(c)
+		}
+		if c == "" {
+			return "", nil
+		}
 		lit, ok := literal(c)
 		if !ok {
-			return nil, errors.New("the comment is one line of at most 1024 characters")
+			if current != nil && f.Comment == current.Comment {
+				return "", errors.New("the stored comment is not one line of at most 1024 characters: change it here, " +
+					"or the limits from SQL")
+			}
+			return "", errors.New("the comment is one line of at most 1024 characters")
 		}
-		comment = " COMMENT " + lit
+		return " COMMENT " + lit, nil
 	}
 	wanted := []string{}
 	for _, role := range f.Roles {
@@ -231,11 +248,19 @@ func (f ResourceGroupForm) statements(current *ResourceGroupForm, roles []string
 		if f.Default {
 			create += " DEFAULT"
 		}
-		out = append(out, create+comment)
+		c, err := comment()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, create+c)
 	default:
 		sameLimits, _ := current.Limits.clause()
-		if sameLimits != limits || strings.TrimSpace(current.Comment) != strings.TrimSpace(f.Comment) {
-			out = append(out, "CREATE OR REPLACE RESOURCE GROUP "+target+limits+comment)
+		if sameLimits != limits || current.Comment != f.Comment {
+			c, err := comment()
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, "CREATE OR REPLACE RESOURCE GROUP "+target+limits+c)
 		}
 		if f.Default != current.Default {
 			if f.Default {
@@ -285,17 +310,31 @@ func (s *Server) composedGroup(ctx context.Context, token string, edit *Resource
 		return nil, errors.New("a resource group's name is a plain name: letters, digits, _ and -, at most 63")
 	}
 	edit.Form.Name = spelled
+	// a second default is the node's refusal: said before anything of the edit is written
+	if edit.Form.Op != "drop" && edit.Form.Default && (current == nil || !current.Default) && st.defaults != "" &&
+		st.defaults != spelled {
+		return nil, errDefaultHeld{name: st.defaults}
+	}
 	if edit.Form.Op == "drop" {
 		// its nodes would serve nobody, and drain
 		serving, err := s.servingGroups(ctx, spelled)
 		if err != nil {
-			return nil, err
+			return nil, errKubernetes
 		}
 		if len(serving) > 0 {
 			return nil, errGroupServed{groups: serving, name: spelled}
 		}
 	}
 	return edit.Form.statements(current, st.roles)
+}
+
+// errKubernetes: the groups of nodes could not be read - the platform's, not the person's edit
+var errKubernetes = errors.New("the groups could not be read")
+
+type errDefaultHeld struct{ name string }
+
+func (e errDefaultHeld) Error() string {
+	return e.name + " is the default group: drop its mark first, then make this one the default"
 }
 
 type errGroupServed struct {
@@ -382,7 +421,14 @@ func (s *Server) resourceGroupWrite(w http.ResponseWriter, r *http.Request, toke
 // groupProblem answers a form the console refuses, a group that changed or is served, or the node's own refusal.
 func groupProblem(w http.ResponseWriter, err error) {
 	var served errGroupServed
+	var held errDefaultHeld
 	switch {
+	case errors.Is(err, errKubernetes):
+		problem(w, http.StatusServiceUnavailable, "kubernetes", err.Error())
+	case errors.As(err, &held):
+		problem(w, http.StatusConflict, "default_held", err.Error())
+	case errors.Is(err, errNoNode), errors.Is(err, errUnreachable), errors.As(err, new(*NodeError)):
+		policyProblem(w, err)
 	case errors.Is(err, errGroupChanged):
 		problem(w, http.StatusConflict, "group_changed", err.Error())
 	case errors.Is(err, errGroupExists):

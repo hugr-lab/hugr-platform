@@ -24,11 +24,11 @@ export const LIMITS: { key: keyof ResourceGroupLimits; title: string; hint: stri
 export const NO_LIMITS: ResourceGroupLimits = { window_start: null, window_max: null, batch_bytes: null,
   max_result_rows: null, queue_priority: null, max_sessions: null }
 
-/** a limit's text as typed: empty is unnamed (the node's setting); otherwise a whole number */
-export function limitOf(text: string): number | null | undefined {
+/** a limit's text as typed: empty is unnamed (the node's setting); otherwise a whole number, kept as text */
+export function limitOf(text: string): string | null | undefined {
   const t = text.trim()
   if (t === '') return null
-  return /^-?\d+$/.test(t) ? Number(t) : undefined
+  return /^-?\d+$/.test(t) ? t : undefined
 }
 
 /** what the form lacks before the server composes it (the server and the node judge again) */
@@ -37,7 +37,7 @@ export function groupProblem(f: ResourceGroupForm, texts: Record<string, string>
   for (const l of LIMITS) {
     const v = limitOf(texts[l.key] ?? '')
     if (v === undefined) return `${l.title}: a whole number, or empty for the node's setting.`
-    if (v !== null && v < 0 && l.key !== 'queue_priority') return `${l.title}: 0 or more.`
+    if (v !== null && v.startsWith('-') && l.key !== 'queue_priority') return `${l.title}: 0 or more.`
   }
   return undefined
 }
@@ -66,7 +66,7 @@ export function ResourceGroupDialog({ name = '', onDone }: { name?: string; onDo
       }
       if (editing) {
         setForm(r.group)
-        setTexts(Object.fromEntries(LIMITS.map((l) => [l.key, r.group.limits[l.key] === null ? '' : String(r.group.limits[l.key])])))
+        setTexts(Object.fromEntries(LIMITS.map((l) => [l.key, r.group.limits[l.key] ?? ''])))
       }
       setRoles(r.roles)
       setDefaultIs(r.defaultIs)
@@ -127,7 +127,7 @@ export function ResourceGroupDialog({ name = '', onDone }: { name?: string; onDo
           )}
           <fieldset className="flex flex-col gap-2">
             <legend className={label}>Limits</legend>
-            <p className="text-sm text-ink-muted">Empty: the node's setting. A principal in several groups gets the most generous of each.</p>
+            <p className="text-sm text-ink-muted">Empty: the node's setting. On a group's nodes a session runs under that group's limits only - yours too: a low row limit there refuses the console's own reads on them.</p>
             <div className="grid grid-cols-2 gap-4">
               {LIMITS.map((l) => (
                 <div key={l.key} className="flex flex-col gap-1">

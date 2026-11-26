@@ -57,6 +57,12 @@ It works like the grant editor (spec 007 stage 2c):
 - **A drop is refused** while a group of nodes of the platform serves the group (409 `served`): its nodes would serve
   nobody and drain. It is also refused for the default group. "Remove from the policy" on the group's own page stays
   the way to take a served group out (spec 006).
+- **A second default is refused before anything is written** (409 `default_held`, naming the current one): the node
+  would refuse the mark after the limits were already written.
+- **Limits travel as text** (whole numbers as strings): a BIGINT past 2^53 would round in the browser and be written
+  back changed.
+- **The comment is checked only where a statement writes it**, and compared as stored. A comment SQL wrote (two lines,
+  an edge space) neither blocks a role's edit nor is rewritten by one; a limit's edit over it says so.
 - **The API:**
   - `GET policy/resource-group?name=` answers the group with its version, the policy's roles, the current default
     group and the groups of nodes serving it;
@@ -64,6 +70,14 @@ It works like the grant editor (spec 007 stage 2c):
 
   Each needs the policy bundle (the console's `policy` right), and the node judges every write: an unrestricted
   `manage`.
+
+- **The person's own reads obey the limits.** The console reads as the person, and on a node of a group only that
+  group's limits apply (duckdb-acl spec 096). A `max_result_rows` below a policy view's rows on a group the person is
+  in therefore refuses the console's own reads on that group's nodes; the console then works through another group's
+  node. The editor says so; the demo's check 16 met it (the admin is in every group).
+
+Its review found the second default, the comment, the BIGINT limits and an unavailable platform answered as the
+edit's refusal (now 503): all fixed as above.
 
 ## Security
 

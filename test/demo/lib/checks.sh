@@ -910,6 +910,16 @@ rg_write() {
 	statements="$(json_get "$out" "json.dumps(r['statements'])")"
 	rg_edit policy/resource-group "$1" "$2" "$statements"
 }
+# rg_clear_limit <group> <limit>: the limit read and cleared from the console, once both calls landed where they may
+rg_clear_limit() {
+	local out version form
+	out="$(rg_read "$1")" || return 1
+	json_true "$out" "r['group']['limits'][a[0]] is not None" "$2" || return 0 # cleared by a try cut after its write
+	version="$(json_get "$out" "r['version']")"
+	form="$(json_get "$out" "json.dumps(dict(r['group'], limits=dict(r['group']['limits'], **{a[0]: None})))" "$2")"
+	out="$(rg_write "$form" "$version")" || return 1
+	json_true "$out" "not r.get('refused') and r['answers'][0]['ok']"
+}
 # rg_read <name>: the resource group as the console reads it
 rg_read() { console_api admin GET "policy/resource-group?name=$1"; }
 
@@ -925,29 +935,26 @@ check_console_resource_groups() {
 	json_true "$out" "r['exists'] and r['nodeGroups'] == ['a'] and 'analyst_a' in r['group']['roles'] and r['version']" ||
 		fail "resource group a: $out"
 	version="$(json_get "$out" "r['version']")"
-	form="$(json_get "$out" "json.dumps(dict(r['group'], limits=dict(r['group']['limits'], max_result_rows=2)))")"
+	form="$(json_get "$out" "json.dumps(dict(r['group'], limits=dict(r['group']['limits'], max_result_rows='2')))")"
 	out="$(rg_write "$form" "$version")" || fail "a's limit written"
 	json_true "$out" "not r.get('refused') and len(r['statements']) == 1 and r['statements'][0].startswith('CREATE OR REPLACE RESOURCE GROUP \"a\"') and 'max_result_rows 2' in r['statements'][0] and r['answers'][0]['ok']" ||
 		fail "a's limit written: $out"
 	# a session resolves its groups when it opens: the next one of analyst_a's hands out 2 rows, then refuses
 	eventually 60 "analyst_a's next session under max_result_rows 2" refuses_rows analyst-a "$pod" "SELECT id FROM orders"
 	[ "$(as analyst-a "$pod" "SELECT count(*) FROM orders")" = 3 ] || fail "analyst_a's count under the limit"
-	out="$(rg_read a)" || fail "resource group a read again"
-	json_true "$out" "r['group']['limits']['max_result_rows'] == 2" || fail "a read back: $out"
-	version="$(json_get "$out" "r['version']")"
-	form="$(json_get "$out" "json.dumps(dict(r['group'], limits=dict(r['group']['limits'], max_result_rows=None)))")"
-	out="$(rg_write "$form" "$version")" || fail "a's limit cleared"
-	json_true "$out" "not r.get('refused') and r['answers'][0]['ok']" || fail "a's limit cleared: $out"
+	# the admin is in a too: on a's nodes the console's own reads run under the limit and are refused (a policy view
+	# holds more than 2 rows) - cleared through a node of b, where a's limits do not apply (duckdb-acl spec 096)
+	eventually 180 "a's limit cleared from the console (through a node of b)" rg_clear_limit a max_result_rows
 	eventually 60 "analyst_a reads every row again" reads_rows analyst-a "$pod" "SELECT id FROM orders" 3
 	ok "a's max_result_rows 2 written from the console: analyst_a's next session got 2 rows and the refusal; cleared, 3 rows again"
 
 	out="$(rg_read adhoc)" || fail "resource group adhoc"
 	json_true "$out" "not r['exists'] and r['nodeGroups'] == [] and 'analyst_b' in r['roles']" || fail "resource group adhoc: $out"
-	out="$(rg_write '{"name": "adhoc", "limits": {"max_sessions": 3}, "comment": "a night'"'"'s batch", "default": false, "roles": ["analyst_b"]}' "")" ||
+	out="$(rg_write '{"name": "adhoc", "limits": {"max_sessions": "3"}, "comment": "a night'"'"'s batch", "default": false, "roles": ["analyst_b"]}' "")" ||
 		fail "adhoc made"
 	json_true "$out" "not r.get('refused') and len(r['answers']) == 2 and all(x['ok'] for x in r['answers'])" || fail "adhoc made: $out"
 	out="$(rg_read adhoc)" || fail "adhoc read back"
-	json_true "$out" "r['exists'] and r['group']['limits']['max_sessions'] == 3 and r['group']['comment'] == a[0] and r['group']['roles'] == ['analyst_b']" "a night's batch" ||
+	json_true "$out" "r['exists'] and r['group']['limits']['max_sessions'] == '3' and r['group']['comment'] == a[0] and r['group']['roles'] == ['analyst_b']" "a night's batch" ||
 		fail "adhoc read back: $out"
 	version="$(json_get "$out" "r['version']")"
 	# a over again with the version read: its groups of nodes serve it, so its drop is refused

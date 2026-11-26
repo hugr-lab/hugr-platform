@@ -381,14 +381,15 @@ export interface ClusterPage {
   links: Link[]
 }
 
-/** spec 013: a resource group's limits - null is unnamed, the node's setting */
+/** spec 013: a resource group's limits, each a whole number as text (a BIGINT: a number rounds past 2^53) - null is
+ * unnamed, the node's setting */
 export interface ResourceGroupLimits {
-  window_start: number | null
-  window_max: number | null
-  batch_bytes: number | null
-  max_result_rows: number | null
-  queue_priority: number | null
-  max_sessions: number | null
+  window_start: string | null
+  window_max: string | null
+  batch_bytes: string | null
+  max_result_rows: string | null
+  queue_priority: string | null
+  max_sessions: string | null
 }
 
 /** a resource group as the editor writes it, and as the console reads one back */

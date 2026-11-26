@@ -9,14 +9,14 @@ import (
 	"github.com/hugr-lab/hugr-platform/internal/front/fleet"
 )
 
-func i64(n int64) *int64 { return &n }
+func lim(s string) *string { return &s }
 
 // TestResourceGroupStatements: a new group is created whole; an existing one is written again only when its limits or
 // its comment change (a re-create keeps its mark and its bindings), its mark and roles change one by one; a drop is
 // refused for the default group; values and names the grammar does not take are refused.
 func TestResourceGroupStatements(t *testing.T) {
 	roles := []string{"analyst", "ops", "Odd role"}
-	current := &ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{WindowStart: i64(8), MaxSessions: i64(5)},
+	current := &ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{WindowStart: lim("8"), MaxSessions: lim("5")},
 		Comment: "nightly", Roles: []string{"analyst"}}
 	cases := []struct {
 		name    string
@@ -24,7 +24,7 @@ func TestResourceGroupStatements(t *testing.T) {
 		current *ResourceGroupForm
 		want    []string
 	}{
-		{"new", ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{QueuePriority: i64(-1), BatchBytes: i64(33554432)},
+		{"new", ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{QueuePriority: lim("-1"), BatchBytes: lim("33554432")},
 			Default: true, Comment: "the night's", Roles: []string{"ops", "analyst", "ops"}}, nil,
 			[]string{`CREATE RESOURCE GROUP "batch" (batch_bytes 33554432, queue_priority -1) DEFAULT COMMENT 'the night''s'`,
 				`GRANT RESOURCE GROUP "batch" TO ROLE "analyst"`, `GRANT RESOURCE GROUP "batch" TO ROLE "ops"`}},
@@ -32,7 +32,7 @@ func TestResourceGroupStatements(t *testing.T) {
 		{"unchanged", ResourceGroupForm{Name: "batch", Limits: current.Limits, Comment: "nightly", Roles: []string{"analyst"}},
 			current, nil},
 		// a limit cleared: written again whole (ALTER … SET names a limit, never clears one)
-		{"a limit cleared", ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{WindowStart: i64(8)},
+		{"a limit cleared", ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{WindowStart: lim("8")},
 			Comment: "nightly", Roles: []string{"analyst"}}, current,
 			[]string{`CREATE OR REPLACE RESOURCE GROUP "batch" (window_start 8) COMMENT 'nightly'`}},
 		{"the comment cleared", ResourceGroupForm{Name: "batch", Limits: current.Limits, Roles: []string{"analyst"}}, current,
@@ -45,6 +45,14 @@ func TestResourceGroupStatements(t *testing.T) {
 			&ResourceGroupForm{Name: "batch", Default: true},
 			[]string{`ALTER RESOURCE GROUP "batch" DROP DEFAULT`}},
 		{"dropped", ResourceGroupForm{Name: "batch", Op: "drop"}, current, []string{`DROP RESOURCE GROUP "batch"`}},
+		// a BIGINT past a browser's number, as text both ways
+		{"a big limit", ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{MaxResultRows: lim("9223372036854775807")}},
+			nil, []string{`CREATE RESOURCE GROUP "batch" (max_result_rows 9223372036854775807)`}},
+		// a stored comment SQL wrote (two lines, an edge space): a role's edit leaves it alone, and it is never trimmed
+		{"a stored comment kept", ResourceGroupForm{Name: "batch", Comment: "a\nb", Roles: []string{"ops"}},
+			&ResourceGroupForm{Name: "batch", Comment: "a\nb"}, []string{`GRANT RESOURCE GROUP "batch" TO ROLE "ops"`}},
+		{"a stored space kept", ResourceGroupForm{Name: "batch", Comment: "x ", Limits: ResourceGroupLimits{MaxSessions: lim("2")}},
+			&ResourceGroupForm{Name: "batch", Comment: "x "}, []string{`CREATE OR REPLACE RESOURCE GROUP "batch" (max_sessions 2) COMMENT 'x '`}},
 	}
 	for _, c := range cases {
 		got, err := c.form.statements(c.current, roles)
@@ -56,13 +64,17 @@ func TestResourceGroupStatements(t *testing.T) {
 		form    ResourceGroupForm
 		current *ResourceGroupForm
 	}{
-		"a negative limit":    {ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{MaxSessions: i64(-1)}}, nil},
+		"a negative limit":    {ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{MaxSessions: lim("-1")}}, nil},
 		"a role nobody made":  {ResourceGroupForm{Name: "batch", Roles: []string{"nobody"}}, nil},
 		"no name":             {ResourceGroupForm{}, nil},
 		"a comment's newline": {ResourceGroupForm{Name: "batch", Comment: "a\nb"}, nil},
 		"the default dropped": {ResourceGroupForm{Name: "batch", Op: "drop"}, &ResourceGroupForm{Name: "batch", Default: true}},
 		"nothing to drop":     {ResourceGroupForm{Name: "batch", Op: "drop"}, nil},
 		"another op":          {ResourceGroupForm{Name: "batch", Op: "rename"}, nil},
+		"not a number":        {ResourceGroupForm{Name: "batch", Limits: ResourceGroupLimits{MaxSessions: lim("8MiB")}}, nil},
+		// a limit changed over a stored comment the console cannot write: said as the stored comment's
+		"a stored comment over a limit": {ResourceGroupForm{Name: "batch", Comment: "a\nb", Limits: ResourceGroupLimits{MaxSessions: lim("2")}},
+			&ResourceGroupForm{Name: "batch", Comment: "a\nb"}},
 	} {
 		if got, err := c.form.statements(c.current, roles); err == nil {
 			t.Errorf("%s: %q", name, got)
@@ -108,11 +120,11 @@ func TestResourceGroupEditor(t *testing.T) {
 	}
 	g := out["group"].(map[string]any)
 	v := out["version"].(string)
-	if g["limits"].(map[string]any)["window_start"] != float64(8) || g["limits"].(map[string]any)["max_sessions"] != nil ||
+	if g["limits"].(map[string]any)["window_start"] != "8" || g["limits"].(map[string]any)["max_sessions"] != nil ||
 		!reflect.DeepEqual(g["roles"], []any{"analyst"}) || v == "" {
 		t.Errorf("the group: %v %q", g, v)
 	}
-	edit := `{"form": {"name": "etl", "limits": {"window_start": 16, "max_sessions": 20}, "comment": "", "roles": ["analyst", "ops"]}, "version": "` + v + `"}`
+	edit := `{"form": {"name": "etl", "limits": {"window_start": "16", "max_sessions": "20"}, "comment": "", "roles": ["analyst", "ops"]}, "version": "` + v + `"}`
 	want := []any{`CREATE OR REPLACE RESOURCE GROUP "etl" (window_start 16, max_sessions 20)`,
 		`GRANT RESOURCE GROUP "etl" TO ROLE "ops"`}
 	code, out, body = h.do(t, "POST", APIPrefix+"policy/resource-group/preview", opsToken, edit)
@@ -140,13 +152,19 @@ func TestResourceGroupEditor(t *testing.T) {
 			t.Errorf("%s: %d %v", c.code, code, out)
 		}
 	}
+	// batch is the default: making etl one too is refused before anything of the edit is written
+	held := `{"form": {"name": "etl", "limits": {"window_start": "8"}, "comment": "", "default": true, "roles": ["analyst"]}, "version": "` + v + `"}`
+	if code, out, _ := h.do(t, "POST", APIPrefix+"policy/resource-group/preview", opsToken, held); code != http.StatusConflict ||
+		out["error"] != "default_held" || !strings.Contains(out["message"].(string), "batch") {
+		t.Errorf("a second default: %d %v", code, out)
+	}
 	// a new group: a plain name only
 	if code, _, _ := h.do(t, "POST", APIPrefix+"policy/resource-group/preview", opsToken,
 		`{"form": {"name": "a.b"}, "version": ""}`); code != http.StatusUnprocessableEntity {
 		t.Errorf("a dotted name: %d", code)
 	}
 	code, out, body = h.do(t, "POST", APIPrefix+"policy/resource-group/preview", opsToken,
-		`{"form": {"name": "adhoc", "limits": {"max_result_rows": 0}}, "version": ""}`)
+		`{"form": {"name": "adhoc", "limits": {"max_result_rows": "0"}}, "version": ""}`)
 	if code != 200 || !reflect.DeepEqual(out["statements"], []any{`CREATE RESOURCE GROUP "adhoc" (max_result_rows 0)`}) {
 		t.Errorf("a new group: %d %s", code, body)
 	}

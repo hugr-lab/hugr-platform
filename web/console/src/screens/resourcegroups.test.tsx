@@ -45,7 +45,7 @@ describe('the resource group editor (spec 013)', () => {
     expect(groupProblem(f, { max_sessions: '1.5' })).toMatch(/whole number/)
     expect(groupProblem(f, { max_sessions: '-1' })).toMatch(/0 or more/)
     expect(groupProblem(f, { queue_priority: '-1', max_sessions: '' })).toBeUndefined()
-    expect([limitOf(''), limitOf(' 8 '), limitOf('8MiB')]).toEqual([null, 8, undefined])
+    expect([limitOf(''), limitOf(' 8 '), limitOf('8MiB'), limitOf('9223372036854775807')]).toEqual([null, '8', undefined, '9223372036854775807'])
   })
 
   it('makes a new group: its limits, mark and roles shown as statements, then run as shown', async () => {
@@ -63,7 +63,7 @@ describe('the resource group editor (spec 013)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show the statements', hidden: true }))
     await waitFor(() => expect(screen.getByText(statement)).toBeTruthy())
     expect(sent[0].body).toEqual({ version: '', form: { name: 'batch', comment: '', default: true, roles: ['analyst'], op: 'write',
-      limits: { ...NO_LIMITS, max_sessions: 4 } } })
+      limits: { ...NO_LIMITS, max_sessions: '4' } } })
     fireEvent.click(screen.getByRole('button', { name: 'Run', hidden: true }))
     await waitFor(() => expect(sent).toHaveLength(2))
     expect(sent[1].url).toMatch(/policy\/resource-group$/)
@@ -72,7 +72,7 @@ describe('the resource group editor (spec 013)', () => {
 
   it('edits a group from its version; a group a group of nodes serves offers no drop', async () => {
     const read = { exists: true, version: 'v1', roles: ['analyst'], nodeGroups: ['etl'],
-      group: { name: 'etl', limits: { ...NO_LIMITS, window_start: 8 }, comment: 'c', default: false, roles: ['analyst'] } }
+      group: { name: 'etl', limits: { ...NO_LIMITS, window_start: '8', max_result_rows: '9223372036854775807' }, comment: 'c', default: false, roles: ['analyst'] } }
     const { sent } = show('etl', read, ['CREATE OR REPLACE RESOURCE GROUP "etl" COMMENT \'c\''])
     await waitFor(() => expect((screen.getByLabelText(/Fetch window at start/) as HTMLInputElement).value).toBe('8'))
     expect(screen.getByText(/Served by the group/)).toBeTruthy()
@@ -81,7 +81,7 @@ describe('the resource group editor (spec 013)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show the statements', hidden: true }))
     await waitFor(() => expect(sent).toHaveLength(1))
     // a limit cleared is sent as none: the node's setting
-    expect(sent[0].body).toMatchObject({ version: 'v1', form: { name: 'etl', limits: { window_start: null } } })
+    expect(sent[0].body).toMatchObject({ version: 'v1', form: { name: 'etl', limits: { window_start: null, max_result_rows: '9223372036854775807' } } })
   })
 
   it('drops a group no group of nodes serves', async () => {
