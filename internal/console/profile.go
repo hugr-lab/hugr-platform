@@ -112,7 +112,16 @@ func (c ProfileChange) statement() (string, error) {
 		err = name("the extension", c.Extension)
 	case "attach":
 		b.WriteString("CLUSTER ATTACH ")
-		if err = text("the path", c.Path); err == nil {
+		switch {
+		case c.Path == "" && c.Secret != "":
+			// the secret names the source (a postgres, mysql or mssql source is written so: ATTACH '' … SECRET s)
+			b.WriteString("''")
+		case c.Path == "":
+			err = errors.New("the path is required, unless a secret names the source")
+		default:
+			err = text("the path", c.Path)
+		}
+		if err == nil {
 			b.WriteString(" AS ")
 			err = alias("the alias", c.Alias)
 		}

@@ -29,6 +29,9 @@ func TestProfileStatement(t *testing.T) {
 				`LINEAGE 'postgres://pg:5432/lake' DEPENDS ON ("base", "q""s") IN GROUP "etl" COMMENT 'c'`},
 		{ProfileChange{Action: "attach", Path: ":memory:", Alias: "scratch", Type: "duckdb"},
 			`CLUSTER ATTACH ':memory:' AS "scratch" (TYPE duckdb)`},
+		// a source its secret names: no path
+		{ProfileChange{Action: "attach", Alias: "sales", Type: "postgres", Secret: "sales"},
+			`CLUSTER ATTACH '' AS "sales" (TYPE postgres, SECRET sales)`},
 		{ProfileChange{Action: "detach", Alias: "scratch", Cascade: true, Force: true, Group: "etl"},
 			`CLUSTER DETACH "scratch" CASCADE FORCE IN GROUP "etl"`},
 		{ProfileChange{Action: "set", Setting: "threads", Value: "4"}, "CLUSTER SET threads = '4'"},

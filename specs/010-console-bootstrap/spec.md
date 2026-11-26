@@ -65,8 +65,9 @@ same `CLUSTER` statements, judged by a node.
       name, quoted; hugr-node reads a quoted name as one (`NameValue`);
     - a path, a version, a lineage name, a comment and a setting's value are string literals (the node keeps a
       setting's value as text whatever it is written as).
-  - A source names a `SECRET` (never a credential: the node refuses one anyway). ATTACH's options beyond `READ_ONLY`
-    stay the statement's own (SQL on a node).
+  - A source names a `SECRET` (never a credential: the node refuses one anyway). A source its secret names takes no
+    path (`ATTACH '' … (TYPE postgres, SECRET s)`, 2026-11-26); without a secret the path is required. ATTACH's
+    options beyond `READ_ONLY` stay the statement's own (SQL on a node).
   - The Cluster page offers the forms for the whole cluster, a group's page for its resource group - on a cluster node
     only (a standalone one keeps no profile).
 - **The document's parts stay the install's.** The platform's spec is rendered by the chart from its values: a

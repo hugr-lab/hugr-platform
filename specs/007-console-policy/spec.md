@@ -269,8 +269,9 @@ things:
 - **A minikube run reused the last run's volumes** (fixed). The hostpath provisioner keeps a volume's directory, and a
   claim of the same name gets it back, so kista refused its blob store as another deployment's. The teardown now
   deletes the volumes of the namespaces it deleted (`provider_volumes_gone`).
-- **The profile's ATTACH form takes no empty path** (open). The demo's own `sales` is written `ATTACH ''` with a
-  SECRET; the check writes `dbname=sales`.
+- **The profile's ATTACH form took no empty path** (fixed, the owner: allow it). A source its secret names is written
+  `ATTACH ''` with that SECRET, as the demo's own `sales` is: the form takes no path when a secret is given, and the
+  check attaches sales2 so.
 
 ## Security
 

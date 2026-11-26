@@ -759,8 +759,8 @@ check_console_sources() {
 	ok "group b's sources: no set (every source), sales reached by analyst_b; analyst_a reads none of it (403)"
 
 	# a second source of the cluster, and an object of demo over it: the analysts reach it by their catalog grants
-	# a path: the console takes none empty (the secret names the database here; the seed's sales is written '')
-	out="$(console_api admin POST cluster/profile '{"action": "attach", "path": "dbname=sales", "alias": "sales2", "type": "postgres", "secret": "sales"}')" ||
+	# no path: the secret names the source, as the seed's sales
+	out="$(console_api admin POST cluster/profile '{"action": "attach", "alias": "sales2", "type": "postgres", "secret": "sales"}')" ||
 		fail "the profile's ATTACH sales2"
 	json_true "$out" "r['ok']" || fail "the ATTACH sales2: $out"
 	version="$(json_get "$out" "r['version']")"

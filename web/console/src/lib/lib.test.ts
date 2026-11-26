@@ -347,6 +347,8 @@ describe('a change of the profile from a form (spec 010 stage 2)', () => {
     expect(changeProblem({ action: 'install', extension: 'x', version: '' })).toMatch(/version/)
     expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'a', type: 'duckdb) --' })).toMatch(/type/)
     expect(changeProblem({ action: 'attach', path: 'a\nb', alias: 'a', type: 'duckdb' })).toMatch(/path/)
+    expect(changeProblem({ action: 'attach', alias: 'a', type: 'duckdb' })).toMatch(/path/)
+    expect(changeProblem(changeOf('attach', { path: '', alias: 'sales', type: 'postgres', secret: 'sales' }))).toBeUndefined()
     expect(changeProblem({ action: 'set', setting: 'threads' })).toMatch(/value/)
     expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'Lake "eu"', type: 'duckdb', secret: 'ro' })).toBeUndefined()
     expect(changeProblem({ action: 'detach', alias: 'scratch' })).toBeUndefined()
