@@ -369,17 +369,27 @@ func (p *Pool) read(ctx context.Context, client *flightsql.Client, token string,
 	return nil
 }
 
-// plain turns a nested value (a list, a struct, a map: arrow hands those as JSON) into Go's own.
+// plain turns a nested value into Go's own, at every depth: arrow hands a list or a map as JSON, and a struct as a map
+// whose fields are handed the same way - a list inside a struct stayed JSON (an object grant's excluded names read as
+// none, spec 007 stage 2c).
 func plain(v any) any {
-	raw, ok := v.(json.RawMessage)
-	if !ok {
-		return v
+	switch v := v.(type) {
+	case json.RawMessage:
+		var out any
+		if json.Unmarshal(v, &out) != nil {
+			return string(v)
+		}
+		return out
+	case map[string]any:
+		for k, e := range v {
+			v[k] = plain(e)
+		}
+	case []any:
+		for i, e := range v {
+			v[i] = plain(e)
+		}
 	}
-	var out any
-	if json.Unmarshal(raw, &out) != nil {
-		return string(raw)
-	}
-	return out
+	return v
 }
 
 // handshake keeps the expiry of the certificate the node answered with.

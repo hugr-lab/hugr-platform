@@ -730,6 +730,173 @@ check_console_group() {
 	ok "removed from the policy, $g's node drained itself; deleted, it drained and went, and the fleet is a and b again"
 }
 
+# json_body <python expression over a>: a request's JSON, the values a[0], a[1], ... - never part of the expression
+json_body() { python3 -c 'import json, sys; a = sys.argv[2:]; print(json.dumps(eval(sys.argv[1])))' "$@"; }
+# profile_applied <version>: every node of a and b reports the profile's version applied
+profile_applied() {
+	local pod
+	for pod in $(pods a) $(pods b); do lease_is "$pod" profile-applied "$1" || return 1; done
+}
+# refused_with <code> <principal> <method> <path> [body]: the console refuses it with that HTTP status
+refused_with() {
+	local code="$1"
+	shift
+	if console_api "$@" >/dev/null 2>"$WORK/console.err"; then return 1; fi
+	grep -q "answered $code" "$WORK/console.err"
+}
+
+# check_console_sources: spec 007 stage 2b - a group's source set and its check through the console: a second source
+# the analysts reach, group b's set narrowed to sales, the check names sales2 left out with the node's repair, the
+# repair run through the console (only the text the check answers now), analyst_b reading through it on b's node;
+# then the set reset and the source gone
+check_console_sources() {
+	step "14. a group's sources from the console (spec 007 stage 2b): the set, the check, a repair run by hand"
+	local out version repair pod body
+	if ! refused_with 403 analyst-a GET groups/b/sources; then fail "analyst_a read group b's sources: $(cat "$WORK/console.err")"; fi
+	out="$(console_api admin GET groups/b/sources)" || fail "group b's sources"
+	json_true "$out" "r['set'] is None and 'sales' in r['profile'] and not r.get('checkError') and any(s['source'] == 'sales' and 'analyst_b' in s['roles'] for s in r['rows'])" ||
+		fail "group b's sources: $out"
+	ok "group b's sources: no set (every source), sales reached by analyst_b; analyst_a reads none of it (403)"
+
+	# a second source of the cluster, and an object of demo over it: the analysts reach it by their catalog grants
+	# a path: the console takes none empty (the secret names the database here; the seed's sales is written '')
+	out="$(console_api admin POST cluster/profile '{"action": "attach", "path": "dbname=sales", "alias": "sales2", "type": "postgres", "secret": "sales"}')" ||
+		fail "the profile's ATTACH sales2"
+	json_true "$out" "r['ok']" || fail "the ATTACH sales2: $out"
+	version="$(json_get "$out" "r['version']")"
+	eventually 120 "every node applies version $version (sales2)" profile_applied "$version"
+	as admin "$(first_pod a)" "ADD TABLE sales2.public.orders AS demo.orders2" >/dev/null || fail "demo.orders2 over sales2"
+
+	out="$(console_api admin POST cluster/profile '{"action": "sources", "group": "b", "sources": ["sales"]}')" ||
+		fail "group b's set (sales)"
+	json_true "$out" "r['ok']" || fail "group b's set: $out"
+	out="$(console_api admin GET groups/b/sources)" || fail "group b's sources after its set"
+	json_true "$out" "r['set'] is not None and r['set']['names'] == ['sales'] and not r['set']['all'] and not r.get('checkError')" ||
+		fail "group b's set: $out"
+	json_true "$out" "any(s['source'] == 'sales2' and s['listed'] is False and not s.get('elsewhere') and 'analyst_b' in s['roles'] and s['repair'] for s in r['rows'])" ||
+		fail "group b's check does not name sales2 left out with a repair: $out"
+	repair="$(json_get "$out" "next(s['repair'] for s in r['rows'] if s['source'] == 'sales2')")"
+	ok "group b's set is (sales): its check names sales2, which analyst_b reaches, left out - the repair is the node's: $repair"
+
+	# the repair runs only as the check answers it now: another text is refused, and so is a source with no repair
+	body=$(json_body '{"source": "sales2", "repair": a[0] + " "}' "$repair")
+	if ! refused_with 409 admin POST groups/b/sources/repair "$body"; then
+		fail "a repair the check did not answer ran: $(cat "$WORK/console.err")"
+	fi
+	body=$(json_body '{"source": "sales", "repair": a[0]}' "$repair")
+	if ! refused_with 409 admin POST groups/b/sources/repair "$body"; then
+		fail "a listed source was repaired: $(cat "$WORK/console.err")"
+	fi
+	body=$(json_body '{"source": "sales2", "repair": a[0]}' "$repair")
+	out="$(console_api admin POST groups/b/sources/repair "$body")" ||
+		fail "the repair of sales2"
+	json_true "$out" "r['ok']" || fail "the repair of sales2: $out"
+	version="$(json_get "$out" "r['version']")"
+	out="$(console_api admin GET groups/b/sources)" || fail "group b's sources after the repair"
+	json_true "$out" "sorted(r['set']['names']) == ['sales', 'sales2'] and all(s['listed'] for s in r['rows'] if s['source'] in ('sales', 'sales2'))" ||
+		fail "group b after the repair: $out"
+	if ! refused_with 409 admin POST groups/b/sources/repair "$body"; then
+		fail "a repair ran twice: $(cat "$WORK/console.err")"
+	fi
+	pod="$(first_pod b)"
+	eventually 120 "b's node $pod applies version $version" lease_is "$pod" profile-applied "$version"
+	[ "$(as analyst-b "$pod" "SELECT count(*) FROM orders2")" = 3 ] || fail "analyst_b's read of orders2 on $pod"
+	ok "the repair ran as the check answered it (another text, a listed source and a second run refused, 409): b's set is (sales, sales2), analyst_b reads orders2 on $pod"
+
+	out="$(console_api admin POST cluster/profile '{"action": "reset-sources", "group": "b"}')" ||
+		fail "group b's set reset"
+	json_true "$out" "r['ok']" || fail "group b's set reset: $out"
+	as admin "$(first_pod a)" "DROP VIRTUAL TABLE demo.orders2" >/dev/null || fail "demo.orders2 dropped"
+	out="$(console_api admin POST cluster/profile '{"action": "detach", "alias": "sales2"}')" ||
+		fail "the profile's DETACH sales2"
+	json_true "$out" "r['ok']" || fail "the DETACH sales2: $out"
+	out="$(console_api admin GET groups/b/sources)" || fail "group b's sources at the end"
+	json_true "$out" "r['set'] is None and 'sales2' not in r['profile']" || fail "group b's sources at the end: $out"
+	ok "group b's set reset, demo.orders2 dropped and sales2 detached: b attaches every source again"
+}
+
+# reads <principal> <pod> <sql> <answer>: the statement answers that
+reads() { [ "$(as "$1" "$2" "$3")" = "$4" ]; }
+
+# grant_edit <principal> <path> <form json> [version] [statements json]: the editor's request body sent
+grant_edit() {
+	local body
+	body=$(json_body 'dict(form=json.loads(a[0]), version=a[1], **({"statements": json.loads(a[2])} if a[2] else {}))' "$3" "${4:-}" "${5:-}")
+	console_api "$1" POST "$2" "$body"
+}
+
+# check_console_grants: spec 007 stage 2c - an object grant written through the console's editor: read (none), the
+# statements previewed, checked with the node, written as shown; analyst_a then reads what it says (a row filter with a
+# quote in it, a column left out, a mask); a stale or another edit refused; revoked, analyst_a reads the catalog
+# grant's rows again
+check_console_grants() {
+	step "15. an object grant from the console's editor (spec 007 stage 2c): previewed, checked, written, read, revoked"
+	local out form version statements pod body
+	pod="$(first_pod a)"
+	[ "$(as analyst-a "$pod" "SELECT count(*) FROM orders")" = 3 ] || fail "analyst_a before the object grant"
+	out="$(console_api admin GET "policy/grant?level=object&role=analyst_a&catalog=demo&target=orders")" ||
+		fail "analyst_a's grant on demo.orders"
+	json_true "$out" "not r['exists'] and r['version'] == ''" || fail "analyst_a's grant on demo.orders: $out"
+	form=$(json_body '{"level": "object", "role": "analyst_a", "catalog": "demo", "target": "orders", "caps": ["select"], "rls": a[0], "columns": {"mode": "except", "names": ["id"]}, "masks": [{"column": "amount", "mask": "0"}]}' "region = 'north'")
+
+	out="$(console_api admin POST policy/grant/check "$form")" || fail "the grant checked with the node"
+	json_true "$out" "r['rows'] and all(row['status'] == 'ok' for row in r['rows']) and any(row['item'] == 'column' and row['name'] == 'amount' and row['message'] for row in r['rows'])" ||
+		fail "the check of analyst_a's grant: $out"
+	body=$(json_body 'dict(json.loads(a[0]), rls="nope > 1")' "$form")
+	out="$(console_api admin POST policy/grant/check "$body")" ||
+		fail "a broken filter checked"
+	json_true "$out" "any(row['item'] == 'rls' and row['status'] == 'refused' for row in r['rows'])" ||
+		fail "the check passed a filter that does not bind: $out"
+	ok "Check with the node: the grant is accepted (amount masked), a filter that does not bind is refused - nothing written"
+
+	out="$(grant_edit admin policy/grant/preview "$form")" || fail "the preview of analyst_a's grant"
+	json_true "$out" "len(r['statements']) == 1 and r['statements'][0].startswith('GRANT OBJECT ') and \"RLS 'region = ''north'''\" in r['statements'][0] and 'MASK ' in r['statements'][0]" ||
+		fail "the preview: $out"
+	statements="$(json_get "$out" "json.dumps(r['statements'])")"
+	# what runs is what was shown
+	body=$(json_body '{"form": json.loads(a[0]), "version": "", "statements": ["GRANT OBJECT demo.orders TO ROLE analyst_a"]}' "$form")
+	if ! refused_with 409 admin POST policy/grant "$body"; then
+		fail "statements not shown were written: $(cat "$WORK/console.err")"
+	fi
+	out="$(grant_edit admin policy/grant "$form" "" "$statements")" || fail "analyst_a's grant written"
+	json_true "$out" "not r.get('refused') and len(r['answers']) == 1 and r['answers'][0] and r['answers'][0]['ok']" ||
+		fail "analyst_a's grant written: $out"
+	# a node reads a written policy at its next freshness check
+	eventually 60 "analyst_a reads 2 rows under the filter" reads analyst-a "$pod" "SELECT count(*) FROM orders" 2
+	[ "$(as analyst-a "$pod" "SELECT count(*) FROM orders WHERE amount = 0")" = 2 ] || fail "analyst_a's amount is not masked"
+	if out="$(as analyst-a "$pod" "SELECT id FROM orders" 2>&1)"; then fail "analyst_a reads id: $out"; fi
+	ok "the grant written as previewed (RLS 'region = ''north''', * EXCLUDE (id), amount masked): analyst_a reads 2 rows, amount 0, no id"
+
+	# a new grant over it, a stale version, statements other than its own: each refused, nothing written
+	body=$(json_body '{"form": json.loads(a[0]), "version": ""}' "$form")
+	if ! refused_with 409 admin POST policy/grant/preview "$body"; then
+		fail "a new grant over analyst_a's: $(cat "$WORK/console.err")"
+	fi
+	out="$(console_api admin GET "policy/grant?level=object&role=analyst_a&catalog=demo&target=orders")" ||
+		fail "analyst_a's grant read again"
+	json_true "$out" "r['exists'] and 'north' in r['grant']['rls'] and r['grant']['columns'] == {'mode': 'except', 'names': ['id']} and len(r['grant']['masks']) == 1 and r['grant']['masks'][0]['column'] == 'amount' and r['version']" ||
+		fail "analyst_a's grant read again: $out"
+	version="$(json_get "$out" "r['version']")"
+	body=$(json_body '{"form": json.loads(a[0]), "version": "stale"}' "$form")
+	if ! refused_with 409 admin POST policy/grant/preview "$body"; then
+		fail "a stale edit: $(cat "$WORK/console.err")"
+	fi
+	ok "read back as written (its filter, test and mask); a new grant over it and a stale edit refused (409)"
+
+	# revoked through the editor: the catalog grant's rows again
+	form=$(json_body 'dict(json.loads(a[0]), op="revoke")' "$form")
+	out="$(grant_edit admin policy/grant/preview "$form" "$version")" || fail "the revoke previewed"
+	json_true "$out" "r['statements'] == [a[0]]" 'REVOKE OBJECT "demo"."orders" FROM ROLE "analyst_a"' || fail "the revoke: $out"
+	statements="$(json_get "$out" "json.dumps(r['statements'])")"
+	out="$(grant_edit admin policy/grant "$form" "$version" "$statements")" || fail "the revoke written"
+	json_true "$out" "not r.get('refused') and r['answers'][0]['ok']" || fail "the revoke written: $out"
+	eventually 60 "analyst_a reads the 3 rows again" reads analyst-a "$pod" "SELECT count(*) FROM orders" 3
+	out="$(console_api admin GET "policy/grant?level=object&role=analyst_a&catalog=demo&target=orders")" ||
+		fail "analyst_a's grant after the revoke"
+	json_true "$out" "not r['exists']" || fail "analyst_a's grant after the revoke: $out"
+	ok "revoked through the editor: analyst_a reads demo.orders whole again (3 rows)"
+}
+
 # check_rollout: a new node image - the same build under another name - rolls group by group (spec 008): the default
 # group a is the canary, b waits on its image until a is done, then moves; the status ends Complete and the fleet
 # serves
@@ -789,6 +956,8 @@ run_checks() {
 	check_upgrade
 	check_rollout
 	check_console_group
+	check_console_sources
+	check_console_grants
 	check_no_secrets
 	echo
 	echo "PASS: the platform in one cluster ($PROVIDER)"

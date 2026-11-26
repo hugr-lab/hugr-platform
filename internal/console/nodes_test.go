@@ -470,3 +470,30 @@ func TestAnswerOf(t *testing.T) {
 		}
 	}
 }
+
+// TestPlainStructWithList: a struct whose field is a list - an object grant's columns, STRUCT(mode, names LIST) - is
+// read whole, as arrow-go hands it (a map whose list field is still JSON): the names were lost before.
+func TestPlainStructWithList(t *testing.T) {
+	names := arrow.ListOf(arrow.BinaryTypes.String)
+	b := array.NewStructBuilder(memory.DefaultAllocator, arrow.StructOf(
+		arrow.Field{Name: "mode", Type: arrow.BinaryTypes.String}, arrow.Field{Name: "names", Type: names}))
+	defer b.Release()
+	b.Append(true)
+	b.FieldBuilder(0).(*array.StringBuilder).Append("except")
+	list := b.FieldBuilder(1).(*array.ListBuilder)
+	list.Append(true)
+	list.ValueBuilder().(*array.StringBuilder).Append("id")
+	columns := b.NewStructArray()
+	defer columns.Release()
+	got, ok := plain(columns.GetOneForMarshal(0)).(map[string]any)
+	if !ok {
+		t.Fatalf("the struct: %#v", plain(columns.GetOneForMarshal(0)))
+	}
+	if n, ok := got["names"].([]any); !ok || len(n) != 1 || n[0] != "id" || got["mode"] != "except" {
+		t.Fatalf("the struct's list field: %#v", got)
+	}
+	f := formOf("object", map[string]any{"role": "r", "catalog": "c", "object": "t", "columns": got, "masks": []any{}})
+	if f.Columns == nil || f.Columns.Mode != "except" || len(f.Columns.Names) != 1 || f.Columns.Names[0] != "id" {
+		t.Fatalf("the grant read: %#v", f.Columns)
+	}
+}

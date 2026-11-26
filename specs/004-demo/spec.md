@@ -273,6 +273,17 @@ they run once per `up` (`all` does both).
     enters and drains itself while the policy lacks resource group c. The console adds c to the policy by hand, binding
     analyst_b and node_breakglass. Then c resumes by itself, analyst_b reads on its node and analyst_a is refused there.
     Removed from the policy, c's node drains itself again; deleted, it drains and goes, and the fleet is a and b again.
+14. **A group's sources from the console** (spec 007 stage 2b). The console attaches a second source, sales2, and
+    demo.orders2 is added over it, so the analysts reach it through their catalog grants. Group b's set becomes
+    (sales), and its check names sales2 as left out, reached by analyst_b, with the node's repair. The repair runs only
+    as the check answers it now; another text, a listed source and a second run are refused (409). After it, b's set
+    is (sales, sales2) and analyst_b reads orders2 on b's node. The set is then reset, orders2 dropped and sales2
+    detached.
+15. **An object grant from the console's editor** (spec 007 stage 2c). analyst_a's grant on demo.orders is checked
+    with the node: it is accepted, and a filter that does not bind is refused. It is previewed and written as shown.
+    The grant is `RLS 'region = ''north'''`, `* EXCLUDE (id)`, `amount` masked. analyst_a then reads 2 rows, an amount
+    of 0 and no id. It reads back as written. Statements not shown, a new grant over it and a stale edit are refused
+    (409). Revoked through the editor, analyst_a reads the 3 rows again.
 
 Then the secrets scan (Security).
 

@@ -122,6 +122,8 @@ teardown() {
 	k delete namespace hugr "$TRESOR_NS" "$KISTA_NS" hugr-openbao tresor kista --ignore-not-found --wait --timeout=300s \
 		>/dev/null ||
 		fail "the last run's namespaces are still being deleted"
+	# a provider whose volumes outlive their claims (minikube) clears them: the next install starts empty
+	! declare -F provider_volumes_gone >/dev/null || provider_volumes_gone hugr "$TRESOR_NS" "$KISTA_NS" hugr-openbao tresor kista
 	drop_databases
 }
 
