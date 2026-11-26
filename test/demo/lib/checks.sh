@@ -975,6 +975,111 @@ refuses_rows() { ! as "$1" "$2" "$3" >/dev/null 2>&1; }
 # reads_rows <principal> <pod> <sql> <n>: the statement answers n rows
 reads_rows() { [ "$(as "$1" "$2" "$3" | wc -l | tr -d ' ')" = "$4" ]; }
 
+# hold_sessions <principal> <pod> <n>: n sessions of the principal's own left open on the pod, as clients keep them
+hold_sessions() {
+	local i
+	for i in $(seq "$3"); do
+		as "$1" "$2" "SELECT 1" -hold >/dev/null || return 1
+	done
+}
+# end_sessions <role> <group>: every Flight session of the role on the group's nodes ended through the console
+end_sessions() {
+	local pod out id
+	for pod in $(pods "$2"); do
+		out="$(console_api admin GET "nodes/$pod/sessions")" || return 1
+		for id in $(json_get "$out" "' '.join(s['id'] for s in r['sessions'] if s['door'] == 'flight' and a[0] in (s['roles'] or []))" "$1"); do
+			console_api admin POST "nodes/$pod/sessions/$id/end" >/dev/null || return 1
+		done
+	done
+}
+# profile_set <json change>: one profile change through the console, every node at its version after
+profile_set() {
+	local out version
+	out="$(console_api admin POST cluster/profile "$1")" || return 1
+	json_true "$out" "r['ok']" || return 1
+	version="$(json_get "$out" "r['version']")"
+	eventually 120 "every node applies version $version" profile_applied "$version"
+}
+replicas_is() { status_is "$1" '{.spec.replicas}' "$2"; }
+# console_restart <group>: the group rolled from the console (spec 006), nobody left needing a restart after
+console_restart() {
+	console_api admin PATCH "groups/$1" '{"restart": true}' >/dev/null || fail "group $1 restarted from the console"
+	eventually 300 "group $1 rolled: nobody needs a restart" restarts_needed "$1" 0
+	eventually 300 "group $1 serves after its roll" group_ready "$1"
+	follow_logs
+}
+last_reason_has() { status "$1" '{.status.scaling.last.reason}' | grep -q "$2"; }
+
+# check_autoscale_load: spec 011 under load, group by group. The nodes of a and b admit 20 sessions each (a profile
+# item per group); both groups go auto (1..2, growth past 50% of the sessions for 30 s, the scale-down below 30% for
+# 1 min, a drained node gone after 1 min with no session). Idle, a shrinks to 1 through a drain; 12 sessions held on a's node grow
+# a, and b stays; 12 on b's grow b, and a stays; a's ended, a shrinks back while b holds; b's ended, b too
+check_autoscale_load() {
+	step "17. autoscaling under load, per resource group (spec 011): grows on its own load, shrinks through a drain"
+	local ra rb g pod scaling
+	ra="$(status a '{.spec.replicas}')"
+	rb="$(status b '{.spec.replicas}')"
+	# a setting is a restart item: each group rolled from the console, its new nodes reporting 20 in their Leases
+	for g in a b; do
+		profile_set "$(json_body '{"action": "set", "setting": "acl_max_sessions", "value": "20", "group": a[0]}' "$g")" ||
+			fail "acl_max_sessions 20 in group $g"
+		console_restart "$g"
+		for pod in $(pods "$g"); do lease_is "$pod" sessions-max 20 || fail "$pod admits $(lease "$pod" sessions-max) sessions, want 20"; done
+	done
+	# `idle` (a node with no session at all goes) stays the default 30 min: the sessions below are held on one node, as
+	# a client keeps them, and the empty node beside it is what the load-based drain is to judge
+	scaling='{"spec":{"scaling":{"mode":"auto","min":1,"max":2,"cooldown":"30s",
+		"scaleUp":{"sessionsUsed":50,"for":"30s"},"scaleDown":{"load":30,"for":"1m","idle":"1m"}}}}'
+	for g in a b; do
+		k -n hugr patch hng "$g" --type=merge -p "$scaling" >/dev/null || fail "group $g to auto"
+	done
+	ok "a and b auto (1..2): growth past 50% of 20 sessions a node for 30 s, the scale-down below 30% for 1 min"
+
+	# idle, a (2 nodes) is above what its load needs: one node drained, gone once idle - b, at its minimum, stays
+	eventually 420 "idle a shrinks to 1" replicas_is a 1
+	last_reason_has a 'drained for the scale-down' || fail "a's shrink: $(status a '{.status.scaling.last}')"
+	eventually 300 "a's drained node went" group_ready a
+	replicas_is b 1 || fail "b moved while idle: $(status b '{.status.scaling.last}')"
+	ok "idle, a shrank from $ra to 1 through a drained node ($(status a '{.status.scaling.last.reason}')); b stayed at 1"
+
+	pod="$(first_pod a)"
+	hold_sessions analyst-a "$pod" 12 || fail "analyst_a's sessions on $pod"
+	eventually 240 "a grows under analyst_a's sessions" replicas_is a 2
+	last_reason_has a 'under load' || fail "a's growth: $(status a '{.status.scaling.last}')"
+	eventually 300 "a's second node serves" group_ready a
+	replicas_is b 1 || fail "b grew on a's load: $(status b '{.status.scaling.last}')"
+	ok "12 sessions on $pod: a grew to 2 ($(status a '{.status.scaling.last.reason}')); b stayed at 1"
+
+	pod="$(first_pod b)"
+	hold_sessions analyst-b "$pod" 12 || fail "analyst_b's sessions on $pod"
+	eventually 240 "b grows under analyst_b's sessions" replicas_is b 2
+	eventually 300 "b's second node serves" group_ready b
+	replicas_is a 2 || fail "a moved while its sessions held: $(status a '{.status.scaling.last}')"
+	ok "12 sessions on $pod: b grew to 2; a held at 2 (its 12 sessions on two nodes stay above 30%)"
+
+	end_sessions analyst_a a || fail "analyst_a's sessions ended"
+	eventually 420 "a shrinks back once its sessions ended" replicas_is a 1
+	last_reason_has a 'drained for the scale-down' || fail "a's shrink: $(status a '{.status.scaling.last}')"
+	replicas_is b 2 || fail "b moved on a's end: $(status b '{.status.scaling.last}')"
+	ok "a's sessions ended: a shrank back to 1 through a drain; b held at 2 under its own load"
+
+	end_sessions analyst_b b || fail "analyst_b's sessions ended"
+	eventually 420 "b shrinks back once its sessions ended" replicas_is b 1
+	ok "b's sessions ended: b shrank back to 1"
+
+	# as before: manual, the counts the check found, the nodes' own session limit
+	k -n hugr patch hng a --type=merge -p "{\"spec\":{\"scaling\":null,\"replicas\":$ra}}" >/dev/null || fail "a back to manual"
+	k -n hugr patch hng b --type=merge -p "{\"spec\":{\"scaling\":null,\"replicas\":$rb}}" >/dev/null || fail "b back to manual"
+	for g in a b; do
+		profile_set "$(json_body '{"action": "reset", "setting": "acl_max_sessions", "group": a[0]}' "$g")" ||
+			fail "acl_max_sessions reset in group $g"
+		eventually 300 "group $g serves at its count" group_ready "$g"
+		console_restart "$g"
+	done
+	follow_logs
+	ok "a and b back to manual ($ra and $rb nodes), the nodes' session limit their own"
+}
+
 # check_rollout: a new node image - the same build under another name - rolls group by group (spec 008): the default
 # group a is the canary, b waits on its image until a is done, then moves; the status ends Complete and the fleet
 # serves
@@ -1037,6 +1142,7 @@ run_checks() {
 	check_console_sources
 	check_console_grants
 	check_console_resource_groups
+	check_autoscale_load
 	check_no_secrets
 	echo
 	echo "PASS: the platform in one cluster ($PROVIDER)"
