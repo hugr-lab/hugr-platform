@@ -289,6 +289,15 @@ they run once per `up` (`all` does both).
     refusal; with the limit cleared, all 243 rows.
     adhoc, which no group of nodes serves, is made with a limit, a comment and analyst_b, read back, and dropped.
     Dropping a is refused, since its nodes would drain.
+17. **Autoscaling under load, per resource group** (spec 011). The nodes of a and b admit 20 sessions each: a
+    profile item per group, which is a restart item, so each group is rolled from the console and its Leases say 20.
+    Both groups then go auto, 1..2. Growth comes past 50% of a node's sessions for 30 s. The scale-down comes below 30%
+    for 1 min, and the drained node goes after 1 min with no session.
+    - Idle, a (2 nodes) shrinks to 1 through a drained node, and b stays.
+    - 12 sessions held on a's node grow a to 2, and b stays.
+    - 12 on b's grow b, and a holds: its 12 sessions on two nodes stay above 30%.
+    - With a's sessions ended, a shrinks back through a drain while b holds. With b's ended, b shrinks too.
+    - Both groups go back to manual at the counts found, with the nodes' own session limit.
 
 Then the secrets scan (Security).
 

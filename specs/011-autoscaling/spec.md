@@ -427,6 +427,20 @@ back.
 - e2e (kind / minikube demo): an ETL group with `min: 0` - a client connects, a node starts, the query runs; the
   client leaves, the node stops after `idle`; a second client during the stop is seated after a new node starts.
 
+### On a cluster, group by group (2026-11-26)
+
+The owner asked for autoscaling to be checked under load on different resource groups. That is now the demo's check
+17 (spec 004).
+- Each group grows on its own load and only on it.
+- An idle group above its need shrinks through a drained node.
+- One group's growth or shrink leaves the other where it is.
+- The load is sessions held on one node: the nodes' `acl_max_sessions` is lowered by a profile item per group.
+- What the run showed:
+  - A profile setting is a restart item. Until the group rolled, the nodes kept reporting their old limit, so the
+    first try never grew.
+  - `idle` drains any node with no session, whatever the load. With sessions held on one node, the empty node beside
+    it would go and come back, so the check leaves `idle` at its default and judges the load-based drain.
+
 ## Decisions (owner, 2026-11-16)
 
 1. `idle` defaults to 30 minutes; no per-group wait - the client's own timeout decides.
