@@ -1,6 +1,6 @@
 # Spec 015: a node's boot scripts in the console, and a failing script in the group's status
 
-- **Status**: accepted (the owner, 2026-11-27)
+- **Status**: implemented (2026-11-27; the demo's check 20 green on minikube)
 - **Date**: 2026-11-27
 
 ## Summary
