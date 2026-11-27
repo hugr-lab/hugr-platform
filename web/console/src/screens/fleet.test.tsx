@@ -67,7 +67,7 @@ describe('the fleet page', () => {
 describe('a failing item (spec 015)', () => {
   const held: FleetAnswer = { ...fleet, groups: [{ ...fleet.groups[0], readyReplicas: 3,
     profile: { target: 14, applied: 3, needsRestart: [], failingMore: 1, failing: [
-      { node: 'hugr-node-etl-1', kind: 'script', name: '20_after', reason: 'script 20_after failed (Catalog Error)' }] } }] }
+      { node: 'hugr-node-etl-1', kind: 'script', name: '20_after', reason: 'script 20_after failed (Catalog)' }] } }] }
   it('marks the group on the fleet, and the group page lists what fails', async () => {
     show(none, held)
     await waitFor(() => expect(screen.getByText('Profile held')).toBeTruthy())
@@ -83,7 +83,7 @@ describe('a failing item (spec 015)', () => {
       </AppContext.Provider>,
     )
     const alert = await screen.findByRole('alert', { name: /Part of the profile is held: 2 items fail/ })
-    expect(alert.textContent).toContain('hugr-node-etl-1: script 20_after - script 20_after failed (Catalog Error)')
+    expect(alert.textContent).toContain('hugr-node-etl-1: script 20_after - script 20_after failed (Catalog)')
     expect(alert.textContent).toContain('and 1 more')
   })
 })

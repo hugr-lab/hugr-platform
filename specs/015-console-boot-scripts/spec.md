@@ -82,7 +82,7 @@ CLUSTER DROP SCRIPT <name> [IN GROUP "<g>"]
   (kind, name and the node's reason). It is one more annotation of the node's Lease, as the summary's other fields are: a JSON list, capped at 20 items.
 - **The group's status**: `status.profile.failing` lists `{node, kind, name, reason}`.
   - The reason is the node's own text, which is the script's name and the error's class: `script 20_after failed
-    (Catalog Error)`. The node never puts the script's text or the error's message there (047).
+    (Catalog)`. The node never puts the script's text or the error's message there (047).
   - The list is sorted by node, then name, and capped at 20 entries, with a count of the rest.
 - **A condition** `ProfileHeld` is true while any node lists one. It is not `Ready=false`: the node serves, by the
   policy the administrator chose.

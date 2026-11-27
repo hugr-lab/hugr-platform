@@ -1143,13 +1143,13 @@ check_boot_scripts() {
 	eventually 180 "group b's status lists the script as failing, ProfileHeld" script_failing b "$name"
 	out="$(k -n hugr get hng b -o json)" || fail "group b's status"
 	! grep -q demo_no_such_table <<<"$out" || fail "the script's text reached group b's status"
-	json_true "$out" "all(f['reason'] == 'script ' + a[0] + ' failed (Catalog Error)' for f in r['status']['profile']['failing'])" "$name" ||
+	json_true "$out" "all(f['reason'] == 'script ' + a[0] + ' failed (Catalog)' for f in r['status']['profile']['failing'])" "$name" ||
 		fail "the failing items' reason: $out"
 	as analyst-b "$(first_pod b)" "SELECT 1" >/dev/null || fail "group b serves with its script failing"
 	out="$(console_api admin GET groups)" || fail "the fleet"
 	json_true "$out" "any(f['name'] == a[0] for g in r['groups'] if g['name'] == 'b' for f in g['profile']['failing'])" "$name" ||
 		fail "the console's group b lists no failing script: $out"
-	ok "$name written for group b (restart class), listed in the boot; after the restart b serves, its status lists the script failing (Catalog Error) with ProfileHeld, never its text"
+	ok "$name written for group b (restart class), listed in the boot; after the restart b serves, its status lists the script failing (Catalog) with ProfileHeld, never its text"
 
 	out="$(console_api admin POST cluster/profile "$(json_body '{"action": "drop-script", "script": a[0], "group": "b"}' "$name")")" ||
 		fail "the script dropped from the console"

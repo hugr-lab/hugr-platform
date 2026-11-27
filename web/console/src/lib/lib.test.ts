@@ -124,11 +124,11 @@ describe('the fleet', () => {
       .toBe('Starts on the first client')
     expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: ['n'], failing: [], failingMore: 0 } })).text).toBe('Restart pending')
     // spec 015: a failing item holds part of the profile - over a restart pending, which does not mend it
-    const failing = { node: 'n-a', kind: 'script', name: '20_after', reason: 'script 20_after failed (Catalog Error)' }
+    const failing = { node: 'n-a', kind: 'script', name: '20_after', reason: 'script 20_after failed (Catalog)' }
     expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: ['n'], failing: [failing], failingMore: 0 } })))
-      .toEqual({ mark: 'half', text: 'Profile held', note: 'n-a: script 20_after - script 20_after failed (Catalog Error)' })
+      .toEqual({ mark: 'half', text: 'Profile held', note: 'n-a: script 20_after - script 20_after failed (Catalog)' })
     expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: [], failing: [failing], failingMore: 2 } })).note)
-      .toBe('3 items failing - first: n-a: script 20_after - script 20_after failed (Catalog Error)')
+      .toBe('3 items failing - first: n-a: script 20_after - script 20_after failed (Catalog)')
     expect(groupState(group({ conditions: [{ type: 'Draining', status: 'True', reason: '', message: '' }] })).text)
       .toBe('Draining')
   })

@@ -232,7 +232,7 @@ func TestSummaryScalingLoad(t *testing.T) {
 // capped, each field cut to a node's own string; a node that reports none writes no annotation
 func TestSummaryFailing(t *testing.T) {
 	body := `{"node_id": "n", "config": {"target": 3, "applied": 3, "pending": [
-	  {"kind": "script", "name": "20_after", "class": "error", "error": "script 20_after failed (Catalog Error)"},
+	  {"kind": "script", "name": "20_after", "class": "error", "error": "script 20_after failed (Catalog)"},
 	  {"kind": "source", "name": "lake", "class": "error", "error": "script 10_views failed (IO Error)"},
 	  {"kind": "extension", "name": "spatial", "class": "restart"},
 	  {"kind": "source", "name": "crm", "class": "hot", "error": "Connection Error"}]}}`
@@ -241,7 +241,7 @@ func TestSummaryFailing(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := SummaryOf(r, load)
-	want := []Failing{{Kind: "script", Name: "20_after", Reason: "script 20_after failed (Catalog Error)"},
+	want := []Failing{{Kind: "script", Name: "20_after", Reason: "script 20_after failed (Catalog)"},
 		{Kind: "source", Name: "lake", Reason: "script 10_views failed (IO Error)"}}
 	if !reflect.DeepEqual(s.Failing, want) {
 		t.Errorf("failing %+v, want %+v", s.Failing, want)

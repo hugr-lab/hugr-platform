@@ -84,16 +84,16 @@ func TestAggregate(t *testing.T) {
 // while there is one, and false once none is reported - never Ready=false
 func TestAggregateFailing(t *testing.T) {
 	item := func(name string) nodeproto.Failing {
-		return nodeproto.Failing{Kind: "script", Name: name, Reason: "script " + name + " failed (Catalog Error)"}
+		return nodeproto.Failing{Kind: "script", Name: name, Reason: "script " + name + " failed (Catalog)"}
 	}
 	fleet := Aggregate([]NodeState{
 		{Name: "b", Summary: nodeproto.Summary{Failing: []nodeproto.Failing{item("z"), item("a")}}},
 		{Name: "a", Summary: nodeproto.Summary{Failing: []nodeproto.Failing{item("m")}}},
 		{Name: "c", Lost: true, Summary: nodeproto.Summary{Failing: []nodeproto.Failing{item("lost")}}},
 	})
-	want := []v1alpha1.FailingItem{{Node: "a", Kind: "script", Name: "m", Reason: "script m failed (Catalog Error)"},
-		{Node: "b", Kind: "script", Name: "a", Reason: "script a failed (Catalog Error)"},
-		{Node: "b", Kind: "script", Name: "z", Reason: "script z failed (Catalog Error)"}}
+	want := []v1alpha1.FailingItem{{Node: "a", Kind: "script", Name: "m", Reason: "script m failed (Catalog)"},
+		{Node: "b", Kind: "script", Name: "a", Reason: "script a failed (Catalog)"},
+		{Node: "b", Kind: "script", Name: "z", Reason: "script z failed (Catalog)"}}
 	if !equality.Semantic.DeepEqual(fleet.Profile.Failing, want) || fleet.Profile.FailingMore != 0 {
 		t.Errorf("failing %+v (+%d), want %+v", fleet.Profile.Failing, fleet.Profile.FailingMore, want)
 	}
@@ -101,7 +101,7 @@ func TestAggregateFailing(t *testing.T) {
 	profileHeld(status, 1)
 	held := meta.FindStatusCondition(status.Conditions, ConditionProfileHeld)
 	if held == nil || held.Status != metav1.ConditionTrue || held.Reason != "ItemsFailing" ||
-		held.Message != "3 item(s) failing on 2 node(s): script m - script m failed (Catalog Error)" {
+		held.Message != "3 item(s) failing on 2 node(s): script m - script m failed (Catalog)" {
 		t.Errorf("ProfileHeld: %+v", held)
 	}
 	var nodes []NodeState
