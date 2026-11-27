@@ -1003,10 +1003,24 @@ profile_set() {
 replicas_is() { status_is "$1" '{.spec.replicas}' "$2"; }
 # console_restart <group>: the group rolled from the console (spec 006), nobody left needing a restart after
 console_restart() {
+	local before
+	before="$(pods "$1")"
 	console_api admin PATCH "groups/$1" '{"restart": true}' >/dev/null || fail "group $1 restarted from the console"
+	# the roll itself first: until the operator starts it, the nodes from before still serve, and nobody may be listed
+	# as needing a restart yet - a check right after read an old node's Lease
+	eventually 300 "group $1 rolled: none of its nodes from before the restart serves" none_serves "$1" "$before"
 	eventually 300 "group $1 rolled: nobody needs a restart" restarts_needed "$1" 0
 	eventually 300 "group $1 serves after its roll" group_ready "$1"
 	follow_logs
+}
+# none_serves <group> <pods>: no pod of the list is among the group's serving pods
+none_serves() {
+	local now p
+	now="$(pods "$1")"
+	for p in $2; do
+		grep -qxF "$p" <<<"$now" && return 1
+	done
+	return 0
 }
 last_reason_has() { status "$1" '{.status.scaling.last.reason}' | grep -q "$2"; }
 
