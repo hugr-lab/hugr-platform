@@ -7,8 +7,10 @@ import { Rows, Section, ViewTable } from '../components/ViewTable'
 import { useApp, useLoad } from '../lib/context'
 import { calls, caps, grantColumns, grantMasks, policyParts, reads } from '../lib/policy'
 import type { GrantForm, ViewPage } from '../lib/types'
+import { StepSql } from './Bootstrap'
 import { GrantDialog } from './GrantDialog'
 import { ResourceGroupDialog } from './ResourceGroupDialog'
+import { SessionScriptDialog, ownerOf } from './SessionScriptDialog'
 
 const enc = encodeURIComponent
 
@@ -165,6 +167,47 @@ function CallTable({ title, load }: { title: string; load: () => Promise<ViewPag
   )
 }
 
+/** a session script's owner the dialog opens on (spec 016): a group's, a role's, a role's grant of a group */
+type ScriptOwner = { group?: string; role?: string }
+
+/** a session script in a table: folded past a few lines, with its action when the person writes scripts */
+function ScriptCell({ sql, owner, onEdit }: { sql: unknown; owner: ScriptOwner; onEdit?: (o: ScriptOwner) => void }) {
+  const set = typeof sql === 'string' && sql !== ''
+  return (
+    <div className="flex flex-col items-start gap-1">
+      {set ? <StepSql sql={sql} /> : <span className="text-ink-muted">none</span>}
+      {onEdit && (
+        <button type="button" className="link font-sans" aria-label={`Session script of ${ownerOf(owner.group ?? '', owner.role ?? '')}`}
+          onClick={() => onEdit(owner)}>{set ? 'Change' : 'Set'}</button>
+      )}
+    </div>
+  )
+}
+
+/** what a session of the role runs on a node of a group, in the node's order - the group always named: without one the
+ * node answering would decide */
+function SessionOrder({ role }: { role: string }) {
+  const { api } = useApp()
+  const groups = useLoad(() => api.sessionScriptRead('', role), [api, role])
+  const [group, setGroup] = useState<string>()
+  const picked = group ?? groups.data?.groups[0]
+  const order = useLoad(() => (picked ? api.policyCall('session_scripts', { role, group: picked }) : Promise.resolve(undefined)),
+    [api, role, picked])
+  return (
+    <Section title="What a session runs">
+      {groups.error !== undefined && <Problem error={groups.error} />}
+      {groups.data && groups.data.groups.length === 0 && <p className="text-sm text-ink-muted">The role is in no resource group, and the policy has no default group: its sessions run its own script alone.</p>}
+      {groups.data && groups.data.groups.length > 1 && (
+        <div className="flex flex-wrap gap-3 text-sm">On the nodes of {groups.data.groups.map((g) => <Pick key={g} name={g} picked={picked === g} onPick={() => setGroup(g)} />)}</div>
+      )}
+      {order.error !== undefined && <Problem error={order.error} />}
+      {order.data && <Rows page={order.data} columns={['pos', 'level', 'group', 'role', 'on_error', 'sql']}
+        link={(c, row) => c === 'sql' ? <StepSql sql={String(row.sql ?? '')} /> : undefined} />}
+      {order.data && picked && <p className="text-sm text-ink-muted">A session of {role} alone on a node of {picked}; a session of several roles runs each role's.</p>}
+    </Section>
+  )
+}
+
 export function Roles() {
   return (
     <Frame title="Roles">
@@ -177,6 +220,10 @@ export function Roles() {
 export function Role({ name }: { name: string }) {
   const { rights, api } = useApp()
   const [catalog, setCatalog] = useState<string>()
+  // spec 016: the role's session script and its grants' - the policy bundle writes them
+  const [script, setScript] = useState<ScriptOwner>()
+  const [written, setWritten] = useState(0)
+  const edit = rights.policy ? setScript : undefined
   const of = { role: name }
   // the node checks the arguments against these lists: offered only to whom reads them
   const effective = calls(rights, 'effective_rights') && reads(rights, 'roles') && reads(rights, 'catalogs') &&
@@ -201,7 +248,16 @@ export function Role({ name }: { name: string }) {
       {reads(rights, 'object_grants') && <ViewTable view="object_grants" filters={of} title="Object grants" columns={['catalog', 'object', 'caps', 'rls', 'columns', 'masks', 'versions']} format={objectGrant} />}
       {reads(rights, 'admins') && <ViewTable view="admins" filters={of} title="Administration" columns={['scope', 'catalog']} />}
       {reads(rights, 'platform_grants') && <ViewTable view="platform_grants" filters={of} title="Platform grants" columns={['object', 'kind', 'allowed']} />}
-      {reads(rights, 'role_resource_groups') && <ViewTable view="role_resource_groups" filters={of} title="Resource groups" columns={['group']} />}
+      {reads(rights, 'roles') && rights.policy && <ViewTable key={`s${written}`} view="roles" filters={of} title="Session script"
+        columns={['session_script', 'session_on_error']}
+        link={(c, row) => c === 'session_script' ? <ScriptCell sql={row.session_script} owner={{ role: name }} onEdit={edit} /> : undefined} />}
+      {reads(rights, 'role_resource_groups') && <ViewTable key={`g${written}`} view="role_resource_groups" filters={of} title="Resource groups"
+        columns={rights.policy ? ['group', 'session_script', 'session_on_error'] : ['group']}
+        link={(c, row) => c === 'session_script' ? <ScriptCell sql={row.session_script} owner={{ group: String(row.group), role: name }} onEdit={edit} /> : undefined} />}
+      {rights.policy && calls(rights, 'session_scripts') && reads(rights, 'roles') && reads(rights, 'resource_groups') &&
+        <SessionOrder key={`o${written}`} role={name} />}
+      {script && <SessionScriptDialog group={script.group} role={script.role}
+        onDone={(changed) => { setScript(undefined); if (changed) setWritten((n) => n + 1) }} />}
     </Frame>
   )
 }
@@ -233,16 +289,27 @@ export function ResourceGroups() {
   // spec 013: the policy bundle edits them (the node judges each write: an unrestricted manage)
   const [editing, setEditing] = useState<string>()
   const [written, setWritten] = useState(0)
+  const [script, setScript] = useState<ScriptOwner>()
   const edits = rights.policy
   return (
     <Frame title="Resource groups">
       {edits && <div><button type="button" className="btn-outline" onClick={() => setEditing('')}>New resource group</button></div>}
       {reads(rights, 'resource_groups') && <ViewTable key={`r${written}`} view="resource_groups" title="Resource groups"
-        link={(c, row) => edits && c === 'group' ? (
-          <button type="button" className="link text-left" aria-label={`Edit the resource group ${String(row.group)}`}
-            onClick={() => setEditing(String(row.group))}>{String(row.group)}</button>
-        ) : undefined} />}
-      {reads(rights, 'role_resource_groups') && <ViewTable key={`b${written}`} view="role_resource_groups" title="Roles in them" />}
+        link={(c, row) => {
+          if (c === 'session_script') {
+            return <ScriptCell sql={row.session_script} owner={{ group: String(row.group) }} onEdit={edits ? setScript : undefined} />
+          }
+          return edits && c === 'group' ? (
+            <button type="button" className="link text-left" aria-label={`Edit the resource group ${String(row.group)}`}
+              onClick={() => setEditing(String(row.group))}>{String(row.group)}</button>
+          ) : undefined
+        }} />}
+      {reads(rights, 'role_resource_groups') && <ViewTable key={`b${written}`} view="role_resource_groups" title="Roles in them"
+        link={(c, row) => c === 'session_script'
+          ? <ScriptCell sql={row.session_script} owner={{ group: String(row.group), role: String(row.role) }} onEdit={edits ? setScript : undefined} />
+          : undefined} />}
+      {script && <SessionScriptDialog group={script.group} role={script.role}
+        onDone={(changed) => { setScript(undefined); if (changed) setWritten((n) => n + 1) }} />}
       {editing !== undefined && <ResourceGroupDialog name={editing}
         onDone={(changed) => { setEditing(undefined); if (changed) setWritten((n) => n + 1) }} />}
     </Frame>

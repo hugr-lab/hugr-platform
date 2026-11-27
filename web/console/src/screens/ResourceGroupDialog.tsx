@@ -50,6 +50,7 @@ export function ResourceGroupDialog({ name = '', onDone }: { name?: string; onDo
   const [roles, setRoles] = useState<string[]>([])
   const [defaultIs, setDefaultIs] = useState<string>()
   const [nodeGroups, setNodeGroups] = useState<string[]>([])
+  const [scripted, setScripted] = useState<string[]>([])
   const [version, setVersion] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
@@ -71,6 +72,7 @@ export function ResourceGroupDialog({ name = '', onDone }: { name?: string; onDo
       setRoles(r.roles)
       setDefaultIs(r.defaultIs)
       setNodeGroups(r.nodeGroups)
+      setScripted(r.scripted ?? [])
       setVersion(editing ? r.version : '')
       setPreview(undefined)
     }, (e) => setError(messageOf(e)))
@@ -161,6 +163,9 @@ export function ResourceGroupDialog({ name = '', onDone }: { name?: string; onDo
               ))}
               {roles.length === 0 && form.roles.length === 0 && <span className="text-sm text-ink-muted">The policy has no role.</span>}
             </div>
+            {scripted.filter((r) => !form.roles.includes(r)).map((r) => (
+              <p key={r} role="alert" className="text-sm">Taking <span className="mono">{r}</span> out drops the session script of its grant of this group too.</p>
+            ))}
           </fieldset>
           {preview && (
             <div className="flex flex-col gap-2">

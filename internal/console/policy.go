@@ -20,9 +20,10 @@ import (
 // to it. Until the policy has it the group's nodes drain themselves; the console offers the statements a person would
 // write in the DBeaver client - on a node, under the person's own token, judged by the node (the policy bundle).
 const (
-	stmtRoles              = "SELECT \"role\" FROM platform.roles ORDER BY \"role\""
-	stmtResourceGroups     = "SELECT \"group\", is_default FROM platform.resource_groups"
-	stmtRoleResourceGroups = "SELECT \"role\", \"group\" FROM platform.role_resource_groups"
+	stmtRoles          = "SELECT \"role\" FROM platform.roles ORDER BY \"role\""
+	stmtResourceGroups = "SELECT \"group\", is_default FROM platform.resource_groups"
+	// spec 016: whether the binding carries a session script, which a revoke drops with it
+	stmtRoleResourceGroups = "SELECT \"role\", \"group\", session_script IS NOT NULL AS scripted FROM platform.role_resource_groups"
 )
 
 // quoted is a name as an SQL identifier of the ACL's grammar: double quotes, a quote doubled. A name with a control
