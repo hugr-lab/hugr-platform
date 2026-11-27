@@ -142,6 +142,7 @@ The token's life in the demo is short: the `hugr-b` client's access token lifesp
   - a profile item, or the write's check, naming a secret the node does not list refreshes the list once before
     refusing;
   - applying a new profile version refreshes it too.
+  Done in hugr-node spec 046 (v0.4.2): check 18 makes the ATTACH right after the secret, with no retry.
 
 ## Open
 
