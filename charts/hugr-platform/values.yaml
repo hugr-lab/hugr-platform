@@ -63,7 +63,7 @@ platform:
       # reads and writes and the oldest build that reads what it writes. An upgrade checks the repository and orders
       # the catalog's migration by them; change them with the image.
       duckdbVersion: v2.0.0
-      catalogSchema: 28
+      catalogSchema: 29
       catalogMinReader: 28
     idp:
       issuer: "" # required
