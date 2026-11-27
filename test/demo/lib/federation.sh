@@ -202,8 +202,8 @@ CREATE OR REPLACE PERSISTENT SECRET b IN owner (TYPE hugr, SCOPE 'hugr:$B_DOOR',
 CALL owner.grant_secret('b', '$NODES_PRINCIPAL', ['use']);
 SQL
 	tresor_job demo-link-b "$WORK/link-b.sql"
-	# a node lists its tresor's secrets for 30 s (tresor spec 004): the new secret is the node's within that
-	eventually 90 "A's ATTACH of B (the node's list of its secrets refreshed)" attach_b
+	# hugr-node spec 046 (v0.4.2): a secret made a moment ago is the node's at once - no wait for its 30 s list
+	attach_b || fail "A's ATTACH of B right after the secret: $(cat "$WORK/attach-b.json" 2>/dev/null)"
 	out="$(cat "$WORK/attach-b.json")"
 	eventually 120 "every node of A applies version $(json_get "$out" "r['version']")" profile_applied "$(json_get "$out" "r['version']")"
 	pod="$(first_pod a)"

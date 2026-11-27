@@ -172,7 +172,7 @@ there. For anything wider (several replicas, a vault or a KMS, another database)
 and give its address.
 
 The IdP and the cluster's issuer are `global.idp` (its private CA, if any, in `caCert`) and `global.clusterIssuer`,
-whose URL `kubectl get --raw /.well-known/openid-configuration` gives. The chart pins `hugr-node:v0.4.1`, whose DuckDB
+whose URL `kubectl get --raw /.well-known/openid-configuration` gives. The chart pins `hugr-node:v0.4.2`, whose DuckDB
 is v2.0.0 (`global.duckdbVersion`'s default); the two change together.
 
 ```sh
