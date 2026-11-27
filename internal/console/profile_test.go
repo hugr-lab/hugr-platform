@@ -1,6 +1,7 @@
 package console
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -53,6 +54,32 @@ func TestProfileStatement(t *testing.T) {
 		{ProfileChange{Action: "sources", All: true, Lazy: true, Group: "apps"},
 			`CLUSTER SET SOURCES ALL LAZY IN GROUP "apps"`},
 		{ProfileChange{Action: "reset-sources", Group: "etl"}, `CLUSTER RESET SOURCES IN GROUP "etl"`},
+		// spec 015 (hugr-node spec 047): a boot script - its SQL a literal over lines, a quote doubled, a tab kept
+		{ProfileChange{Action: "add-script", Script: "10_vars", Place: "before_sources",
+			SQL: "SET VARIABLE region = 'eu';\n\tSELECT 1", Comment: "the region's"},
+			"CLUSTER ADD SCRIPT \"10_vars\" BEFORE SOURCES AS 'SET VARIABLE region = ''eu'';\n\tSELECT 1' " +
+				"COMMENT 'the region''s'"},
+		{ProfileChange{Action: "add-script", Script: "views", Place: "after_source", Source: `Lake "eu"`,
+			SQL: "CREATE VIEW v AS SELECT 1", OnError: "retry", Group: "etl"},
+			`CLUSTER ADD SCRIPT "views" AFTER SOURCE "Lake ""eu""" AS 'CREATE VIEW v AS SELECT 1' ON ERROR RETRY ` +
+				`IN GROUP "etl"`},
+		{ProfileChange{Action: "add-script", Script: "z", Place: "after_sources", SQL: "x", OnError: "fail_node"},
+			`CLUSTER ADD SCRIPT "z" AFTER SOURCES AS 'x' ON ERROR FAIL NODE`},
+		{ProfileChange{Action: "add-script", Script: "z", Place: "after_source", Source: "s", SQL: "x",
+			OnError: "detach_source"},
+			`CLUSTER ADD SCRIPT "z" AFTER SOURCE "s" AS 'x' ON ERROR DETACH SOURCE`},
+		// an alter writes what it changes, the node keeps the rest
+		{ProfileChange{Action: "alter-script", Script: "z", OnError: "continue", Group: "etl"},
+			`CLUSTER ALTER SCRIPT "z" ON ERROR CONTINUE IN GROUP "etl"`},
+		{ProfileChange{Action: "alter-script", Script: "z", SQL: "SELECT 2"}, `CLUSTER ALTER SCRIPT "z" AS 'SELECT 2'`},
+		{ProfileChange{Action: "alter-script", Script: "z", Place: "after_sources"},
+			`CLUSTER ALTER SCRIPT "z" AFTER SOURCES`},
+		{ProfileChange{Action: "alter-script", Script: "z", Comment: "c"}, `CLUSTER ALTER SCRIPT "z" COMMENT 'c'`},
+		{ProfileChange{Action: "drop-script", Script: "z", Group: "etl", Comment: "a drop's has none"},
+			`CLUSTER DROP SCRIPT "z" IN GROUP "etl"`},
+		{ProfileChange{Action: "add-script", Script: "big", Place: "after_sources",
+			SQL: strings.Repeat("x", MaxScriptBytes)},
+			`CLUSTER ADD SCRIPT "big" AFTER SOURCES AS '` + strings.Repeat("x", MaxScriptBytes) + `'`},
 	} {
 		got, err := tc.change.statement()
 		if err != nil || got != tc.want {
@@ -91,6 +118,29 @@ func TestProfileStatement(t *testing.T) {
 		"all and a list":         {Action: "sources", All: true, Lazy: true, Sources: []string{"a"}, Group: "etl"},
 		"a set's comma":          {Action: "sources", Sources: []string{"a,b"}, Group: "etl"},
 		"a set's idle alone":     {Action: "sources", Sources: []string{"a"}, Idle: "1 hour", Group: "etl"},
+		// spec 015: a script
+		"a script with no name": {Action: "add-script", Place: "before_sources", SQL: "x"},
+		"a script's name with SQL": {Action: "add-script", Script: `x" AS 'y'; --`, Place: "before_sources",
+			SQL: "x"},
+		"a script's long name": {Action: "drop-script", Script: strings.Repeat("a", 64)},
+		"a script's dot":       {Action: "drop-script", Script: "a.b"},
+		"no place":             {Action: "add-script", Script: "z", SQL: "x"},
+		"another place":        {Action: "add-script", Script: "z", Place: "on_session", SQL: "x"},
+		"no SQL":               {Action: "add-script", Script: "z", Place: "after_sources"},
+		"SQL of spaces":        {Action: "add-script", Script: "z", Place: "after_sources", SQL: " \n\t"},
+		"SQL past 64 KiB": {Action: "add-script", Script: "z", Place: "after_sources",
+			SQL: strings.Repeat("x", MaxScriptBytes+1)},
+		"SQL with a NUL":       {Action: "add-script", Script: "z", Place: "after_sources", SQL: "SELECT 1\x00"},
+		"SQL with an escape":   {Action: "add-script", Script: "z", Place: "after_sources", SQL: "SELECT \x1b[0m"},
+		"SQL not UTF-8":        {Action: "add-script", Script: "z", Place: "after_sources", SQL: "SELECT '\xff'"},
+		"after a source, none": {Action: "add-script", Script: "z", Place: "after_source", SQL: "x"},
+		"a source elsewhere":   {Action: "add-script", Script: "z", Place: "after_sources", Source: "s", SQL: "x"},
+		"a source alone":       {Action: "alter-script", Script: "z", Source: "s"},
+		"another policy":       {Action: "add-script", Script: "z", Place: "after_sources", SQL: "x", OnError: "ignore"},
+		"an alter of nothing":  {Action: "alter-script", Script: "z"},
+		"a drop with more":     {Action: "drop-script", Script: "z", SQL: "x"},
+		"a script's comment line": {Action: "add-script", Script: "z", Place: "after_sources", SQL: "x",
+			Comment: "a\nb"},
 	} {
 		if got, err := c.statement(); err == nil {
 			t.Errorf("%s: written %q", name, got)
@@ -131,5 +181,14 @@ func TestChangeProfile(t *testing.T) {
 	}
 	if len(asked) != 1 {
 		t.Errorf("a refused change reached a node: %q", asked)
+	}
+	// spec 015: a script's body is up to 64 KiB, which JSON writes longer
+	big := strings.Repeat(`'"\\`, MaxScriptBytes/4) // 64 KiB, which JSON writes 112 KiB
+	body, _ := json.Marshal(ProfileChange{Action: "add-script", Script: "big", Place: "after_sources", SQL: big})
+	if code, out, _ := h.do(t, "POST", APIPrefix+"cluster/profile", opsToken, string(body)); code != 200 {
+		t.Fatalf("a long script: %d %v", code, out)
+	}
+	if len(asked) != 2 || !strings.HasSuffix(asked[1], strings.ReplaceAll(big, "'", "''")+"'") {
+		t.Errorf("a long script's statement: %d", len(asked))
 	}
 }

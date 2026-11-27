@@ -8,7 +8,7 @@ import { behind, documentParts, documentTitle } from '../lib/bootstrap'
 import { useApp, useLoad, type Loaded } from '../lib/context'
 import { sentence } from '../lib/format'
 import type { BootstrapPage, Group } from '../lib/types'
-import { ProfileDialog } from './ProfileDialog'
+import { ProfileDialog, type ProfileStart } from './ProfileDialog'
 
 /** the operator refusing the group's document: a node of the group does not start - the group page's first alert */
 export function BootstrapRefused({ page }: { page?: BootstrapPage }) {
@@ -26,10 +26,25 @@ export function BootstrapRefused({ page }: { page?: BootstrapPage }) {
 
 const note = 'rounded-md border border-line px-6 py-4 text-sm'
 
+/** a step's SQL as the node lists it: a script's text in full, folded past a few lines */
+export function StepSql({ sql }: { sql: string }) {
+  const lines = sql.split('\n')
+  if (lines.length <= 4) return <code className="mono whitespace-pre-wrap break-all">{sql}</code>
+  return (
+    <details>
+      <summary className="cursor-pointer"><code className="mono whitespace-pre-wrap break-all">{lines.slice(0, 3).join('\n')}</code> <span className="text-ink-muted">({lines.length} lines)</span></summary>
+      <code className="mono whitespace-pre-wrap break-all">{lines.slice(3).join('\n')}</code>
+    </details>
+  )
+}
+
+/** the change the form opens on: the whole group's, or a script's row (its own scope - the cluster's or the group's) */
+type Changing = { group?: string; start?: ProfileStart }
+
 export function BootstrapSection({ group, page, read, onChanged }: { group: Group; page: Loaded<BootstrapPage>;
   read?: number; onChanged: () => void }) {
   const { api, rights } = useApp()
-  const [changing, setChanging] = useState(false)
+  const [changing, setChanging] = useState<Changing | null>(null)
   // the node's own rule of a group's item over the cluster's: read on one of the group's serving nodes, never redone here
   const serving = group.nodes.find((n) => n.serving && n.ready)
   const standalone = rights.deployment === 'standalone'
@@ -38,6 +53,7 @@ export function BootstrapSection({ group, page, read, onChanged }: { group: Grou
     [api, serving?.label, rights.effective, standalone, read])
   const d = page.data?.document
   const late = behind(group.nodes, group.profile.target)
+  const edits = rights.infrastructure && !standalone
   return (
     <section aria-labelledby="bootstrap-h" className="flex flex-col gap-4">
       <div>
@@ -72,11 +88,11 @@ export function BootstrapSection({ group, page, read, onChanged }: { group: Grou
       <div className="flex flex-wrap items-end justify-between gap-4">
         <h3 className="text-lg font-semibold">The profile its nodes apply</h3>
         {rights.infrastructure && !standalone && (
-          <button type="button" className="btn-outline" onClick={() => setChanging(true)}>Change for {group.resourceGroup}</button>
+          <button type="button" className="btn-outline" onClick={() => setChanging({ group: group.resourceGroup })}>Change for {group.resourceGroup}</button>
         )}
       </div>
-      {changing && <ProfileDialog group={group.resourceGroup}
-        onDone={(changed) => { setChanging(false); if (changed) { onChanged(); inventory.reload() } }} />}
+      {changing && <ProfileDialog group={changing.group} start={changing.start}
+        onDone={(changed) => { setChanging(null); if (changed) { onChanged(); inventory.reload() } }} />}
       <div>
         <p className="text-sm text-ink-muted">
           Version {group.profile.target}, applied by {group.profile.applied} of {group.replicas}{late.length > 0 ? `; behind: ${late.join(', ')}` : ''}.
@@ -96,20 +112,65 @@ export function BootstrapSection({ group, page, read, onChanged }: { group: Grou
       ) : inventory.data ? (
         <div className="overflow-x-auto rounded-md border border-line">
           <table className="w-full border-collapse text-sm">
-            <thead><tr>{['Scope', 'Kind', 'Name', 'Class', 'Version'].map((c) => <th key={c} className="th">{c}</th>)}</tr></thead>
+            <thead><tr>{['Scope', 'Kind', 'Name', 'Class', 'Version'].map((c) => <th key={c} className="th">{c}</th>)}{edits && <th className="th"><span className="sr-only">Actions</span></th>}</tr></thead>
             <tbody>
               {inventory.data.effective.rows.map((row, i) => (
                 <tr key={i}>
                   {['scope', 'kind', 'name', 'class', 'version'].map((c) => (
                     <td key={c} className={`td ${c === 'name' ? 'mono break-all' : 'whitespace-nowrap'}`}>{row[c] === null || row[c] === undefined ? '-' : String(row[c])}</td>
                   ))}
+                  {edits && (
+                    <td className="td whitespace-nowrap text-right">
+                      {row.kind === 'script' && (() => {
+                        // a script is changed where it is: its scope is the cluster's ('') or a group's
+                        const scope = row.scope ? String(row.scope) : undefined
+                        const script = String(row.name)
+                        return (
+                          <>
+                            <button type="button" className="btn-quiet" aria-label={`Change script ${script}`}
+                              onClick={() => setChanging({ group: scope, start: { action: 'alter-script', fields: { script } } })}>Change</button>
+                            <button type="button" className="btn-quiet" aria-label={`Drop script ${script}`}
+                              onClick={() => setChanging({ group: scope, start: { action: 'drop-script', fields: { script } } })}>Drop</button>
+                          </>
+                        )
+                      })()}
+                    </td>
+                  )}
                 </tr>
               ))}
-              {inventory.data.effective.rows.length === 0 && <tr><td className="td text-ink-muted" colSpan={5}>None.</td></tr>}
+              {inventory.data.effective.rows.length === 0 && <tr><td className="td text-ink-muted" colSpan={edits ? 6 : 5}>None.</td></tr>}
             </tbody>
           </table>
         </div>
       ) : null}
+      {!standalone && serving && rights.order && inventory.data && (
+        <section aria-labelledby="order-h" className="flex flex-col gap-3">
+          <h3 id="order-h" className="text-lg font-semibold">The boot in order</h3>
+          <p className="text-sm text-ink-muted">
+            The steps a node of the group walks at its boot, as <span className="mono">{serving.label}</span> lists them (<span className="mono">platform.bootstrap_order()</span>): the profile's items and the boot scripts in their places.
+            {group.profile.needsRestart.length > 0 && <> This is the profile as it is now: <span className="mono">{group.profile.needsRestart.join(', ')}</span> still {group.profile.needsRestart.length === 1 ? 'runs' : 'run'} what {group.profile.needsRestart.length === 1 ? 'it' : 'they'} held at {group.profile.needsRestart.length === 1 ? 'its' : 'their'} boot, until a restart.</>}
+          </p>
+          {inventory.data.order.error ? (
+            <p role="note" className={note}>{sentence(inventory.data.order.error)}</p>
+          ) : (
+            <div className="overflow-x-auto rounded-md border border-line">
+              <table className="w-full border-collapse text-sm">
+                <thead><tr>{['#', 'Step', 'SQL'].map((c) => <th key={c} className="th">{c}</th>)}</tr></thead>
+                <tbody>
+                  {inventory.data.order.rows.map((row, i) => (
+                    <tr key={i}>
+                      <td className="td whitespace-nowrap">{String(row.pos ?? i + 1)}</td>
+                      <td className="td">{String(row.step ?? '')}</td>
+                      <td className="td"><StepSql sql={String(row.sql ?? '')} /></td>
+                    </tr>
+                  ))}
+                  {inventory.data.order.rows.length === 0 && <tr><td className="td text-ink-muted" colSpan={3}>None.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
     </section>
   )
 }

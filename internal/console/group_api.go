@@ -107,7 +107,12 @@ const drainSecondsMax = 86400
 var clientIDPattern = regexp.MustCompile(`^[\x21-\x7e]{1,255}$`)
 
 func decodeStrict(r *http.Request, v any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
+	return decodeStrictUpTo(r, v, 4<<10)
+}
+
+// decodeStrictUpTo is decodeStrict for a body of up to `limit` bytes.
+func decodeStrictUpTo(r *http.Request, v any, limit int64) error {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, limit))
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(v)
 }

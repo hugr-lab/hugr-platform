@@ -9,7 +9,8 @@ node starts from and reports to, and decides nothing for the nodes.
 - **The entry.** A node presents its ServiceAccount token and is answered with its bootstrap document: pointers,
   never a secret.
 - **The heartbeat.** Each node reports its state, and a lost node is an expired Lease. A group's status says who has
-  applied the profile, who needs a restart and who is gone.
+  applied the profile, who needs a restart, what fails on its nodes (a boot script awaiting its retry, a source a
+  script holds detached: `ProfileHeld`) and who is gone.
 - **A client of the nodes.** With an identity of its own, through SQL like any principal, reading only (provided for;
   it comes with the console).
 

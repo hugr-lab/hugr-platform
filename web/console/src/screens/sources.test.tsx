@@ -17,7 +17,7 @@ afterEach(() => {
 
 const config = { platform: 'corp', audiences: { nodes: 'hugr-nodes' }, mounts: {}, links: [], scopes: [] } as unknown as Config
 const rights: Rights = { fleet: true, sessions: true, endSession: false, drain: false, resume: false, tracing: false,
-  scale: true, policy: false, infrastructure: true, events: false, drift: true, profile: true, effective: true,
+  scale: true, policy: false, infrastructure: true, events: false, drift: true, profile: true, effective: true, order: true,
   deployment: 'cluster', bundles: ['observe', 'operate', 'cluster'], views: ['cluster_items'], functions: ['group_sources'] }
 
 const group = { name: 'etl-k8s', resourceGroup: 'etl', nodes: [] } as unknown as Group

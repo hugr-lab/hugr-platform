@@ -151,6 +151,8 @@ type InventoryAnswer struct {
 	Extensions Part `json:"extensions"`
 	Drift      Part `json:"drift"`
 	Effective  Part `json:"effective"`
+	// Order is the node's boot in its order (spec 015)
+	Order Part `json:"order"`
 }
 
 func (s *Server) inventory(w http.ResponseWriter, r *http.Request, token string, p *person) {
@@ -161,16 +163,19 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request, token string,
 	extensions, answered := s.tryPart(r.Context(), *n, token, stmtExtensions)
 	out := InventoryAnswer{Extensions: extensions}
 	none := Part{Rows: []map[string]any{}, Error: p.rights.noProfile()}
-	out.Drift, out.Effective = none, none
+	out.Drift, out.Effective, out.Order = none, none, none
 	switch {
 	case !answered:
-		out.Drift, out.Effective = unanswered, unanswered
-	case p.rights.Drift || p.rights.Effective:
+		out.Drift, out.Effective, out.Order = unanswered, unanswered, unanswered
+	case p.rights.Drift || p.rights.Effective || p.rights.Order:
 		if p.rights.Drift {
 			out.Drift = s.part(r.Context(), *n, token, stmtDrift)
 		}
 		if p.rights.Effective {
 			out.Effective = s.part(r.Context(), *n, token, stmtEffective)
+		}
+		if p.rights.Order && p.rights.Deployment != "standalone" {
+			out.Order = s.part(r.Context(), *n, token, stmtOrder)
 		}
 	}
 	answer(w, out)

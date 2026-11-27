@@ -2,6 +2,7 @@ package nodeproto
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -224,5 +225,44 @@ func TestSummaryScalingLoad(t *testing.T) {
 		if !slices.Contains(ReportedKeys, key) {
 			t.Errorf("%s is dropped from the Lease once a report no longer says it", key)
 		}
+	}
+}
+
+// spec 015: what fails on the node - its pending items of class error, never another class - survives the Lease,
+// capped, each field cut to a node's own string; a node that reports none writes no annotation
+func TestSummaryFailing(t *testing.T) {
+	body := `{"node_id": "n", "config": {"target": 3, "applied": 3, "pending": [
+	  {"kind": "script", "name": "20_after", "class": "error", "error": "script 20_after failed (Catalog)"},
+	  {"kind": "source", "name": "lake", "class": "error", "error": "script 10_views failed (IO Error)"},
+	  {"kind": "extension", "name": "spatial", "class": "restart"},
+	  {"kind": "source", "name": "crm", "class": "hot", "error": "Connection Error"}]}}`
+	r, load, err := ReadReport(strings.NewReader(body), "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := SummaryOf(r, load)
+	want := []Failing{{Kind: "script", Name: "20_after", Reason: "script 20_after failed (Catalog)"},
+		{Kind: "source", Name: "lake", Reason: "script 10_views failed (IO Error)"}}
+	if !reflect.DeepEqual(s.Failing, want) {
+		t.Errorf("failing %+v, want %+v", s.Failing, want)
+	}
+	if back := ParseSummary(s.Annotations()); !reflect.DeepEqual(back.Failing, want) {
+		t.Errorf("the failing items do not survive the Lease: %+v", back.Failing)
+	}
+	var many Report
+	for i := 0; i < 2*MaxFailing; i++ {
+		many.Config.Pending = append(many.Config.Pending, Pending{Kind: "script", Name: strings.Repeat("n", 300),
+			Class: "error", Error: strings.Repeat("e", 300)})
+	}
+	capped := SummaryOf(many, Load{})
+	if len(capped.Failing) != MaxFailing || len(capped.Failing[0].Name) != maxReported ||
+		len(capped.Failing[0].Reason) != maxReported {
+		t.Errorf("a node's long list: %d items, a name of %d", len(capped.Failing), len(capped.Failing[0].Name))
+	}
+	if _, ok := SummaryOf(Report{}, Load{}).Annotations()[AnnotationFailing]; ok {
+		t.Error("a node with nothing failing writes the annotation")
+	}
+	if got := ParseSummary(map[string]string{AnnotationFailing: "not json"}); got.Failing != nil {
+		t.Errorf("an unreadable annotation reads as items: %+v", got.Failing)
 	}
 }

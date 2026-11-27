@@ -73,6 +73,9 @@ type ProfileAnswer struct {
 	Target       int64    `json:"target"`
 	Applied      int32    `json:"applied"`
 	NeedsRestart []string `json:"needsRestart"`
+	// Failing is what fails on the group's nodes now (spec 015), FailingMore how many past the list
+	Failing     []v1alpha1.FailingItem `json:"failing"`
+	FailingMore int32                  `json:"failingMore"`
 }
 
 // ConditionAnswer is one of the group's conditions: Ready, Refused, Draining.
@@ -253,7 +256,9 @@ func FleetOf(platform *v1alpha1.HugrPlatform, groups []v1alpha1.HugrNodeGroup, v
 			ResourceGroup:      g.EffectiveResourceGroup(),
 			ResourceGroupKnown: g.Status.ResourceGroupKnown,
 			Profile: ProfileAnswer{Target: g.Status.Profile.Target, Applied: g.Status.Profile.Applied,
-				NeedsRestart: append([]string{}, g.Status.Profile.NeedsRestart...)},
+				NeedsRestart: append([]string{}, g.Status.Profile.NeedsRestart...),
+				Failing:      append([]v1alpha1.FailingItem{}, g.Status.Profile.Failing...),
+				FailingMore:  g.Status.Profile.FailingMore},
 			Lost:        append([]string{}, g.Status.Lost...),
 			RestartedAt: g.Spec.RestartedAt,
 			Conditions:  conditions,

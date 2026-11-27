@@ -84,6 +84,21 @@ export function Group() {
               </div>
             </div>
           )}
+          {group.profile.failing.length > 0 && (
+            <div role="alert" aria-labelledby="failing-h" className="flex items-start gap-4 rounded-md border border-line px-6 py-4">
+              <CircleAlert size={20} aria-hidden="true" className="mt-0.5 flex-none" />
+              <div className="flex flex-col gap-2">
+                <div id="failing-h" className="font-semibold">Part of the profile is held: {group.profile.failing.length + group.profile.failingMore === 1 ? 'an item fails' : `${group.profile.failing.length + group.profile.failingMore} items fail`} on the group's nodes</div>
+                <p className="text-sm text-ink-muted">The nodes serve, by the policy each script names. The node says which script and the error's class - never its text nor the error's message; its log has the class too, and running the script by hand shows the error. An item clears once the node reports it no longer: its retry passed, the script or the source changed, or the node restarted clean.</p>
+                <ul className="flex flex-col gap-1 text-sm">
+                  {group.profile.failing.map((f) => (
+                    <li key={`${f.node}/${f.kind}/${f.name}`}><span className="mono">{f.node}</span>: {f.kind} <span className="mono">{f.name}</span>{f.reason && <> - {f.reason}</>}</li>
+                  ))}
+                  {group.profile.failingMore > 0 && <li className="text-ink-muted">and {group.profile.failingMore} more</li>}
+                </ul>
+              </div>
+            </div>
+          )}
           {group.profile.needsRestart.length > 0 && (
             <div role="status" className="flex items-start gap-4 rounded-md border border-line px-6 py-4">
               <CircleAlert size={20} aria-hidden="true" className="mt-0.5 flex-none" />

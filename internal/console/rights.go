@@ -43,6 +43,8 @@ type Rights struct {
 	Drift     bool `json:"drift"`
 	Profile   bool `json:"profile"`
 	Effective bool `json:"effective"`
+	// Order: the node's boot in its order (platform.bootstrap_order(), the cluster bundle's - spec 015).
+	Order bool `json:"order"`
 	// Deployment as the node said: "cluster" (hugr-node's) or "standalone".
 	Deployment string `json:"deployment"`
 	// Bundles as the node named them, for the person to read.
@@ -73,6 +75,7 @@ func RightsOf(info Info) Rights {
 		Drift:          view("drift"),
 		Profile:        view("cluster_items"),
 		Effective:      view("cluster_effective"),
+		Order:          function("bootstrap_order"),
 		Deployment:     info.Deployment,
 		Bundles:        append([]string{}, info.Bundles...), // a list in JSON, never null
 		Views:          append([]string{}, info.MyViews...),

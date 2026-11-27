@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,47 @@ func TestAggregate(t *testing.T) {
 	}
 	if Aggregate(nil).GroupKnown != nil {
 		t.Error("no node reported: known stays unsaid")
+	}
+}
+
+// spec 015: the live nodes' failing items, by node then name, capped with a count of the rest; ProfileHeld is true
+// while there is one, and false once none is reported - never Ready=false
+func TestAggregateFailing(t *testing.T) {
+	item := func(name string) nodeproto.Failing {
+		return nodeproto.Failing{Kind: "script", Name: name, Reason: "script " + name + " failed (Catalog)"}
+	}
+	fleet := Aggregate([]NodeState{
+		{Name: "b", Summary: nodeproto.Summary{Failing: []nodeproto.Failing{item("z"), item("a")}}},
+		{Name: "a", Summary: nodeproto.Summary{Failing: []nodeproto.Failing{item("m")}}},
+		{Name: "c", Lost: true, Summary: nodeproto.Summary{Failing: []nodeproto.Failing{item("lost")}}},
+	})
+	want := []v1alpha1.FailingItem{{Node: "a", Kind: "script", Name: "m", Reason: "script m failed (Catalog)"},
+		{Node: "b", Kind: "script", Name: "a", Reason: "script a failed (Catalog)"},
+		{Node: "b", Kind: "script", Name: "z", Reason: "script z failed (Catalog)"}}
+	if !equality.Semantic.DeepEqual(fleet.Profile.Failing, want) || fleet.Profile.FailingMore != 0 {
+		t.Errorf("failing %+v (+%d), want %+v", fleet.Profile.Failing, fleet.Profile.FailingMore, want)
+	}
+	status := &v1alpha1.HugrNodeGroupStatus{Profile: fleet.Profile}
+	profileHeld(status, 1)
+	held := meta.FindStatusCondition(status.Conditions, ConditionProfileHeld)
+	if held == nil || held.Status != metav1.ConditionTrue || held.Reason != "ItemsFailing" ||
+		held.Message != "3 item(s) failing on 2 node(s): script m - script m failed (Catalog)" {
+		t.Errorf("ProfileHeld: %+v", held)
+	}
+	var nodes []NodeState
+	for i := 0; i < 15; i++ {
+		nodes = append(nodes, NodeState{Name: fmt.Sprintf("n%02d", i),
+			Summary: nodeproto.Summary{Failing: []nodeproto.Failing{item("x"), item("y")}}})
+	}
+	many := Aggregate(nodes)
+	if len(many.Profile.Failing) != MaxFailing || many.Profile.FailingMore != 10 || many.Profile.Failing[0].Node != "n00" {
+		t.Errorf("30 items: %d listed, %d more", len(many.Profile.Failing), many.Profile.FailingMore)
+	}
+	status.Profile = Aggregate([]NodeState{{Name: "a"}}).Profile
+	profileHeld(status, 1)
+	if held := meta.FindStatusCondition(status.Conditions, ConditionProfileHeld); held == nil ||
+		held.Status != metav1.ConditionFalse || status.Profile.Failing != nil {
+		t.Errorf("nothing failing now: %+v", held)
 	}
 }
 

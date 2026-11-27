@@ -370,6 +370,38 @@ spec:
                     description: Applied is how many live nodes have applied the target.
                     format: int32
                     type: integer
+                  failing:
+                    description: |-
+                      Failing lists what fails on the group's nodes now and holds part of the profile (spec 015): a source a script
+                      holds detached, a script awaiting its retry. Sorted by node, then name; at most 20 entries.
+                    items:
+                      description: FailingItem is one item a node reports failing.
+                      properties:
+                        kind:
+                          description: 'Kind is the item''s kind: source or script.'
+                          type: string
+                        name:
+                          description: Name is the item's name.
+                          type: string
+                        node:
+                          description: Node is the node that reports it.
+                          type: string
+                        reason:
+                          description: 'Reason is the node''s: the script''s name
+                            and the error''s class, never its text nor the error''s
+                            message.'
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      - node
+                      type: object
+                    type: array
+                  failingMore:
+                    description: FailingMore is how many failing items the list leaves
+                      out past its 20.
+                    format: int32
+                    type: integer
                   needsRestart:
                     description: NeedsRestart lists the nodes that report an item
                       they can apply only at a restart or a drain.
