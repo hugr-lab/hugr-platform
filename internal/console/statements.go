@@ -27,7 +27,9 @@ const (
 	stmtDrift     = "SELECT kind, name, state, node_value, profile_value, scope FROM platform.drift"
 	stmtEffective = "SELECT scope, kind, name, class, version FROM platform.cluster_effective"
 	stmtItems     = "SELECT scope, kind, name, spec, class, version, depends_on, comment FROM platform.cluster_items"
-	stmtLineage   = "SELECT status, sending, level, namespace FROM platform.lineage_status"
+	// spec 015 (hugr-node spec 047): the node's boot in its order, the profile's items and the scripts with their SQL
+	stmtOrder   = "SELECT pos, step, sql FROM platform.bootstrap_order() ORDER BY pos"
+	stmtLineage = "SELECT status, sending, level, namespace FROM platform.lineage_status"
 	// the node's ring, newest first - never a statement's text, a claim's value or a handle (duckdb-acl spec 069)
 	stmtEvents = "SELECT ts, seq, kind, level, door, session, subject, roles, statement, verdict, reason_code, " +
 		"rows, duration_us, correlation_id, traceparent, detail FROM platform.audit_events ORDER BY seq DESC LIMIT 200"

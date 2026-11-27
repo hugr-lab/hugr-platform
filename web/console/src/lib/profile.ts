@@ -1,6 +1,6 @@
 // The cluster's profile changed from a form (spec 010 stage 2): one CLUSTER statement per form, the console's server
 // builds its text. Here: which fields each change takes, what the form lacks, and how the node's answer reads.
-import type { ProfileChange, ProfileWritten } from './types'
+import type { Place, Policy, ProfileChange, ProfileWritten } from './types'
 
 export type Action = ProfileChange['action']
 
@@ -12,7 +12,42 @@ export const actions: { value: Action; label: string }[] = [
   { value: 'detach', label: 'Detach a source' },
   { value: 'set', label: 'Set a setting' },
   { value: 'reset', label: 'Reset a setting' },
+  { value: 'add-script', label: 'Add a boot script' },
+  { value: 'alter-script', label: 'Change a boot script' },
+  { value: 'drop-script', label: 'Drop a boot script' },
 ]
+
+/** where a boot script runs (hugr-node spec 047) */
+export const places: { value: Place; label: string }[] = [
+  { value: 'before_sources', label: 'Before the sources' },
+  { value: 'after_source', label: 'After one source' },
+  { value: 'after_sources', label: 'After the sources' },
+]
+
+const policyLabels: Record<Policy, string> = {
+  fail_node: 'Fail the node: it does not serve',
+  continue: 'Continue: the node logs it and goes on',
+  detach_source: 'Detach the source: the node serves without it',
+  retry: 'Retry: the node serves and tries again later',
+}
+
+/** the policies a place takes, its default first (hugr-node spec 047's table; the node judges again) */
+export function policiesOf(place: Place | undefined): { value: Policy; label: string }[] {
+  const of = (p: Policy[]) => p.map((value) => ({ value, label: policyLabels[value] }))
+  switch (place) {
+    case 'before_sources': return of(['fail_node', 'continue'])
+    case 'after_source': return of(['detach_source', 'retry', 'continue', 'fail_node'])
+    case 'after_sources': return of(['fail_node', 'retry', 'continue'])
+    default: return of(['fail_node', 'continue', 'detach_source', 'retry'])
+  }
+}
+
+/** a script's name: letters, digits, _ - it may start with a digit (10_vars), the name orders it among its place's */
+const scriptName = /^[A-Za-z0-9_]{1,63}$/
+/** the longest script the form writes */
+export const maxScriptBytes = 64 << 10
+/** a script's SQL: text over lines, tabs kept, no other control character */
+const scriptControl = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/
 
 /** a name the CLUSTER grammar takes bare: an extension, a repository, a type, a secret, a setting */
 const bare = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/
@@ -40,6 +75,9 @@ export function changeOf(action: Action, f: Partial<ProfileChange>, group?: stri
   if (action === 'set') keep(['setting', 'value'])
   if (action === 'reset') keep(['setting'])
   if (action === 'sources') keep(f.all ? ['all', 'lazy', 'idle'] : ['sources', 'lazy', 'idle'])
+  if (action === 'add-script' || action === 'alter-script')
+    keep(['script', 'place', ...(f.place === 'after_source' ? ['source' as const] : []), 'sql', 'onError', 'comment'])
+  if (action === 'drop-script') keep(['script'])
   if (group) out.group = group
   return out
 }
@@ -78,7 +116,30 @@ export function changeProblem(c: ProfileChange): string | undefined {
       return lazyProblem(c)
     case 'reset-sources':
       return c.group ? undefined : 'A source set is a group\'s.'
+    case 'add-script':
+    case 'alter-script':
+    case 'drop-script':
+      return scriptProblem(c)
   }
+}
+
+/** what a boot script's form lacks */
+function scriptProblem(c: ProfileChange): string | undefined {
+  if (!scriptName.test(c.script ?? '')) return 'Name the script (letters, digits, _): the name orders it among its place\'s.'
+  if (c.action === 'drop-script') return undefined
+  if (c.action === 'add-script' && !c.place) return 'Pick where it runs.'
+  if (c.place === 'after_source' && !sourceName(c.source)) return 'Name the source it follows (its alias).'
+  if (c.action === 'add-script' && !c.sql?.trim()) return 'Write its SQL.'
+  if (c.sql !== undefined) {
+    if (!c.sql.trim()) return 'Write its SQL, or leave it to keep the one it has.'
+    if (new TextEncoder().encode(c.sql).length > maxScriptBytes) return 'A script is at most 64 KiB.'
+    if (scriptControl.test(c.sql)) return 'A script holds no control character but a line break and a tab.'
+  }
+  if (c.onError && !policiesOf(c.place).some((p) => p.value === c.onError)) return 'Pick a policy its place takes.'
+  if (c.action === 'alter-script' && !c.place && c.sql === undefined && !c.onError && !c.comment)
+    return 'Change its place, its SQL, its policy or its comment.'
+  if (c.comment && !line(c.comment)) return 'A comment is one line.'
+  return undefined
 }
 
 /** an idle time is a lazy source's, one line ('30 min'); the node reads the interval and refuses one under a minute */
@@ -110,7 +171,7 @@ export function reachOf(w: ProfileWritten): string {
     case 'drain':
       return `Profile version ${w.version}: the nodes take it as the orchestrator drains and replaces them, one at a time.`
     case 'restart':
-      return `Profile version ${w.version}: the nodes take it at a restart - the orchestrator replaces them one at a time.`
+      return `Profile version ${w.version}: the nodes take it at a restart - restarting the group from the fleet replaces them one at a time.`
     default:
       return `Profile version ${w.version}: ${w.class || 'written'}.`
   }

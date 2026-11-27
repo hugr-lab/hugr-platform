@@ -20,6 +20,12 @@ export function groupState(g: Group): { mark: Mark; text: string; note: string }
   if (failing)
     return { mark: short ? 'off' : 'half', text: short ? 'A node does not start' : 'A new node does not start',
       note: `${failing.label}: ${podReason(failing.pod!)}` }
+  // spec 015: a node serves, part of its profile held by the policy its administrator chose
+  if (g.profile.failing.length > 0) {
+    const f = g.profile.failing[0]
+    const count = g.profile.failing.length + g.profile.failingMore
+    return { mark: 'half', text: 'Profile held', note: `${count === 1 ? '' : `${count} items failing - first: `}${f.node}: ${f.kind} ${f.name}${f.reason ? ` - ${f.reason}` : ''}` }
+  }
   if (g.profile.needsRestart.length > 0)
     return { mark: 'half', text: 'Restart pending', note: 'A node applies an item only at a restart' }
   if (short) return { mark: 'half', text: 'Starting', note: `${g.readyReplicas} of ${nodes(g.replicas)} ready: the operator makes the rest` }

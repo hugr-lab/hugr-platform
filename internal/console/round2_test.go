@@ -380,3 +380,32 @@ func TestNoActionOnAStoppingPod(t *testing.T) {
 		}
 	}
 }
+
+// spec 015: the node's boot in its order comes with the inventory, read as the node lists it, only with the function
+// console_info names (the cluster bundle's) and never on a standalone node
+func TestInventoryOrder(t *testing.T) {
+	withOrder := infoRow([]string{"observe", "operate", "cluster"}, []string{"node_load", "sessions", "drift",
+		"cluster_items", "cluster_effective"}, []string{"bootstrap_order"})
+	h := newHarness(t, withOrder, node("hugr-node-etl-a", "etl"))
+	h.nodes.answer = func(_ fleet.Node, statement string) (*Result, error) {
+		switch statement {
+		case stmtInfo:
+			return withOrder, nil
+		case stmtOrder:
+			return &Result{Columns: []string{"pos", "step", "sql"}, Rows: [][]any{
+				{int64(1), "1 node settings", "SET GLOBAL threads = 4"},
+				{int64(9), "6 profile: script 20_after (after sources)", "SELECT * FROM missing"}}}, nil
+		}
+		return &Result{Columns: []string{"x"}, Rows: [][]any{}}, nil
+	}
+	_, out, _ := h.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/inventory", opsToken, "")
+	rows := out["order"].(map[string]any)["rows"].([]any)
+	if len(rows) != 2 || rows[1].(map[string]any)["sql"] != "SELECT * FROM missing" {
+		t.Errorf("the boot in order: %v", out["order"])
+	}
+	without := newHarness(t, clusterRights(), node("hugr-node-etl-a", "etl"))
+	_, out, _ = without.do(t, "GET", APIPrefix+"nodes/hugr-node-etl-a/inventory", opsToken, "")
+	if out["order"].(map[string]any)["error"] == "" || without.nodes.statements(stmtOrder) != 0 {
+		t.Errorf("a node that names no bootstrap_order is not asked: %v", out["order"])
+	}
+}

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -66,6 +67,10 @@ func Aggregate(nodes []NodeState) Fleet {
 		if n.Summary.NeedsRestart {
 			fleet.Profile.NeedsRestart = append(fleet.Profile.NeedsRestart, n.Name)
 		}
+		for _, f := range n.Summary.Failing {
+			fleet.Profile.Failing = append(fleet.Profile.Failing,
+				v1alpha1.FailingItem{Node: n.Name, Kind: f.Kind, Name: f.Name, Reason: f.Reason})
+		}
 		if n.Summary.GroupKnown != nil {
 			known := *n.Summary.GroupKnown
 			if fleet.GroupKnown == nil || !known {
@@ -79,7 +84,45 @@ func Aggregate(nodes []NodeState) Fleet {
 	fleet.Builds = BuildsOf(live)
 	sort.Strings(fleet.Lost)
 	sort.Strings(fleet.Profile.NeedsRestart)
+	failing := fleet.Profile.Failing
+	sort.Slice(failing, func(i, j int) bool {
+		a, b := failing[i], failing[j]
+		if a.Node != b.Node {
+			return a.Node < b.Node
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.Kind < b.Kind
+	})
+	if len(failing) > MaxFailing {
+		fleet.Profile.FailingMore = int32(len(failing) - MaxFailing)
+		fleet.Profile.Failing = failing[:MaxFailing]
+	}
 	return fleet
+}
+
+// MaxFailing is how many failing items a group's status lists (spec 015); the rest are counted.
+const MaxFailing = 20
+
+// ConditionProfileHeld is true while a node of the group reports an item failing (spec 015): part of the profile is
+// held, the node serves by the policy the administrator chose - never Ready=false.
+const ConditionProfileHeld = "ProfileHeld"
+
+// profileHeld is the condition of a group's failing items.
+func profileHeld(status *v1alpha1.HugrNodeGroupStatus, generation int64) {
+	p := status.Profile
+	if len(p.Failing) == 0 {
+		setCondition(status, generation, ConditionProfileHeld, metav1.ConditionFalse, "NothingFailing", "")
+		return
+	}
+	nodes := map[string]bool{}
+	for _, f := range p.Failing {
+		nodes[f.Node] = true
+	}
+	setCondition(status, generation, ConditionProfileHeld, metav1.ConditionTrue, "ItemsFailing",
+		fmt.Sprintf("%d item(s) failing on %d node(s): %s %s - %s", len(p.Failing)+int(p.FailingMore), len(nodes),
+			p.Failing[0].Kind, p.Failing[0].Name, p.Failing[0].Reason))
 }
 
 func setCondition(status *v1alpha1.HugrNodeGroupStatus, generation int64, kind string, value metav1.ConditionStatus,

@@ -16,7 +16,7 @@ afterEach(() => {
 
 const config = { platform: 'corp', audiences: { nodes: 'hugr-nodes' }, mounts: {}, links: [], scopes: [] } as unknown as Config
 const rights: Rights = { fleet: true, sessions: false, endSession: false, drain: false, resume: false, tracing: false,
-  scale: false, policy: true, infrastructure: false, events: false, drift: false, profile: false, effective: false,
+  scale: false, policy: true, infrastructure: false, events: false, drift: false, profile: false, effective: false, order: false,
   deployment: 'cluster', bundles: ['observe', 'policy'], views: ['resource_groups'], functions: [] }
 
 function show(name: string, read: object, statements: string[]) {

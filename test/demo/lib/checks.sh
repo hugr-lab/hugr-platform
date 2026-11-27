@@ -1122,6 +1122,50 @@ check_rollout() {
 	ok "the canary a rolled first and b waited on its image, then b; the rollout is Complete on $to, and analyst_a still reads"
 }
 
+# check_boot_scripts: spec 015 (hugr-node spec 047) - a boot script from the console's form: group b gets an AFTER
+# SOURCES script with ON ERROR RETRY that fails (it reads a table no source has). The answer says restart and the
+# group lists its nodes as needing one; the boot in order lists the script; the console restarts b, its nodes serve,
+# and the group's status lists the script as failing with ProfileHeld - the node's reason only, never the text. The
+# console drops it: the item clears, ProfileHeld turns false.
+check_boot_scripts() {
+	step "20. a boot script from the console (spec 015): written, listed in the boot, failing in the status, dropped"
+	local out pod name=20_demo_fail sql="SELECT * FROM demo_no_such_table"
+	out="$(console_api admin POST cluster/profile "$(json_body '{"action": "add-script", "script": a[0], "place": "after_sources", "sql": a[1] + "\n  LIMIT 1", "onError": "retry", "group": "b"}' "$name" "$sql")")" ||
+		fail "the script written from the console"
+	json_true "$out" "r['ok'] and r['class'] == 'restart'" || fail "the script written from the console: $out"
+	eventually 120 "group b lists its nodes as needing a restart" restarts_listed b
+	pod="$(first_pod b)"
+	out="$(console_api admin GET "nodes/$pod/inventory")" || fail "$pod's boot in order"
+	# the script is listed with its SQL as written, after every source of the profile and before the node serves
+	json_true "$out" "(lambda steps, at: r['order']['rows'][at]['sql'] == a[1] + '\n  LIMIT 1' and all(i < at for i, s in enumerate(steps) if s.startswith('6 profile: source ')) and any(i > at for i, s in enumerate(steps) if s.startswith('8 serve')))([x['step'] for x in r['order']['rows']], [i for i, x in enumerate(r['order']['rows']) if x['step'].startswith('6 profile: script ' + a[0] + ' (after_sources, on error retry')][0])" "$name" "$sql" ||
+		fail "$pod's boot in order: $out"
+	console_restart b
+	eventually 180 "group b's status lists the script as failing, ProfileHeld" script_failing b "$name"
+	out="$(k -n hugr get hng b -o json)" || fail "group b's status"
+	! grep -q demo_no_such_table <<<"$out" || fail "the script's text reached group b's status"
+	json_true "$out" "all(f['reason'] == 'script ' + a[0] + ' failed (Catalog Error)' for f in r['status']['profile']['failing'])" "$name" ||
+		fail "the failing items' reason: $out"
+	as analyst-b "$(first_pod b)" "SELECT 1" >/dev/null || fail "group b serves with its script failing"
+	out="$(console_api admin GET groups)" || fail "the fleet"
+	json_true "$out" "any(f['name'] == a[0] for g in r['groups'] if g['name'] == 'b' for f in g['profile']['failing'])" "$name" ||
+		fail "the console's group b lists no failing script: $out"
+	ok "$name written for group b (restart class), listed in the boot; after the restart b serves, its status lists the script failing (Catalog Error) with ProfileHeld, never its text"
+
+	out="$(console_api admin POST cluster/profile "$(json_body '{"action": "drop-script", "script": a[0], "group": "b"}' "$name")")" ||
+		fail "the script dropped from the console"
+	json_true "$out" "r['ok']" || fail "the script dropped from the console: $out"
+	# the node tries a held script again after its backoff (up to 5 minutes): there it finds it gone
+	eventually 420 "the failing item clears, ProfileHeld false" status_is b '{.status.conditions[?(@.type=="ProfileHeld")].status}' False
+	ok "$name dropped from the console: the failing item cleared at the node's next try, ProfileHeld false"
+}
+# restarts_listed <group>: the group lists at least one node as needing a restart
+restarts_listed() { [ -n "$(status "$1" '{.status.profile.needsRestart[*]}')" ]; }
+# script_failing <group> <script>: a node of the group reports the script failing, and ProfileHeld says so
+script_failing() {
+	status "$1" '{.status.profile.failing[*].name}' | tr ' ' '\n' | grep -qx "$2" &&
+		status_is "$1" '{.status.conditions[?(@.type=="ProfileHeld")].status}' True
+}
+
 run_checks() {
 	checker_up
 	check_entry
@@ -1147,6 +1191,7 @@ run_checks() {
 		check_federation_link
 		check_federation_token
 	fi
+	check_boot_scripts
 	check_no_secrets
 	echo
 	echo "PASS: the platform in one cluster ($PROVIDER)"

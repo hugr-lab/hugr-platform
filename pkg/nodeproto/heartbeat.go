@@ -155,7 +155,21 @@ type Summary struct {
 	CatalogBuildMinReader int64
 	CatalogSchema         int64
 	CatalogMinReader      int64
+	// Failing is what fails on the node now and holds part of its profile (spec 015): its pending items of class
+	// error - a source a script holds detached, an AFTER SOURCES script awaiting its retry. At most MaxFailing.
+	Failing []Failing
 }
+
+// Failing is one item the node reports failing: its kind, its name and the node's reason - the script's name and the
+// error's class, never the script's text nor the error's message (hugr-node spec 047).
+type Failing struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+// MaxFailing is how many failing items a node's Lease keeps.
+const MaxFailing = 20
 
 // maxReported is the longest string of a node's own that the Lease keeps: a build, a release, a platform, a name
 const maxReported = 128
@@ -221,6 +235,12 @@ func SummaryOf(report Report, load Load) Summary {
 	if report.Catalog.MinReader != nil {
 		s.CatalogMinReader = *report.Catalog.MinReader
 	}
+	for _, p := range report.Config.Pending {
+		if p.Class != "error" || len(s.Failing) == MaxFailing {
+			continue
+		}
+		s.Failing = append(s.Failing, Failing{Kind: reported(p.Kind), Name: reported(p.Name), Reason: reported(p.Error)})
+	}
 	return s
 }
 
@@ -271,6 +291,8 @@ const (
 	AnnotationCatalogBuildMinReader = "platform.hugr.io/catalog-build-min-reader"
 	AnnotationCatalogSchema         = "platform.hugr.io/catalog-schema"
 	AnnotationCatalogMinReader      = "platform.hugr.io/catalog-min-reader"
+	// spec 015: what fails on the node, a JSON list
+	AnnotationFailing = "platform.hugr.io/failing"
 )
 
 // Annotations of a summary, as the Lease carries them.
@@ -314,6 +336,11 @@ func (s Summary) Annotations() map[string]string {
 			out[key] = strconv.FormatInt(value, 10)
 		}
 	}
+	if len(s.Failing) > 0 {
+		if raw, err := json.Marshal(s.Failing); err == nil {
+			out[AnnotationFailing] = string(raw)
+		}
+	}
 	return out
 }
 
@@ -322,7 +349,7 @@ func (s Summary) Annotations() map[string]string {
 var ReportedKeys = []string{AnnotationGroupKnown, AnnotationSessionsMax, AnnotationMemoryUsed, AnnotationTempUsed,
 	AnnotationSeatsUsed, AnnotationStreamsWaiting, AnnotationIdleSince, AnnotationBuild, AnnotationDuckDBVersion, AnnotationPlatform,
 	AnnotationCatalogExtension, AnnotationCatalogBuild, AnnotationCatalogBuildMinReader, AnnotationCatalogSchema,
-	AnnotationCatalogMinReader}
+	AnnotationCatalogMinReader, AnnotationFailing}
 
 // ParseSummary reads a Lease's annotations back; a missing or unreadable value reads as its zero (a node that never
 // reported admits nobody).
@@ -373,6 +400,15 @@ func ParseSummary(annotations map[string]string) Summary {
 	if v, ok := annotations[AnnotationGroupKnown]; ok {
 		if b, err := strconv.ParseBool(v); err == nil {
 			s.GroupKnown = &b
+		}
+	}
+	if v := annotations[AnnotationFailing]; v != "" {
+		var failing []Failing
+		if json.Unmarshal([]byte(v), &failing) == nil {
+			if len(failing) > MaxFailing {
+				failing = failing[:MaxFailing]
+			}
+			s.Failing = failing
 		}
 	}
 	return s

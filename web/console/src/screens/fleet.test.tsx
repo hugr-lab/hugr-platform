@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { Api } from '../lib/api'
 import type { Session } from '../lib/auth'
 import { AppContext } from '../lib/context'
 import type { Config, Fleet as FleetAnswer, Rights } from '../lib/types'
 import { Fleet } from './Fleet'
+import { Group } from './Group'
 
 afterEach(() => {
   cleanup()
@@ -14,13 +15,13 @@ afterEach(() => {
 
 const config = { platform: 'corp', audiences: { nodes: 'hugr-nodes' }, mounts: {}, links: [], scopes: [] } as unknown as Config
 const none: Rights = { fleet: true, sessions: true, endSession: false, drain: false, resume: false, tracing: false,
-  scale: false, policy: false, infrastructure: false, events: false, drift: false, profile: false, effective: false,
+  scale: false, policy: false, infrastructure: false, events: false, drift: false, profile: false, effective: false, order: false,
   deployment: 'cluster', bundles: ['observe'], views: [], functions: [] }
 
 const fleet: FleetAnswer = {
   plan: { maxNodes: 12, sizes: ['small'] },
   groups: [{ name: 'etl', size: 'large', replicas: 3, readyReplicas: 2, resourceGroup: 'etl', resourceGroupKnown: true,
-    profile: { target: 14, applied: 2, needsRestart: [] }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
+    profile: { target: 14, applied: 2, needsRestart: [], failing: [], failingMore: 0 }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
     identity: { serviceAccount: 'hugr-node-etl', subject: '', clientID: '', tresor: '', tlsName: '' }, memoryLimitBytes: 0,
     quack: false, drainSeconds: 300 }],
   newGroup: { available: true, subjectPrefix: 'system:serviceaccount:hugr:hugr-node-' },
@@ -60,5 +61,29 @@ describe('the fleet page', () => {
       { ...fleet, newGroup: { available: false, subjectPrefix: '' } })
     await waitFor(() => expect(screen.getByRole('link', { name: 'etl' })).toBeTruthy())
     expect(screen.queryByRole('button', { name: 'New group' })).toBeNull()
+  })
+})
+
+describe('a failing item (spec 015)', () => {
+  const held: FleetAnswer = { ...fleet, groups: [{ ...fleet.groups[0], readyReplicas: 3,
+    profile: { target: 14, applied: 3, needsRestart: [], failingMore: 1, failing: [
+      { node: 'hugr-node-etl-1', kind: 'script', name: '20_after', reason: 'script 20_after failed (Catalog Error)' }] } }] }
+  it('marks the group on the fleet, and the group page lists what fails', async () => {
+    show(none, held)
+    await waitFor(() => expect(screen.getByText('Profile held')).toBeTruthy())
+    cleanup()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) =>
+      new Response(JSON.stringify(String(url).endsWith('/groups') ? held : { served: true }), { status: 200 })))
+    const api = new Api({ getToken: async () => 't' }, 'hugr-nodes')
+    render(
+      <AppContext.Provider value={{ config, session: {} as Session, api, rights: none }}>
+        <MemoryRouter initialEntries={['/groups/etl']}>
+          <Routes><Route path="/groups/:name" element={<Group />} /></Routes>
+        </MemoryRouter>
+      </AppContext.Provider>,
+    )
+    const alert = await screen.findByRole('alert', { name: /Part of the profile is held: 2 items fail/ })
+    expect(alert.textContent).toContain('hugr-node-etl-1: script 20_after - script 20_after failed (Catalog Error)')
+    expect(alert.textContent).toContain('and 1 more')
   })
 })

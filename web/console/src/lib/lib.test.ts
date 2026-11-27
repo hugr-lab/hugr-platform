@@ -5,7 +5,7 @@ import { groupState, room, wanted } from '../screens/Fleet'
 import { changesOf, drainOK, freeNodes, groupName, newGroupProblem } from '../screens/GroupActions'
 import { caps, cell, grantColumns, grantMasks, readsPolicy } from './policy'
 import { behind, documentParts, documentTitle } from './bootstrap'
-import { changeOf, changeProblem, reachOf } from './profile'
+import { changeOf, changeProblem, maxScriptBytes, policiesOf, reachOf } from './profile'
 import { BYTES_MAX, ROWS_MAX, TRESOR, bounded, changes, doorSecret, doorURI, enter, literal, personOf, statementOf, tresorService, type Conn } from './duckdb'
 import type { Fleet, Group } from './types'
 
@@ -92,7 +92,7 @@ describe('the sign-in', () => {
 
 const group = (over: Partial<Group>): Group => ({
   name: 'g', size: 'small', replicas: 2, readyReplicas: 2, resourceGroup: 'g', resourceGroupKnown: true,
-  profile: { target: 1, applied: 2, needsRestart: [] }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
+  profile: { target: 1, applied: 2, needsRestart: [], failing: [], failingMore: 0 }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
   identity: { serviceAccount: 'hugr-node-g', subject: '', clientID: '', tresor: '', tlsName: '' }, memoryLimitBytes: 0,
   quack: false, drainSeconds: 300,
   ...over,
@@ -122,7 +122,13 @@ describe('the fleet', () => {
     expect(groupState(down)).toEqual({ mark: 'half', text: 'Scaling down', note: 'b drains, then goes' })
     expect(groupState(group({ replicas: 0, readyReplicas: 0, scaling: { mode: 'auto', min: 0, max: 3 } })).note)
       .toBe('Starts on the first client')
-    expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: ['n'] } })).text).toBe('Restart pending')
+    expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: ['n'], failing: [], failingMore: 0 } })).text).toBe('Restart pending')
+    // spec 015: a failing item holds part of the profile - over a restart pending, which does not mend it
+    const failing = { node: 'n-a', kind: 'script', name: '20_after', reason: 'script 20_after failed (Catalog Error)' }
+    expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: ['n'], failing: [failing], failingMore: 0 } })))
+      .toEqual({ mark: 'half', text: 'Profile held', note: 'n-a: script 20_after - script 20_after failed (Catalog Error)' })
+    expect(groupState(group({ profile: { target: 1, applied: 1, needsRestart: [], failing: [failing], failingMore: 2 } })).note)
+      .toBe('3 items failing - first: n-a: script 20_after - script 20_after failed (Catalog Error)')
     expect(groupState(group({ conditions: [{ type: 'Draining', status: 'True', reason: '', message: '' }] })).text)
       .toBe('Draining')
   })
@@ -190,7 +196,7 @@ describe('the policy pages (spec 007)', () => {
   it('offers the Policy by the parts a person reads', () => {
     const r = (views: string[], functions: string[] = []) => ({ fleet: true, sessions: false, endSession: false,
       drain: false, resume: false, tracing: false, scale: false, policy: false, infrastructure: false, events: false,
-      drift: false, profile: false, effective: false, deployment: 'cluster', bundles: [], views, functions })
+      drift: false, profile: false, effective: false, order: false, deployment: 'cluster', bundles: [], views, functions })
     expect(readsPolicy(r(['node_load', 'sessions']))).toBe(false)
     expect(readsPolicy(r(['catalogs']))).toBe(true)
     expect(readsPolicy(r(['clients']))).toBe(true)
@@ -356,6 +362,40 @@ describe('a change of the profile from a form (spec 010 stage 2)', () => {
     expect(changeProblem({ action: 'detach', alias: ' a' })).toMatch(/comma/)
     expect(changeProblem({ action: 'detach', alias: 'x'.repeat(257) })).toMatch(/alias/)
     expect(changeProblem({ action: 'attach', path: ':memory:', alias: 'a', type: 'duckdb', dependsOn: ['b\u0085'] })).toMatch(/dependency/)
+  })
+  it('composes a boot script (spec 015): its fields per action, the policies its place takes', () => {
+    const f = { script: '10_vars', place: 'after_source' as const, source: 'lake', sql: "SET VARIABLE r = 'eu'",
+      onError: 'retry' as const, comment: 'c', extension: 'ignored' }
+    expect(changeOf('add-script', f, 'etl')).toEqual({ action: 'add-script', script: '10_vars', place: 'after_source',
+      source: 'lake', sql: "SET VARIABLE r = 'eu'", onError: 'retry', comment: 'c', group: 'etl' })
+    // a source is only an after_source script's; a drop takes the name
+    expect(changeOf('add-script', { ...f, place: 'after_sources' })).toEqual({ action: 'add-script', script: '10_vars',
+      place: 'after_sources', sql: "SET VARIABLE r = 'eu'", onError: 'retry', comment: 'c' })
+    expect(changeOf('drop-script', f, 'etl')).toEqual({ action: 'drop-script', script: '10_vars', group: 'etl' })
+    // an alter sends what it changes: what is left empty stays
+    expect(changeOf('alter-script', { script: 'z', sql: '', onError: 'continue' })).toEqual({ action: 'alter-script',
+      script: 'z', onError: 'continue' })
+    expect(policiesOf('before_sources').map((p) => p.value)).toEqual(['fail_node', 'continue'])
+    expect(policiesOf('after_source').map((p) => p.value)).toEqual(['detach_source', 'retry', 'continue', 'fail_node'])
+    expect(policiesOf('after_sources').map((p) => p.value)).toEqual(['fail_node', 'retry', 'continue'])
+  })
+  it('says what a boot script\'s form lacks', () => {
+    const ok = { action: 'add-script' as const, script: '10_vars', place: 'after_sources' as const, sql: 'SELECT 1\n\tFROM t' }
+    expect(changeProblem(ok)).toBeUndefined()
+    expect(changeProblem({ ...ok, script: 'a.b' })).toMatch(/Name the script/)
+    expect(changeProblem({ ...ok, script: 'x'.repeat(64) })).toMatch(/Name the script/)
+    expect(changeProblem({ ...ok, place: undefined })).toMatch(/where it runs/)
+    expect(changeProblem({ ...ok, sql: '  \n' })).toMatch(/SQL/)
+    expect(changeProblem({ ...ok, sql: 'SELECT 1\u0000' })).toMatch(/control character/)
+    expect(changeProblem({ ...ok, sql: 'x'.repeat(maxScriptBytes + 1) })).toMatch(/64 KiB/)
+    expect(changeProblem({ ...ok, sql: 'x'.repeat(maxScriptBytes) })).toBeUndefined()
+    expect(changeProblem({ ...ok, place: 'after_source' })).toMatch(/source it follows/)
+    expect(changeProblem({ ...ok, place: 'after_source', source: 'lake', onError: 'detach_source' })).toBeUndefined()
+    expect(changeProblem({ ...ok, onError: 'detach_source' })).toMatch(/policy its place takes/)
+    expect(changeProblem({ ...ok, place: 'before_sources', onError: 'retry' })).toMatch(/policy its place takes/)
+    expect(changeProblem({ action: 'alter-script', script: 'z' })).toMatch(/Change its place/)
+    expect(changeProblem({ action: 'alter-script', script: 'z', onError: 'retry' })).toBeUndefined()
+    expect(changeProblem({ action: 'drop-script', script: 'z' })).toBeUndefined()
   })
   it('reads the node\'s answer as how the change reaches the nodes', () => {
     expect(reachOf({ version: 7, class: 'hot', appliedHere: true, ok: true, message: '', node: 'n-a' })).toMatch(/version 7: applied live - n-a applied it/)

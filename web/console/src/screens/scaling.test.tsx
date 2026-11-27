@@ -16,12 +16,12 @@ afterEach(() => {
 
 const config = { platform: 'corp', audiences: { nodes: 'hugr-nodes' }, mounts: {}, links: [], scopes: [] } as unknown as Config
 const rights: Rights = { fleet: true, sessions: true, endSession: false, drain: false, resume: false, tracing: false,
-  scale: true, policy: false, infrastructure: false, events: false, drift: false, profile: false, effective: false,
+  scale: true, policy: false, infrastructure: false, events: false, drift: false, profile: false, effective: false, order: false,
   deployment: 'cluster', bundles: ['observe', 'operate', 'cluster'], views: [], functions: [] }
 
 const group = (over: Partial<Group>): Group => ({
   name: 'etl', size: 'large', replicas: 2, readyReplicas: 2, resourceGroup: 'etl', resourceGroupKnown: true,
-  profile: { target: 1, applied: 2, needsRestart: [] }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
+  profile: { target: 1, applied: 2, needsRestart: [], failing: [], failingMore: 0 }, lost: [], conditions: [], scaling: { mode: 'manual' }, nodes: [],
   identity: { serviceAccount: 'hugr-node-etl', subject: '', clientID: '', tresor: '', tlsName: '' }, memoryLimitBytes: 0,
   quack: false, drainSeconds: 300, ...over } as Group)
 

@@ -4,8 +4,8 @@
 import { useState } from 'react'
 import { Dialog, messageOf } from '../components/ui'
 import { useApp } from '../lib/context'
-import { actions, changeOf, changeProblem, reachOf, type Action } from '../lib/profile'
-import type { ProfileChange, ProfileWritten } from '../lib/types'
+import { actions, changeOf, changeProblem, places, policiesOf, reachOf, type Action } from '../lib/profile'
+import type { Place, Policy, ProfileChange, ProfileWritten } from '../lib/types'
 
 const field = 'h-11 w-full rounded-sm border border-ink-muted bg-surface px-3 text-base text-ink'
 const label = 'text-sm font-semibold'
@@ -30,10 +30,29 @@ function Check({ title, value, onChange }: { title: string; value: boolean; onCh
   )
 }
 
-export function ProfileDialog({ group, onDone }: { group?: string; onDone: (changed: boolean) => void }) {
+/** a boot script's SQL: the one field over lines - stored and run as written, never read by the console */
+function Script({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor="pc-sql" className={label}>SQL</label>
+      <textarea id="pc-sql" rows={8} className="w-full rounded-sm border border-ink-muted bg-surface px-3 py-2 font-mono text-[13px] leading-[22px] text-ink"
+        value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
+      <p className="text-sm text-ink-muted">Run as the node at its boot, outside the ACL, as written: nothing checks it. Whoever holds the cluster bundle reads it - name a secret in tresor, never a credential.</p>
+    </div>
+  )
+}
+
+/** the form opened on an item: a script's row opens its change or its drop */
+export interface ProfileStart {
+  action: Action
+  fields?: Partial<ProfileChange>
+}
+
+export function ProfileDialog({ group, start, onDone }: { group?: string; start?: ProfileStart;
+  onDone: (changed: boolean) => void }) {
   const { api } = useApp()
-  const [action, setAction] = useState<Action>('attach')
-  const [f, setF] = useState<Partial<ProfileChange>>({})
+  const [action, setAction] = useState<Action>(start?.action ?? 'attach')
+  const [f, setF] = useState<Partial<ProfileChange>>(start?.fields ?? {})
   const [depends, setDepends] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -110,7 +129,42 @@ export function ProfileDialog({ group, onDone }: { group?: string; onDone: (chan
               {action === 'set' && <Text id="pc-value" title="Value" value={s('value')} onChange={set('value')} />}
             </div>
           )}
-          {(action === 'install' || action === 'attach') && (
+          {(action === 'add-script' || action === 'alter-script' || action === 'drop-script') && (
+            <div className="flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-4">
+                <Text id="pc-script" title="Name" value={s('script')} onChange={set('script')}
+                  hint="Letters, digits, _: a place's scripts run in their names' order (10_vars before 20_views)." />
+                {action !== 'drop-script' && (
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="pc-place" className={label}>Runs</label>
+                    <select id="pc-place" className={field} value={s('place')}
+                      onChange={(e) => setF((x) => ({ ...x, place: (e.target.value || undefined) as Place | undefined, onError: undefined }))}>
+                      <option value="">{action === 'add-script' ? 'Pick where' : 'Where it runs now'}</option>
+                      {places.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                    </select>
+                  </div>
+                )}
+                {action !== 'drop-script' && s('place') === 'after_source' && (
+                  <Text id="pc-source" title="Source" value={s('source')} onChange={set('source')}
+                    hint="Its alias: the script runs at each attach of it." />
+                )}
+                {action !== 'drop-script' && (
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="pc-on-error" className={label}>On error</label>
+                    <select id="pc-on-error" className={field} value={s('onError')}
+                      onChange={(e) => setF((x) => ({ ...x, onError: (e.target.value || undefined) as Policy | undefined }))}>
+                      <option value="">{action === 'alter-script' && !s('place') ? 'As it is now' : `The place's default${f.place ? `: ${policiesOf(f.place)[0].label.split(':')[0].toLowerCase()}` : ''}`}</option>
+                      {policiesOf(f.place).map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+              {action !== 'drop-script' && <Script value={s('sql')} onChange={set('sql')} />}
+              {action === 'alter-script' && <p className="text-sm text-ink-muted">What you leave empty stays as it is.</p>}
+              {action === 'drop-script' && <p className="text-sm text-ink-muted">The script goes from the profile; a node that ran it keeps what it made until its restart.</p>}
+            </div>
+          )}
+          {(action === 'install' || action === 'attach' || action === 'add-script' || action === 'alter-script') && (
             <Text id="pc-comment" title="Comment" value={s('comment')} onChange={set('comment')} />
           )}
           {problem && <p className="text-sm text-ink-muted">{problem}</p>}

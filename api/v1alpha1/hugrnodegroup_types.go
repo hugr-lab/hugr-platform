@@ -183,6 +183,26 @@ type ProfileStatus struct {
 	// NeedsRestart lists the nodes that report an item they can apply only at a restart or a drain.
 	// +optional
 	NeedsRestart []string `json:"needsRestart,omitempty"`
+	// Failing lists what fails on the group's nodes now and holds part of the profile (spec 015): a source a script
+	// holds detached, a script awaiting its retry. Sorted by node, then name; at most 20 entries.
+	// +optional
+	Failing []FailingItem `json:"failing,omitempty"`
+	// FailingMore is how many failing items the list leaves out past its 20.
+	// +optional
+	FailingMore int32 `json:"failingMore,omitempty"`
+}
+
+// FailingItem is one item a node reports failing.
+type FailingItem struct {
+	// Node is the node that reports it.
+	Node string `json:"node"`
+	// Kind is the item's kind: source or script.
+	Kind string `json:"kind"`
+	// Name is the item's name.
+	Name string `json:"name"`
+	// Reason is the node's: the script's name and the error's class, never its text nor the error's message.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // BuildCount is how many of a group's live nodes report one build.

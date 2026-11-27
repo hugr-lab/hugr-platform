@@ -399,6 +399,7 @@ func (r *GroupReconciler) aggregate(ctx context.Context, platform *v1alpha1.Hugr
 	status.ResourceGroupKnown = fleet.GroupKnown
 	status.Builds = fleet.Builds
 	status.Catalog = fleet.Catalog
+	profileHeld(status, group.Generation)
 
 	ready := status.ReadyReplicas == group.Spec.Replicas && status.Replicas == group.Spec.Replicas
 	if meta.IsStatusConditionTrue(status.Conditions, ConditionRefused) {

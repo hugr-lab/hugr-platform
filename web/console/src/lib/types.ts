@@ -38,6 +38,8 @@ export interface Rights {
   drift: boolean
   profile: boolean
   effective: boolean
+  /** the node's boot in its order, platform.bootstrap_order() (the cluster bundle's, spec 015) */
+  order: boolean
   /** "cluster" (hugr-node's) or "standalone", as the node said */
   deployment: string
   bundles: string[]
@@ -110,7 +112,12 @@ export interface Group {
   readyReplicas: number
   resourceGroup: string
   resourceGroupKnown: boolean | null
-  profile: { target: number; applied: number; needsRestart: string[] }
+  profile: {
+    target: number; applied: number; needsRestart: string[]
+    /** what fails on the group's nodes now (spec 015): a source a script holds detached, a script awaiting its retry;
+     * failingMore past the list */
+    failing: FailingItem[]; failingMore: number
+  }
   lost: string[]
   restartedAt?: string
   conditions: Condition[]
@@ -232,9 +239,18 @@ export interface BootstrapDocument {
   }
 }
 
+/** an item a node reports failing (spec 015): the reason is the node's - the script's name and the error's class */
+export interface FailingItem {
+  node: string
+  kind: string
+  name: string
+  reason?: string
+}
+
 /** one change of the cluster's profile (spec 010 stage 2): a CLUSTER statement's fields; group scopes it to a resource group */
 export interface ProfileChange {
-  action: 'install' | 'update' | 'remove' | 'attach' | 'detach' | 'set' | 'reset' | 'sources' | 'reset-sources'
+  action: 'install' | 'update' | 'remove' | 'attach' | 'detach' | 'set' | 'reset' | 'sources' | 'reset-sources' |
+    'add-script' | 'alter-script' | 'drop-script'
   extension?: string
   version?: string
   repository?: string
@@ -255,9 +271,21 @@ export interface ProfileChange {
   all?: boolean
   setting?: string
   value?: string
+  /** a boot script's (hugr-node spec 047, spec 015): its name, place, the source it follows, its SQL (a literal the
+   * console never reads), its policy on error */
+  script?: string
+  place?: Place
+  source?: string
+  sql?: string
+  onError?: Policy
   group?: string
   comment?: string
 }
+
+/** where a boot script runs */
+export type Place = 'before_sources' | 'after_source' | 'after_sources'
+/** what a node does when a boot script fails */
+export type Policy = 'fail_node' | 'continue' | 'detach_source' | 'retry'
 
 /** a group's sources (spec 007 stage 2b, hugr-node spec 035): its set - none = every source of the cluster and of the
  * group - and the check: each source its roles reach or the set lists, with the node's repair for one left out */
@@ -354,6 +382,8 @@ export interface InventoryPage {
   extensions: Part
   drift: Part
   effective: Part
+  /** the node's boot in its order: pos, step, sql (spec 015) */
+  order: Part
 }
 
 export interface AuditEvent {
