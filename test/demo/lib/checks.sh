@@ -1188,43 +1188,47 @@ script_failing() {
 # the session without its text, under CONTINUE serves it; both dropped.
 check_session_scripts() {
 	step "21. a session's scripts from the console (spec 016): tried, written, layered, failing, dropped"
-	local out version pod tokyo
+	local out version pod role
 	pod="$(first_pod a)"
-	tokyo="SET TimeZone = 'Asia/Tokyo';
+	# a script sets what the session's policy reads - a variable; the zone a client renders in is the client's own
+	role="SET VARIABLE demo_region = 'north';
 SET VARIABLE demo_layer = 'role'"
 	out="$(ss_read 'role=analyst_a')" || fail "analyst_a's session script"
 	json_true "$out" "not r['exists'] and 'a' in r['groups']" || fail "analyst_a's session script: $out"
-	out="$(ss_try "$(json_body '{"role": "analyst_a", "group": "", "sql": "SET VARIABLE x = 1;\nSET TimeZone =", "onError": "fail"}')" a)" ||
+	out="$(ss_try "$(json_body '{"role": "analyst_a", "group": "", "sql": "SET VARIABLE x = 1;\nSET VARIABLE y =", "onError": "fail"}')" a)" ||
 		fail "a trial of a text that does not parse"
 	json_true "$out" "[x for x in r['rows'] if x['edited']][0]['error_class'] == 'Parser' and [x for x in r['rows'] if x['edited']][0]['line'] == 2 and not [x for x in r['rows'] if x['level'] == 'session'][0]['ok']" ||
 		fail "a trial of a text that does not parse: $out"
 	out="$(ss_read 'role=analyst_a')" || fail "analyst_a's session script after the trial"
 	json_true "$out" "not r['exists']" || fail "a trial wrote the script: $out"
-	out="$(ss_try "$(json_body '{"role": "analyst_a", "group": "", "sql": a[0], "onError": "fail"}' "$tokyo")" a)" || fail "a trial of the role's script"
+	out="$(ss_try "$(json_body '{"role": "analyst_a", "group": "", "sql": a[0], "onError": "fail"}' "$role")" a)" || fail "a trial of the role's script"
 	json_true "$out" "all(x['ok'] for x in r['rows'])" || fail "a trial of the role's script: $out"
 	ok "tried first: a text that does not parse names line 2 and the session refused, nothing written; the role's script runs"
 
-	out="$(ss_write "$(json_body '{"role": "analyst_a", "group": "", "sql": a[0], "onError": "fail"}' "$tokyo")" "")" || fail "analyst_a's script written"
+	out="$(ss_write "$(json_body '{"role": "analyst_a", "group": "", "sql": a[0], "onError": "fail"}' "$role")" "")" || fail "analyst_a's script written"
 	json_true "$out" "not r.get('refused') and r['answers'][0]['ok']" || fail "analyst_a's script written: $out"
-	eventually 60 "analyst_a's next session runs in Tokyo" zone_is "$pod" "2026-01-01 09:00:00+09"
-	out="$(ss_write "$(json_body '{"role": "analyst_a", "group": "a", "sql": "SET TimeZone = '"'"'America/New_York'"'"'", "onError": "fail"}')" "")" ||
+	eventually 60 "analyst_a's next session runs the role's script" layer_is "$pod" "role north"
+	# duckdb-acl spec 068 on a locked node (hugr-node spec 048): the client's own zone, set on its session, beside them
+	[ "$(as analyst-a "$pod" "SELECT CAST(TIMESTAMPTZ '2026-01-01 00:00:00+00' AS VARCHAR)" -timezone=Asia/Tokyo)" = \
+		"2026-01-01 09:00:00+09" ] || fail "analyst_a's own TimeZone on its session"
+	out="$(ss_write "$(json_body '{"role": "analyst_a", "group": "a", "sql": "SET VARIABLE demo_layer = '"'"'grant'"'"'", "onError": "fail"}')" "")" ||
 		fail "the grant's script written"
 	json_true "$out" "not r.get('refused') and r['answers'][0]['ok']" || fail "the grant's script written: $out"
-	eventually 60 "the grant's script runs after the role's" zone_is "$pod" "2025-12-31 19:00:00-05"
+	eventually 60 "the grant's script runs after the role's" layer_is "$pod" "grant north"
 	out="$(console_api admin GET 'policy/functions/session_scripts?role=analyst_a&group=a')" || fail "the order"
-	json_true "$out" "[x['level'] for x in r['rows']] == ['role', 'grant'] and r['rows'][0]['sql'] == a[0]" "$tokyo" || fail "the order: $out"
-	ok "analyst_a's script (two lines) and its grant's of a written: a session runs both in order, the grant's zone wins"
+	json_true "$out" "[x['level'] for x in r['rows']] == ['role', 'grant'] and r['rows'][0]['sql'] == a[0]" "$role" || fail "the order: $out"
+	ok "analyst_a's script (two lines) and its grant's of a written: a session runs both in order, the grant's wins; the client's own TimeZone stands beside them"
 
 	ss_change '{"role": "analyst_a", "group": "a", "sql": "SELECT * FROM demo_no_such_table", "onError": "fail"}' || fail "a failing grant's script"
 	eventually 60 "analyst_a's session refused by its grant's script" session_refused "$pod"
 	grep -q demo_no_such_table "$WORK/as.err" && fail "the refusal carried the script's text: $(cat "$WORK/as.err")"
 	ss_change '{"role": "analyst_a", "group": "a", "sql": "SELECT * FROM demo_no_such_table", "onError": "continue"}' || fail "the grant's script to continue"
-	eventually 60 "analyst_a served again, in the role's zone" zone_is "$pod" "2026-01-01 09:00:00+09"
-	ok "a failing grant's script refuses the session (FAIL SESSION) without its text, then serves it (CONTINUE): the role's zone stands"
+	eventually 60 "analyst_a served again, the role's script standing" layer_is "$pod" "role north"
+	ok "a failing grant's script refuses the session (FAIL SESSION) without its text, then serves it (CONTINUE): the role's script stands"
 
 	ss_drop '{"role": "analyst_a", "group": "a"}' || fail "the grant's script dropped"
 	ss_drop '{"role": "analyst_a", "group": ""}' || fail "the role's script dropped"
-	eventually 60 "analyst_a's session in the node's zone" zone_is "$pod" "2026-01-01 00:00:00+00"
+	eventually 60 "analyst_a's session runs no script" layer_is "$pod" "none none"
 	out="$(console_api admin GET 'policy/functions/session_scripts?role=analyst_a&group=a')" || fail "the order after the drop"
 	json_true "$out" "r['total'] == 0" || fail "the order after the drop: $out"
 	ok "both dropped: a session runs none"
@@ -1248,8 +1252,10 @@ ss_change() {
 }
 # ss_drop <owner>: the owner's script dropped
 ss_drop() { ss_change "$(json_get "$1" "json.dumps(dict(r, op='drop', sql='', onError='fail'))")"; }
-# zone_is <pod> <text>: a session of analyst_a renders 2026-01-01 00:00 UTC as the text (the zone its scripts set)
-zone_is() { [ "$(as analyst-a "$1" "SELECT CAST(TIMESTAMPTZ '2026-01-01 00:00:00+00' AS VARCHAR)")" = "$2" ]; }
+# layer_is <pod> <text>: a session of analyst_a reads its variables demo_layer and demo_region (its scripts set them) as the text
+layer_is() {
+	[ "$(as analyst-a "$1" "SELECT coalesce(getvariable('demo_layer'), 'none'), coalesce(getvariable('demo_region'), 'none')")" = "${2/ /$'\t'}" ]
+}
 # session_refused <pod>: analyst_a's session is refused - its error kept in $WORK/as.err
 session_refused() { ! as analyst-a "$1" "SELECT 1" >/dev/null 2>"$WORK/as.err" && grep -q "could not be prepared" "$WORK/as.err"; }
 

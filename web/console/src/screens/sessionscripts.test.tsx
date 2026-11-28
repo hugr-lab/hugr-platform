@@ -46,7 +46,7 @@ function mount(node: React.ReactNode) {
   )
 }
 
-const tokyo = "SET TimeZone = 'Asia/Tokyo';\nSET VARIABLE layer = 'role'"
+const twoLines = "SET VARIABLE region = 'north';\nSET VARIABLE layer = 'role'"
 
 describe("a session's scripts (spec 016)", () => {
   it('names the owner and says what a text lacks', () => {
@@ -64,12 +64,12 @@ describe("a session's scripts (spec 016)", () => {
       : { statements: [statement], answers: [{ ok: true, message: '' }] })
     mount(<SessionScriptDialog role="analyst" onDone={vi.fn()} />)
     await waitFor(() => expect((screen.getByLabelText('SQL') as HTMLTextAreaElement).value).toBe('SELECT 1'))
-    fireEvent.change(screen.getByLabelText('SQL'), { target: { value: tokyo } })
+    fireEvent.change(screen.getByLabelText('SQL'), { target: { value: twoLines } })
     fireEvent.change(screen.getByLabelText('On error'), { target: { value: 'continue' } })
     fireEvent.click(screen.getByRole('button', { name: 'Show the statement', hidden: true }))
     await waitFor(() => expect(screen.getByText(statement)).toBeTruthy())
     expect(sent[0]).toEqual({ url: expect.stringMatching(/session-script\/preview$/),
-      body: { version: 'v1', form: { group: '', role: 'analyst', sql: tokyo, onError: 'continue', op: 'set' } } })
+      body: { version: 'v1', form: { group: '', role: 'analyst', sql: twoLines, onError: 'continue', op: 'set' } } })
     fireEvent.click(screen.getByRole('button', { name: 'Write', hidden: true }))
     await waitFor(() => expect(sent).toHaveLength(2))
     expect(sent[1]).toMatchObject({ url: expect.stringMatching(/session-script$/), body: { version: 'v1', statements: [statement] } })
@@ -87,19 +87,19 @@ describe("a session's scripts (spec 016)", () => {
     })
     mount(<SessionScriptDialog role="analyst" onDone={vi.fn()} />)
     await waitFor(() => expect(screen.getByLabelText('Served on the group')).toBeTruthy())
-    fireEvent.change(screen.getByLabelText('SQL'), { target: { value: 'SET a = 1;\nSET TimeZone =' } })
+    fireEvent.change(screen.getByLabelText('SQL'), { target: { value: 'SET a = 1;\nSET VARIABLE y =' } })
     fireEvent.change(screen.getByLabelText('Served on the group'), { target: { value: 'general' } })
     fireEvent.click(screen.getByRole('button', { name: 'Try', hidden: true }))
     await waitFor(() => expect(sent).toHaveLength(1))
     expect(sent[0]).toEqual({ url: expect.stringMatching(/session-script\/try$/), body: {
-      form: { group: '', role: 'analyst', sql: 'SET a = 1;\nSET TimeZone =', onError: 'fail', op: 'set' },
+      form: { group: '', role: 'analyst', sql: 'SET a = 1;\nSET VARIABLE y =', onError: 'fail', op: 'set' },
       session: { role: 'analyst', group: 'general' } } })
     const verdict = await screen.findByRole('status', { hidden: true })
     expect(verdict.textContent).toContain('The session would be refused: refused by the role script')
     expect(verdict.textContent).toContain('Parser at line 2, column 16: syntax error at end of input')
     expect(verdict.textContent).toContain('the resource group general')
     // the text changed: the trial no longer stands for it
-    fireEvent.change(screen.getByLabelText('SQL'), { target: { value: 'SET TimeZone = 1' } })
+    fireEvent.change(screen.getByLabelText('SQL'), { target: { value: 'SET VARIABLE y = 1' } })
     expect(screen.queryByRole('status', { hidden: true })).toBeNull()
   })
 

@@ -102,6 +102,8 @@ ACL ADMIN CREATE ROLE IF NOT EXISTS node_breakglass;
 -- (hugr-platform spec 003 Q7)
 ACL ADMIN GRANT FUNCTION CATEGORY meta TO ROLE platform_admin;
 ACL ADMIN GRANT FUNCTION CATEGORY environment TO ROLE platform_admin;
+-- a session's scripts set variables its policy reads (check 21): the analyst reads its own session's
+ACL ADMIN GRANT FUNCTION getvariable TO ROLE analyst_a;
 -- the checks read a node's own state (its settings, the profile's version, its attached databases) through ACL
 -- NATIVE, the break-glass: a principal of its own, writing nothing
 ACL ADMIN GRANT ADMIN passthrough TO ROLE node_breakglass;

@@ -171,19 +171,23 @@ applies to sessions opened after it.
   - the folded script in the resource groups table;
   - the order section with its group picker;
   - the resource group editor's warning before it revokes a binding that has a script.
-- **Demo check 21** (group a, `analyst_a` on a node of a). It reads the zone a script set, by a cast the gate admits:
-  `SELECT CAST(TIMESTAMPTZ '2026-01-01 00:00:00+00' AS VARCHAR)`.
-  1. **Tried first.** A trial of a text that does not parse (`SET TimeZone =` on its second line) answers the parser's
-     error at line 2 and says the session would be refused. Nothing is written. A trial of the role's script, over two
-     lines (`SET TimeZone = 'Asia/Tokyo';` and `SET VARIABLE demo_layer = 'role'`), runs.
-  2. The console writes that script. The next session of `analyst_a` reads `2026-01-01 09:00:00+09`.
-  3. The console sets the grant's script (a, `analyst_a`) to `SET TimeZone = 'America/New_York'`. It runs after the
-     role's, so the next session reads `2025-12-31 19:00:00-05`. `session_scripts(analyst_a, a)` lists the role's
-     script, then the grant's.
+- **Demo check 21** (group a, `analyst_a` on a node of a). A script sets what the session's policy reads, variables;
+  the session reads them back with `getvariable` (granted to `analyst_a` by the demo's seed). The zone a client renders
+  in is the client's own (the owner, 2026-11-28), never a script's example.
+  1. **Tried first.** A trial of a text that does not parse (`SET VARIABLE y =` on its second line) answers the
+     parser's error at line 2 and says the session would be refused. Nothing is written. A trial of the role's script,
+     over two lines (`SET VARIABLE demo_region = 'north';` and `SET VARIABLE demo_layer = 'role'`), runs.
+  2. The console writes that script. The next session of `analyst_a` reads `role`, `north`. The client sets its own
+     zone on that session (Flight's `SetSessionOptions`, duckdb-acl spec 068) and renders
+     `2026-01-01 00:00:00+00` as `2026-01-01 09:00:00+09`: a platform node's locked configuration leaves it that
+     (hugr-node spec 048).
+  3. The console sets the grant's script (a, `analyst_a`) to `SET VARIABLE demo_layer = 'grant'`. It runs after the
+     role's, so the next session reads `grant`, `north`. `session_scripts(analyst_a, a)` lists the role's script, then
+     the grant's.
   4. The console sets the grant's script to read a table that does not exist, with `FAIL SESSION`. The next session of
      `analyst_a` is refused, and the refusal does not carry the script's text. With `CONTINUE`, the session is served
-     and reads Tokyo again: the role's zone stands.
-  5. The console drops both scripts. A session reads the node's zone, and `session_scripts` lists nothing.
+     and reads `role`, `north` again: the role's script stands.
+  5. The console drops both scripts. A session reads neither variable, and `session_scripts` lists nothing.
 
   The scripts stay on the role and the grant, not on group a: the admin is in every group, and the console reads as the
   admin on a's nodes too (spec 013's note).

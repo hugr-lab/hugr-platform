@@ -23,8 +23,8 @@ func TestSessionScriptStatements(t *testing.T) {
 	}{
 		{"a group's", SessionScriptForm{Group: "etl", SQL: "SET VARIABLE region = 'etl'"}, storedScript{},
 			`ALTER RESOURCE GROUP "etl" SET SESSION SCRIPT 'SET VARIABLE region = ''etl''' ON ERROR FAIL SESSION`},
-		{"a role's, two lines and a tab", SessionScriptForm{Role: "analyst", SQL: "SET TimeZone = 'UTC';\n\tSELECT 1", OnError: "continue"},
-			storedScript{}, "ALTER ROLE \"analyst\" SET SESSION SCRIPT 'SET TimeZone = ''UTC'';\n\tSELECT 1' ON ERROR CONTINUE"},
+		{"a role's, two lines and a tab", SessionScriptForm{Role: "analyst", SQL: "SET VARIABLE region = 'north';\n\tSELECT 1", OnError: "continue"},
+			storedScript{}, "ALTER ROLE \"analyst\" SET SESSION SCRIPT 'SET VARIABLE region = ''north'';\n\tSELECT 1' ON ERROR CONTINUE"},
 		{"a grant's", SessionScriptForm{Group: "etl", Role: "Odd role", SQL: "SELECT 2", OnError: "fail"}, stored,
 			`ALTER RESOURCE GROUP "etl" FOR ROLE "Odd role" SET SESSION SCRIPT 'SELECT 2' ON ERROR FAIL SESSION`},
 		// the same text, another policy: written
@@ -72,7 +72,7 @@ func sessionScriptsNode(h *harness, wrote, tried *[]string) {
 				{"etl", "SET VARIABLE region = 'etl'", "fail", false}, {"general", nil, nil, true}}}, nil
 		case stmtRoleScripts:
 			return &Result{Columns: []string{"role", "session_script", "session_on_error"}, Rows: [][]any{
-				{"analyst", "SET TimeZone = 'UTC'", "continue"}, {"auditor", nil, nil}}}, nil
+				{"analyst", "SET VARIABLE region = 'north'", "continue"}, {"auditor", nil, nil}}}, nil
 		case stmtGrantScripts:
 			return &Result{Columns: []string{"role", "group", "session_script", "session_on_error"}, Rows: [][]any{
 				{"analyst", "etl", "SELECT 1", "fail"}}}, nil
@@ -102,7 +102,7 @@ func TestSessionScriptEditor(t *testing.T) {
 	sessionScriptsNode(h, &wrote, &tried)
 
 	code, out, body := h.do(t, "GET", APIPrefix+"policy/session-script?role=analyst", opsToken, "")
-	if code != 200 || out["exists"] != true || out["sql"] != "SET TimeZone = 'UTC'" || out["onError"] != "continue" ||
+	if code != 200 || out["exists"] != true || out["sql"] != "SET VARIABLE region = 'north'" || out["onError"] != "continue" ||
 		out["version"] == "" || !reflect.DeepEqual(out["groups"], []any{"etl"}) {
 		t.Fatalf("a role's: %d %s", code, body)
 	}
@@ -122,8 +122,8 @@ func TestSessionScriptEditor(t *testing.T) {
 		}
 	}
 
-	edit := `{"form": {"role": "analyst", "sql": "SET TimeZone = 'Asia/Tokyo';\nSET VARIABLE layer = 'role'", "onError": "fail"}, "version": "` + v + `"}`
-	want := "ALTER ROLE \"analyst\" SET SESSION SCRIPT 'SET TimeZone = ''Asia/Tokyo'';\nSET VARIABLE layer = ''role''' ON ERROR FAIL SESSION"
+	edit := `{"form": {"role": "analyst", "sql": "SET VARIABLE region = 'north';\nSET VARIABLE layer = 'role'", "onError": "fail"}, "version": "` + v + `"}`
+	want := "ALTER ROLE \"analyst\" SET SESSION SCRIPT 'SET VARIABLE region = ''north'';\nSET VARIABLE layer = ''role''' ON ERROR FAIL SESSION"
 	code, out, body = h.do(t, "POST", APIPrefix+"policy/session-script/preview", opsToken, edit)
 	if code != 200 || !reflect.DeepEqual(out["statements"], []any{want}) || len(wrote) != 0 {
 		t.Fatalf("preview: %d %s %q", code, body, wrote)
