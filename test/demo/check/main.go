@@ -113,6 +113,11 @@ func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool, time
 	defer conn.Close()
 	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 	if timezone != "" {
+		// a session option needs a session the node keeps: the first call's answer carries its cookie (duckdb-acl
+		// spec 050), as a driver's first call does
+		if _, err := conn.GetSessionOptions(ctx, &flight.GetSessionOptionsRequest{}); err != nil {
+			return err
+		}
 		options, err := flight.NewSessionOptionValues(map[string]any{"TimeZone": timezone})
 		if err != nil {
 			return err
