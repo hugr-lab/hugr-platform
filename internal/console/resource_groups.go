@@ -67,6 +67,8 @@ type ResourceGroupRead struct {
 	Roles      []string          `json:"roles"`
 	DefaultIs  string            `json:"defaultIs,omitempty"`
 	NodeGroups []string          `json:"nodeGroups"`
+	// Scripted are the bound roles whose grant of the group has a session script (spec 016): a revoke drops it
+	Scripted []string `json:"scripted"`
 }
 
 // ResourceGroupEdit is what the editor sends: the form, the version it was made from ("" = a new group), and - to write
@@ -90,6 +92,7 @@ type resourceGroupState struct {
 	groups   map[string]*ResourceGroupForm // by name, as the node spells it
 	roles    []string
 	defaults string
+	scripted map[string][]string // a group's bound roles whose grant has a session script
 }
 
 func (s *Server) readResourceGroups(ctx context.Context, token string) (*resourceGroupState, error) {
@@ -97,7 +100,7 @@ func (s *Server) readResourceGroups(ctx context.Context, token string) (*resourc
 	if err != nil {
 		return nil, err
 	}
-	st := &resourceGroupState{groups: map[string]*ResourceGroupForm{}, roles: []string{}}
+	st := &resourceGroupState{groups: map[string]*ResourceGroupForm{}, roles: []string{}, scripted: map[string][]string{}}
 	for _, row := range results[0].Records() {
 		if role, ok := row["role"].(string); ok {
 			st.roles = append(st.roles, role)
@@ -125,6 +128,9 @@ func (s *Server) readResourceGroups(ctx context.Context, token string) (*resourc
 	for _, row := range results[2].Records() {
 		if g := st.groups[str(row["group"])]; g != nil {
 			g.Roles = append(g.Roles, str(row["role"]))
+			if scripted, _ := row["scripted"].(bool); scripted {
+				st.scripted[g.Name] = append(st.scripted[g.Name], str(row["role"]))
+			}
 		}
 	}
 	for _, g := range st.groups {
@@ -363,10 +369,12 @@ func (s *Server) resourceGroupRead(w http.ResponseWriter, r *http.Request, token
 		policyProblem(w, err)
 		return
 	}
-	out := ResourceGroupRead{Roles: st.roles, DefaultIs: st.defaults, NodeGroups: []string{},
+	out := ResourceGroupRead{Roles: st.roles, DefaultIs: st.defaults, NodeGroups: []string{}, Scripted: []string{},
 		Group: ResourceGroupForm{Name: name, Roles: []string{}}}
 	if current, _ := st.lookup(name); current != nil {
 		out.Exists, out.Group, out.Version = true, *current, groupVersion(current)
+		out.Scripted = append(out.Scripted, st.scripted[current.Name]...)
+		slices.Sort(out.Scripted)
 	}
 	if name != "" {
 		if out.NodeGroups, err = s.servingGroups(r.Context(), name); err != nil {

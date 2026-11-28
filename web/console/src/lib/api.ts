@@ -1,6 +1,6 @@
 // The console's API client (spec 003): the nodes' token as the bearer, nothing cached, never a cookie. A 401 renews
 // the token once and retries; a second one ends the session (the page shows the sign-in).
-import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, GrantForm, GrantRead, GrantWritten, GroupSources, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, ResourceGroupForm, ResourceGroupRead, Rights, SessionRow, ViewPage } from './types'
+import type { Answer, AuditEvent, BootstrapPage, ClusterPage, Config, Fleet, GroupPatch, GroupPolicy, GrantForm, GrantRead, GrantWritten, GroupSources, InventoryPage, MemoryPage, NewGroup, NodePage, PodPage, ProfileChange, ProfileWritten, ResourceGroupForm, ResourceGroupRead, Rights, SessionRow, SessionScriptForm, SessionScriptRead, SessionScriptTried, ViewPage } from './types'
 
 export const prefix = '/api/v1/console/'
 
@@ -128,6 +128,15 @@ export class Api {
     this.request<GrantWritten>('POST', 'policy/resource-group/preview', { form, version })
   resourceGroupWrite = (form: ResourceGroupForm, version: string, statements: string[]) =>
     this.request<GrantWritten>('POST', 'policy/resource-group', { form, version, statements })
+  // spec 016: a session script - read with its version, its statement shown, written as shown; tried first
+  sessionScriptRead = (group: string, role: string) =>
+    this.request<SessionScriptRead>('GET', `policy/session-script?${query({ group, role })}`)
+  sessionScriptPreview = (form: SessionScriptForm, version: string) =>
+    this.request<GrantWritten>('POST', 'policy/session-script/preview', { form, version })
+  sessionScriptWrite = (form: SessionScriptForm, version: string, statements: string[]) =>
+    this.request<GrantWritten>('POST', 'policy/session-script', { form, version, statements })
+  sessionScriptTry = (form: SessionScriptForm, session: { role: string; group: string }) =>
+    this.request<SessionScriptTried>('POST', 'policy/session-script/try', { form, session })
   policySources = () => this.request<{ sources: string[] }>('GET', 'policy/sources')
   policyCall = (fn: string, args: Record<string, string>, limit = 5000) =>
     this.request<ViewPage>('GET', `policy/functions/${part(fn)}?${query({ ...args, limit: String(limit) })}`)

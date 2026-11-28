@@ -441,5 +441,35 @@ export interface ResourceGroupRead {
   roles: string[]
   defaultIs?: string
   nodeGroups: string[]
+  /** the bound roles whose grant of the group has a session script (spec 016): a revoke drops it */
+  scripted: string[]
+}
+
+/** spec 016: a session's script (duckdb-acl spec 181) as the editor writes it - a group's (role ''), a role's (group
+ * ''), a role's grant of the group (both) */
+export interface SessionScriptForm {
+  group: string
+  role: string
+  sql: string
+  onError: 'fail' | 'continue'
+  op?: 'set' | 'drop'
+}
+
+/** the script as stored (with its version), and the sessions a trial may be of: for a group's script its roles, for a
+ * role's the groups it is served on */
+export interface SessionScriptRead {
+  exists: boolean
+  sql: string
+  onError: '' | 'fail' | 'continue'
+  version: string
+  roles: string[]
+  groups: string[]
+}
+
+/** a trial's answer (duckdb-acl spec 183): the node that ran it, and one row per script that ran, then the session's */
+export interface SessionScriptTried {
+  node: string
+  group: string
+  rows: Record<string, unknown>[]
 }
 

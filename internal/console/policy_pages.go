@@ -32,6 +32,8 @@ var policyFunctions = map[string][]string{
 	"effective_rights": {"role", "catalog"},
 	"check_catalog":    {"catalog"},
 	"exposures":        {"source"},
+	// spec 016: what a session of the role runs on a node of the group - the console always names the group
+	"session_scripts": {"role", "group"},
 }
 
 // slowFunctions take the node long (a catalog's check probes every stored fact against its sources; what exposes a
@@ -48,9 +50,11 @@ var argumentLists = map[string]string{
 	"role":    "SELECT \"role\" AS name FROM platform.roles UNION SELECT \"role\" FROM platform.grants",
 	"catalog": "SELECT \"catalog\" AS name FROM platform.catalogs UNION SELECT \"catalog\" FROM platform.grants",
 	"source":  stmtSources,
+	"group":   "SELECT \"group\" AS name FROM platform.resource_groups",
 }
 
-var argumentViews = map[string][]string{"role": {"roles", "grants"}, "catalog": {"catalogs", "grants"}}
+var argumentViews = map[string][]string{"role": {"roles", "grants"}, "catalog": {"catalogs", "grants"},
+	"group": {"resource_groups"}}
 
 // foldsCase: the names the node compares with an ASCII fold (duckdb-acl spec 116: catalogs, schemas, sources);
 // roles compare exactly

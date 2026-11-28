@@ -48,6 +48,7 @@ func main() {
 		caFile     = flag.String("ca", "", "the run's CA")
 		sql        = flag.String("sql", "", "the statement")
 		hold       = flag.Bool("hold", false, "keep the node's cookie and leave the session open: a client's own session")
+		timezone   = flag.String("timezone", "", "the client's own zone, set on its session before the statement (Flight's SetSessionOptions)")
 		wait       = flag.Duration("timeout", 60*time.Second, "how long the statement may take (a node that starts for it: longer)")
 		consoleURL = flag.String("console", "", "instead of -sql: a console API URL (spec 003), reached through a port-forward")
 		method     = flag.String("method", "GET", "the console call's method")
@@ -64,7 +65,7 @@ func main() {
 	case *consoleURL != "":
 		err = console(idp, *consoleURL, *method, *body, *serverName, *caFile)
 	default:
-		err = run(idp, *node, *serverName, *caFile, *sql, *hold, *wait)
+		err = run(idp, *node, *serverName, *caFile, *sql, *hold, *timezone, *wait)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, redact(err.Error()))
@@ -82,7 +83,7 @@ type tokenRequest struct {
 	url, host, client, secretFile, scope string
 }
 
-func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool, wait time.Duration) error {
+func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool, timezone string, wait time.Duration) error {
 	pem, err := os.ReadFile(caFile)
 	if err != nil {
 		return err
@@ -100,8 +101,9 @@ func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool, wait
 	creds := credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: serverName, MinVersion: tls.VersionTLS12})
 	// without the cookie each call is a session of its own, closed after it (duckdb-acl spec 050); with it the DoGet
 	// seats the session the node keeps until its idle timeout - nothing here closes it
+	// a client's zone is its session's: the cookie keeps the session the option was set on
 	var middleware []flight.ClientMiddleware
-	if hold {
+	if hold || timezone != "" {
 		middleware = append(middleware, flight.NewClientCookieMiddleware())
 	}
 	conn, err := flightsql.NewClient(node, nil, middleware, grpc.WithTransportCredentials(creds))
@@ -110,6 +112,24 @@ func run(idp tokenRequest, node, serverName, caFile, sql string, hold bool, wait
 	}
 	defer conn.Close()
 	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+	if timezone != "" {
+		// a session option needs a session the node keeps: the first call's answer carries its cookie (duckdb-acl
+		// spec 050), as a driver's first call does
+		if _, err := conn.GetSessionOptions(ctx, &flight.GetSessionOptionsRequest{}); err != nil {
+			return err
+		}
+		options, err := flight.NewSessionOptionValues(map[string]any{"TimeZone": timezone})
+		if err != nil {
+			return err
+		}
+		set, err := conn.SetSessionOptions(ctx, &flight.SetSessionOptionsRequest{SessionOptions: options})
+		if err != nil {
+			return err
+		}
+		if refused, ok := set.GetErrors()["TimeZone"]; ok {
+			return fmt.Errorf("the node refused the session's TimeZone: %s", refused.GetValue())
+		}
+	}
 	info, err := conn.Execute(ctx, sql)
 	if err != nil {
 		return err

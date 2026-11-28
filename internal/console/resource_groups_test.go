@@ -96,7 +96,7 @@ func resourceGroupsNode(h *harness, wrote *[]string) {
 				{"etl", int64(8), nil, nil, nil, nil, nil, "", false},
 				{"batch", nil, nil, nil, int64(1000), nil, int64(4), "nightly", true}}}, nil
 		case stmtRoleResourceGroups:
-			return &Result{Columns: []string{"role", "group"}, Rows: [][]any{{"analyst", "etl"}}}, nil
+			return &Result{Columns: []string{"role", "group", "scripted"}, Rows: [][]any{{"analyst", "etl", true}}}, nil
 		}
 		if strings.Contains(statement, "RESOURCE GROUP ") {
 			*wrote = append(*wrote, statement)
@@ -115,7 +115,8 @@ func TestResourceGroupEditor(t *testing.T) {
 	resourceGroupsNode(h, &wrote)
 	code, out, body := h.do(t, "GET", APIPrefix+"policy/resource-group?name=etl", opsToken, "")
 	if code != 200 || out["exists"] != true || out["defaultIs"] != "batch" ||
-		!reflect.DeepEqual(out["nodeGroups"], []any{"etl"}) || !reflect.DeepEqual(out["roles"], []any{"analyst", "ops"}) {
+		!reflect.DeepEqual(out["nodeGroups"], []any{"etl"}) || !reflect.DeepEqual(out["roles"], []any{"analyst", "ops"}) ||
+		!reflect.DeepEqual(out["scripted"], []any{"analyst"}) {
 		t.Fatalf("read: %d %s", code, body)
 	}
 	g := out["group"].(map[string]any)
